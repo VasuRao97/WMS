@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wms
+      POSTGRES_PASSWORD: wms_dev_password
+      POSTGRES_DB: wms
+    ports:
+      - "5432:5432"
+    volumes:
+      - wms_pg_data:/var/lib/postgresql/data
+
+  # backend and frontend services get added here once scaffolded
+  # (kept out for now so `docker compose up` gives you a DB to
+  # develop against immediately without waiting on image builds)
+
+volumes:
+  wms_pg_data:

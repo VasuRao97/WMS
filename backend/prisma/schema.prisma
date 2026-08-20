@@ -1,0 +1,322 @@
+// ============================================================
+// WMS MVP — Prisma Schema
+// Design principle: inventory is NEVER edited directly.
+// stock_movements is an append-only ledger. Current stock is
+// always derived as SUM(quantity) grouped by sku + location.
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// AUTH / MASTER DATA
+// ------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  WAREHOUSE_MANAGER
+  RECEIVER
+  PICKER
+  DISPATCHER
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  receiptsCreated   InboundReceipt[] @relation("ReceiptCreatedBy")
+  putawaysCompleted PutawayTask[]    @relation("PutawayCompletedBy")
+  ordersCreated     OutboundOrder[]  @relation("OrderCreatedBy")
+  picksCompleted    PickTask[]       @relation("PickedBy")
+  dispatches        Dispatch[]       @relation("DispatchedBy")
+  movements         StockMovement[]  @relation("MovementCreatedBy")
+}
+
+model Warehouse {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  locations       Location[]
+  inboundReceipts InboundReceipt[]
+  outboundOrders  OutboundOrder[]
+  stockMovements  StockMovement[]
+}
+
+enum LocationType {
+  RECEIVING
+  STORAGE
+  PICKING
+  STAGING
+  DISPATCH
+  RETURNS
+}
+
+model Location {
+  id          String       @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse    @relation(fields: [warehouseId], references: [id])
+  code        String // e.g. A-01-02-03 (zone-aisle-rack-level)
+  zone        String?
+  type        LocationType
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+
+  stockMovements     StockMovement[]
+  putawayFrom        PutawayTask[]         @relation("PutawayFromLocation")
+  putawayTo          PutawayTask[]         @relation("PutawayToLocation")
+  receiptLinesStaged InboundReceiptLine[]
+  allocations        Allocation[]
+  returns            Return[]
+
+  @@unique([warehouseId, code])
+}
+
+model Sku {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  description String?
+  uom         String // unit of measure: EA, BOX, PALLET etc.
+  barcode     String?
+  category    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  stockMovements    StockMovement[]
+  receiptLines      InboundReceiptLine[]
+  putawayTasks      PutawayTask[]
+  outboundOrderLine OutboundOrderLine[]
+  allocations       Allocation[]
+  returns           Return[]
+}
+
+// ------------------------------------------------------------
+// INVENTORY LEDGER — the single source of truth for stock
+// ------------------------------------------------------------
+
+enum MovementType {
+  RECEIPT // + stock at a receiving/staging location
+  PUTAWAY_OUT // - stock at staging location
+  PUTAWAY_IN // + stock at storage location
+  PICK // - stock at storage/picking location
+  DISPATCH // - stock at dispatch/staging (order left the building)
+  RETURN_IN // + stock at returns location
+  ADJUSTMENT // +/- manual correction, always requires a reason
+}
+
+model StockMovement {
+  id           String       @id @default(uuid())
+  warehouseId  String
+  warehouse    Warehouse    @relation(fields: [warehouseId], references: [id])
+  skuId        String
+  sku          Sku          @relation(fields: [skuId], references: [id])
+  locationId   String
+  location     Location     @relation(fields: [locationId], references: [id])
+  quantity     Decimal // signed: positive = stock in, negative = stock out
+  movementType MovementType
+  referenceType String // e.g. "InboundReceiptLine", "PickTask", "Dispatch"
+  referenceId   String // id of the row that caused this movement
+  notes         String?
+  createdById   String
+  createdBy     User     @relation("MovementCreatedBy", fields: [createdById], references: [id])
+  createdAt     DateTime @default(now())
+
+  @@index([skuId, locationId])
+  @@index([warehouseId])
+}
+
+// ------------------------------------------------------------
+// INBOUND
+// ------------------------------------------------------------
+
+enum ReceiptStatus {
+  PENDING
+  PARTIALLY_RECEIVED
+  RECEIVED
+  PUTAWAY_COMPLETE
+}
+
+model InboundReceipt {
+  id            String        @id @default(uuid())
+  warehouseId   String
+  warehouse     Warehouse     @relation(fields: [warehouseId], references: [id])
+  referenceNo   String // e.g. supplier ASN / PO number
+  supplierName  String?
+  status        ReceiptStatus @default(PENDING)
+  createdById   String
+  createdBy     User          @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
+  createdAt     DateTime      @default(now())
+
+  lines InboundReceiptLine[]
+}
+
+model InboundReceiptLine {
+  id            String   @id @default(uuid())
+  receiptId     String
+  receipt       InboundReceipt @relation(fields: [receiptId], references: [id])
+  skuId         String
+  sku           Sku      @relation(fields: [skuId], references: [id])
+  expectedQty   Decimal
+  receivedQty   Decimal  @default(0)
+  stagingLocationId String
+  stagingLocation   Location @relation(fields: [stagingLocationId], references: [id])
+
+  putawayTasks PutawayTask[]
+}
+
+// ------------------------------------------------------------
+// PUTAWAY
+// ------------------------------------------------------------
+
+enum PutawayStatus {
+  PENDING
+  COMPLETED
+}
+
+model PutawayTask {
+  id             String        @id @default(uuid())
+  receiptLineId  String
+  receiptLine    InboundReceiptLine @relation(fields: [receiptLineId], references: [id])
+  skuId          String
+  sku            Sku           @relation(fields: [skuId], references: [id])
+  fromLocationId String
+  fromLocation   Location      @relation("PutawayFromLocation", fields: [fromLocationId], references: [id])
+  toLocationId   String
+  toLocation     Location      @relation("PutawayToLocation", fields: [toLocationId], references: [id])
+  quantity       Decimal
+  status         PutawayStatus @default(PENDING)
+  completedById  String?
+  completedBy    User?         @relation("PutawayCompletedBy", fields: [completedById], references: [id])
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+}
+
+// ------------------------------------------------------------
+// OUTBOUND / ALLOCATION / PICKING / DISPATCH
+// ------------------------------------------------------------
+
+enum OrderStatus {
+  CREATED
+  ALLOCATED
+  PICKING
+  PICKED
+  PACKED
+  DISPATCHED
+  CANCELLED
+}
+
+model OutboundOrder {
+  id           String      @id @default(uuid())
+  warehouseId  String
+  warehouse    Warehouse   @relation(fields: [warehouseId], references: [id])
+  orderNo      String      @unique
+  customerName String?
+  status       OrderStatus @default(CREATED)
+  createdById  String
+  createdBy    User        @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  createdAt    DateTime    @default(now())
+
+  lines     OutboundOrderLine[]
+  dispatch  Dispatch?
+}
+
+model OutboundOrderLine {
+  id           String   @id @default(uuid())
+  orderId      String
+  order        OutboundOrder @relation(fields: [orderId], references: [id])
+  skuId        String
+  sku          Sku      @relation(fields: [skuId], references: [id])
+  orderedQty   Decimal
+  allocatedQty Decimal  @default(0)
+  pickedQty    Decimal  @default(0)
+
+  allocations Allocation[]
+}
+
+enum AllocationStatus {
+  ALLOCATED
+  PICKED
+  CANCELLED
+}
+
+model Allocation {
+  id            String           @id @default(uuid())
+  orderLineId   String
+  orderLine     OutboundOrderLine @relation(fields: [orderLineId], references: [id])
+  skuId         String
+  sku           Sku              @relation(fields: [skuId], references: [id])
+  locationId    String
+  location      Location         @relation(fields: [locationId], references: [id])
+  quantity      Decimal
+  status        AllocationStatus @default(ALLOCATED)
+  createdAt     DateTime         @default(now())
+
+  pickTask PickTask?
+}
+
+enum PickStatus {
+  PENDING
+  PICKED
+}
+
+model PickTask {
+  id           String     @id @default(uuid())
+  allocationId String     @unique
+  allocation   Allocation @relation(fields: [allocationId], references: [id])
+  pickerId     String?
+  picker       User?      @relation("PickedBy", fields: [pickerId], references: [id])
+  quantity     Decimal
+  status       PickStatus @default(PENDING)
+  pickedAt     DateTime?
+  createdAt    DateTime   @default(now())
+}
+
+model Dispatch {
+  id            String        @id @default(uuid())
+  orderId       String        @unique
+  order         OutboundOrder @relation(fields: [orderId], references: [id])
+  dispatchedById String
+  dispatchedBy   User         @relation("DispatchedBy", fields: [dispatchedById], references: [id])
+  carrier        String?
+  trackingNo     String?
+  dispatchedAt   DateTime     @default(now())
+}
+
+// ------------------------------------------------------------
+// RETURNS
+// ------------------------------------------------------------
+
+enum ReturnReason {
+  DAMAGED
+  WRONG_ITEM
+  CUSTOMER_CHANGED_MIND
+  QUALITY_ISSUE
+  OTHER
+}
+
+model Return {
+  id              String       @id @default(uuid())
+  originalOrderNo String? // reference to the outbound order, kept as text for simplicity in MVP
+  skuId           String
+  sku             Sku          @relation(fields: [skuId], references: [id])
+  quantity        Decimal
+  reason          ReturnReason
+  locationId      String
+  location        Location     @relation(fields: [locationId], references: [id])
+  createdAt       DateTime     @default(now())
+}
