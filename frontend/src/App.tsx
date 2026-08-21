@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import SkusPage from './SkusPage';
 
 type Warehouse = {
   id: string;
@@ -7,7 +8,7 @@ type Warehouse = {
   address?: string;
 };
 
-function App() {
+function WarehousesPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
@@ -39,31 +40,12 @@ function App() {
   return (
     <div style={{ maxWidth: 600, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Warehouses</h1>
-
       <form onSubmit={handleSubmit} style={{ marginBottom: 24 }}>
-        <input
-          placeholder="Code (e.g. WH1)"
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          required
-          style={{ marginRight: 8 }}
-        />
-        <input
-          placeholder="Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-          style={{ marginRight: 8 }}
-        />
-        <input
-          placeholder="Address"
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          style={{ marginRight: 8 }}
-        />
+        <input placeholder="Code (e.g. WH1)" value={code} onChange={(e) => setCode(e.target.value)} required style={{ marginRight: 8 }} />
+        <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required style={{ marginRight: 8 }} />
+        <input placeholder="Address" value={address} onChange={(e) => setAddress(e.target.value)} style={{ marginRight: 8 }} />
         <button type="submit">Add Warehouse</button>
       </form>
-
       <ul>
         {warehouses.map((w) => (
           <li key={w.id}>
@@ -71,6 +53,24 @@ function App() {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function App() {
+  const [tab, setTab] = useState<'warehouses' | 'skus'>('warehouses');
+
+  return (
+    <div>
+      <nav style={{ display: 'flex', gap: 12, padding: 16, borderBottom: '1px solid #ccc', fontFamily: 'sans-serif' }}>
+        <button onClick={() => setTab('warehouses')} style={{ fontWeight: tab === 'warehouses' ? 'bold' : 'normal' }}>
+          Warehouses
+        </button>
+        <button onClick={() => setTab('skus')} style={{ fontWeight: tab === 'skus' ? 'bold' : 'normal' }}>
+          SKUs
+        </button>
+      </nav>
+      {tab === 'warehouses' ? <WarehousesPage /> : <SkusPage />}
     </div>
   );
 }

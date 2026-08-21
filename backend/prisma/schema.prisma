@@ -77,8 +77,8 @@ model Location {
   createdAt   DateTime     @default(now())
 
   stockMovements     StockMovement[]
-  putawayFrom        PutawayTask[]         @relation("PutawayFromLocation")
-  putawayTo          PutawayTask[]         @relation("PutawayToLocation")
+  putawayFrom        PutawayTask[]        @relation("PutawayFromLocation")
+  putawayTo          PutawayTask[]        @relation("PutawayToLocation")
   receiptLinesStaged InboundReceiptLine[]
   allocations        Allocation[]
   returns            Return[]
@@ -86,25 +86,66 @@ model Location {
   @@unique([warehouseId, code])
 }
 
-model Sku {
-  id          String   @id @default(uuid())
-  code        String   @unique
-  name        String
-  description String?
-  uom         String // unit of measure: EA, BOX, PALLET etc.
-  barcode     String?
-  category    String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
+  model Sku { 
+    id String @id @default(uuid()) 
+    code String @unique 
+    description String 
+    category String @default("Uncategorized") 
+    subCategory String? 
+    baseUom String 
+    hsnCode String 
+    storageCondition String @default("AMBIENT") 
+    batchTracked Boolean @default(false) 
+    shelfLifeTracked Boolean @default(false) 
+    shelfLifeDays Int? 
+    isActive Boolean @default(true) 
+    weightUom String? 
+    grossWeight Decimal? 
+    isHazmat Boolean @default(false) 
+    hazmatClass String? 
+    hasUniqueBarcode Boolean @default(false) 
+    abcClass String? 
+    currency String? 
+    standardCost Decimal? 
+    moq Decimal? 
+    createdAt DateTime @default(now()) 
+    storageUnits SkuStorageUnit[] 
+    barcodes SkuBarcode[] 
+    asParent SkuRelationship[] @relation("ParentSku") 
+    asChild SkuRelationship[] @relation("ChildSku") 
+    stockMovements StockMovement[] 
+    receiptLines InboundReceiptLine[] 
+    putawayTasks PutawayTask[] 
+    outboundOrderLine OutboundOrderLine[] 
+    allocations Allocation[] 
+    returns Return[]
+    }
 
-  stockMovements    StockMovement[]
-  receiptLines      InboundReceiptLine[]
-  putawayTasks      PutawayTask[]
-  outboundOrderLine OutboundOrderLine[]
-  allocations       Allocation[]
-  returns           Return[]
+model SkuStorageUnit     {
+  id String @id @default(uuid())
+  skuId String
+  sku Sku @relation(fields: [skuId], references: [id])
+  unitType String
+  qtyInBaseUom Decimal
+  isPreferred Boolean @default(false)
 }
 
+model SkuBarcode {
+  id String @id @default(uuid())
+  skuId String
+  sku Sku @relation(fields: [skuId], references: [id])
+  barcode String
+  type String
+}
+
+model SkuRelationship {
+  id String @id @default(uuid())
+  parentSkuId String
+  parentSku Sku @relation("ParentSku", fields: [parentSkuId], references: [id])
+  childSkuId String
+  childSku Sku @relation("ChildSku", fields: [childSkuId], references: [id])
+  quantity Decimal
+}
 // ------------------------------------------------------------
 // INVENTORY LEDGER — the single source of truth for stock
 // ------------------------------------------------------------
@@ -120,21 +161,21 @@ enum MovementType {
 }
 
 model StockMovement {
-  id           String       @id @default(uuid())
-  warehouseId  String
-  warehouse    Warehouse    @relation(fields: [warehouseId], references: [id])
-  skuId        String
-  sku          Sku          @relation(fields: [skuId], references: [id])
-  locationId   String
-  location     Location     @relation(fields: [locationId], references: [id])
-  quantity     Decimal // signed: positive = stock in, negative = stock out
-  movementType MovementType
+  id            String       @id @default(uuid())
+  warehouseId   String
+  warehouse     Warehouse    @relation(fields: [warehouseId], references: [id])
+  skuId         String
+  sku           Sku          @relation(fields: [skuId], references: [id])
+  locationId    String
+  location      Location     @relation(fields: [locationId], references: [id])
+  quantity      Decimal // signed: positive = stock in, negative = stock out
+  movementType  MovementType
   referenceType String // e.g. "InboundReceiptLine", "PickTask", "Dispatch"
   referenceId   String // id of the row that caused this movement
   notes         String?
   createdById   String
-  createdBy     User     @relation("MovementCreatedBy", fields: [createdById], references: [id])
-  createdAt     DateTime @default(now())
+  createdBy     User         @relation("MovementCreatedBy", fields: [createdById], references: [id])
+  createdAt     DateTime     @default(now())
 
   @@index([skuId, locationId])
   @@index([warehouseId])
@@ -152,29 +193,29 @@ enum ReceiptStatus {
 }
 
 model InboundReceipt {
-  id            String        @id @default(uuid())
-  warehouseId   String
-  warehouse     Warehouse     @relation(fields: [warehouseId], references: [id])
-  referenceNo   String // e.g. supplier ASN / PO number
-  supplierName  String?
-  status        ReceiptStatus @default(PENDING)
-  createdById   String
-  createdBy     User          @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
-  createdAt     DateTime      @default(now())
+  id           String        @id @default(uuid())
+  warehouseId  String
+  warehouse    Warehouse     @relation(fields: [warehouseId], references: [id])
+  referenceNo  String // e.g. supplier ASN / PO number
+  supplierName String?
+  status       ReceiptStatus @default(PENDING)
+  createdById  String
+  createdBy    User          @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
+  createdAt    DateTime      @default(now())
 
   lines InboundReceiptLine[]
 }
 
 model InboundReceiptLine {
-  id            String   @id @default(uuid())
-  receiptId     String
-  receipt       InboundReceipt @relation(fields: [receiptId], references: [id])
-  skuId         String
-  sku           Sku      @relation(fields: [skuId], references: [id])
-  expectedQty   Decimal
-  receivedQty   Decimal  @default(0)
+  id                String         @id @default(uuid())
+  receiptId         String
+  receipt           InboundReceipt @relation(fields: [receiptId], references: [id])
+  skuId             String
+  sku               Sku            @relation(fields: [skuId], references: [id])
+  expectedQty       Decimal
+  receivedQty       Decimal        @default(0)
   stagingLocationId String
-  stagingLocation   Location @relation(fields: [stagingLocationId], references: [id])
+  stagingLocation   Location       @relation(fields: [stagingLocationId], references: [id])
 
   putawayTasks PutawayTask[]
 }
@@ -189,21 +230,21 @@ enum PutawayStatus {
 }
 
 model PutawayTask {
-  id             String        @id @default(uuid())
+  id             String             @id @default(uuid())
   receiptLineId  String
   receiptLine    InboundReceiptLine @relation(fields: [receiptLineId], references: [id])
   skuId          String
-  sku            Sku           @relation(fields: [skuId], references: [id])
+  sku            Sku                @relation(fields: [skuId], references: [id])
   fromLocationId String
-  fromLocation   Location      @relation("PutawayFromLocation", fields: [fromLocationId], references: [id])
+  fromLocation   Location           @relation("PutawayFromLocation", fields: [fromLocationId], references: [id])
   toLocationId   String
-  toLocation     Location      @relation("PutawayToLocation", fields: [toLocationId], references: [id])
+  toLocation     Location           @relation("PutawayToLocation", fields: [toLocationId], references: [id])
   quantity       Decimal
-  status         PutawayStatus @default(PENDING)
+  status         PutawayStatus      @default(PENDING)
   completedById  String?
-  completedBy    User?         @relation("PutawayCompletedBy", fields: [completedById], references: [id])
+  completedBy    User?              @relation("PutawayCompletedBy", fields: [completedById], references: [id])
   completedAt    DateTime?
-  createdAt      DateTime      @default(now())
+  createdAt      DateTime           @default(now())
 }
 
 // ------------------------------------------------------------
@@ -231,19 +272,19 @@ model OutboundOrder {
   createdBy    User        @relation("OrderCreatedBy", fields: [createdById], references: [id])
   createdAt    DateTime    @default(now())
 
-  lines     OutboundOrderLine[]
-  dispatch  Dispatch?
+  lines    OutboundOrderLine[]
+  dispatch Dispatch?
 }
 
 model OutboundOrderLine {
-  id           String   @id @default(uuid())
+  id           String        @id @default(uuid())
   orderId      String
   order        OutboundOrder @relation(fields: [orderId], references: [id])
   skuId        String
-  sku          Sku      @relation(fields: [skuId], references: [id])
+  sku          Sku           @relation(fields: [skuId], references: [id])
   orderedQty   Decimal
-  allocatedQty Decimal  @default(0)
-  pickedQty    Decimal  @default(0)
+  allocatedQty Decimal       @default(0)
+  pickedQty    Decimal       @default(0)
 
   allocations Allocation[]
 }
@@ -255,16 +296,16 @@ enum AllocationStatus {
 }
 
 model Allocation {
-  id            String           @id @default(uuid())
-  orderLineId   String
-  orderLine     OutboundOrderLine @relation(fields: [orderLineId], references: [id])
-  skuId         String
-  sku           Sku              @relation(fields: [skuId], references: [id])
-  locationId    String
-  location      Location         @relation(fields: [locationId], references: [id])
-  quantity      Decimal
-  status        AllocationStatus @default(ALLOCATED)
-  createdAt     DateTime         @default(now())
+  id          String            @id @default(uuid())
+  orderLineId String
+  orderLine   OutboundOrderLine @relation(fields: [orderLineId], references: [id])
+  skuId       String
+  sku         Sku               @relation(fields: [skuId], references: [id])
+  locationId  String
+  location    Location          @relation(fields: [locationId], references: [id])
+  quantity    Decimal
+  status      AllocationStatus  @default(ALLOCATED)
+  createdAt   DateTime          @default(now())
 
   pickTask PickTask?
 }
@@ -287,14 +328,14 @@ model PickTask {
 }
 
 model Dispatch {
-  id            String        @id @default(uuid())
-  orderId       String        @unique
-  order         OutboundOrder @relation(fields: [orderId], references: [id])
+  id             String        @id @default(uuid())
+  orderId        String        @unique
+  order          OutboundOrder @relation(fields: [orderId], references: [id])
   dispatchedById String
-  dispatchedBy   User         @relation("DispatchedBy", fields: [dispatchedById], references: [id])
+  dispatchedBy   User          @relation("DispatchedBy", fields: [dispatchedById], references: [id])
   carrier        String?
   trackingNo     String?
-  dispatchedAt   DateTime     @default(now())
+  dispatchedAt   DateTime      @default(now())
 }
 
 // ------------------------------------------------------------
