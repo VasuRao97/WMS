@@ -12,7 +12,7 @@ const BARCODE_TYPES = ['EACH', 'CASE', 'OTHER'];
 export class SkusService {
   constructor(private prisma: PrismaService) {}
 
-  async create(data: any) {
+  private validateSkuData(data: any): string[] {
     const errors: string[] = [];
 
     if (!data.code || !/^[A-Za-z0-9-]{1,30}$/.test(data.code)) {
@@ -26,7 +26,7 @@ export class SkusService {
     } else if (!BASE_UOM_VALUES.includes(data.baseUom)) {
       errors.push(`Base UOM must be one of: ${BASE_UOM_VALUES.join(', ')}`);
     }
-    if (!data.hsnCode || !/^\d{4}(\d{2})?(\d{2})?$/.test(data.hsnCode)) {
+    if (!data.hsnCode || !/^\d{4}(\d{2})?(\d{2})?$/.test(String(data.hsnCode))) {
       errors.push('HSN Code is required: numeric only, 4, 6, or 8 digits.');
     }
     const storageCondition = data.storageCondition || 'AMBIENT';
@@ -42,7 +42,7 @@ export class SkusService {
     if (data.weightUom && !WEIGHT_UOM_VALUES.includes(data.weightUom)) {
       errors.push(`Weight UOM must be one of: ${WEIGHT_UOM_VALUES.join(', ')}`);
     }
-    if (data.grossWeight !== undefined && data.grossWeight !== null && data.grossWeight <= 0) {
+    if (data.grossWeight !== undefined && data.grossWeight !== null && data.grossWeight !== '' && Number(data.grossWeight) <= 0) {
       errors.push('Gross Weight must be a positive number.');
     }
     if (data.isHazmat && !data.hazmatClass) {
@@ -51,10 +51,10 @@ export class SkusService {
     if (data.abcClass && !ABC_VALUES.includes(data.abcClass)) {
       errors.push(`ABC Classification must be one of: ${ABC_VALUES.join(', ')}`);
     }
-    if (data.standardCost !== undefined && data.standardCost !== null && data.standardCost < 0) {
+    if (data.standardCost !== undefined && data.standardCost !== null && data.standardCost !== '' && Number(data.standardCost) < 0) {
       errors.push('Standard Cost cannot be negative.');
     }
-    if (data.moq !== undefined && data.moq !== null && data.moq <= 0) {
+    if (data.moq !== undefined && data.moq !== null && data.moq !== '' && Number(data.moq) <= 0) {
       errors.push('MOQ must be a positive number.');
     }
 
@@ -78,19 +78,54 @@ export class SkusService {
 
     if (data.barcodes && data.barcodes.length > 0) {
       for (const bc of data.barcodes) {
-        if (!bc.barcode) {
-          errors.push('Barcode value cannot be empty.');
-        }
         if (!BARCODE_TYPES.includes(bc.type)) {
           errors.push(`Barcode type must be one of: ${BARCODE_TYPES.join(', ')}`);
         }
       }
-      const barcodeValues = data.barcodes.map((b: any) => b.barcode);
-      const existing = await this.prisma.skuBarcode.findMany({
-        where: { barcode: { in: barcodeValues } },
-      });
-      if (existing.length > 0) {
-        errors.push(`Barcode(s) already in use: ${existing.map((e) => e.barcode).join(', ')}`);
+    }
+
+    return errors;
+  }
+
+  private buildCreateData(data: any, storageCondition: string) {
+    return {
+      code: data.code.toUpperCase(),
+      description: data.description,
+      category: data.category || 'Uncategorized',
+      subCategory: data.subCategory || undefined,
+      baseUom: data.baseUom,
+      hsnCode: String(data.hsnCode),
+      storageCondition,
+      batchTracked: !!data.batchTracked,
+      shelfLifeTracked: !!data.shelfLifeTracked,
+      shelfLifeDays: data.shelfLifeDays || undefined,
+      isActive: data.isActive !== undefined ? !!data.isActive : true,
+      weightUom: data.weightUom || undefined,
+      grossWeight: data.grossWeight || undefined,
+      isHazmat: !!data.isHazmat,
+      hazmatClass: data.hazmatClass || undefined,
+      hasUniqueBarcode: !!data.hasUniqueBarcode,
+      abcClass: data.abcClass || undefined,
+      currency: data.currency || undefined,
+      standardCost: data.standardCost || undefined,
+      moq: data.moq || undefined,
+      storageUnits: { create: data.storageUnits },
+      barcodes: data.barcodes && data.barcodes.length ? { create: data.barcodes } : undefined,
+    };
+  }
+
+  async create(data: any) {
+    const errors = this.validateSkuData(data);
+
+    if (data.barcodes && data.barcodes.length > 0) {
+      const barcodeValues = data.barcodes.map((b: any) => b.barcode).filter(Boolean);
+      if (barcodeValues.length) {
+        const existing = await this.prisma.skuBarcode.findMany({
+          where: { barcode: { in: barcodeValues } },
+        });
+        if (existing.length > 0) {
+          errors.push(`Barcode(s) already in use: ${existing.map((e) => e.barcode).join(', ')}`);
+        }
       }
     }
 
@@ -98,31 +133,9 @@ export class SkusService {
       throw new BadRequestException(errors);
     }
 
+    const storageCondition = data.storageCondition || 'AMBIENT';
     return this.prisma.sku.create({
-      data: {
-        code: data.code.toUpperCase(),
-        description: data.description,
-        category: data.category || 'Uncategorized',
-        subCategory: data.subCategory,
-        baseUom: data.baseUom,
-        hsnCode: data.hsnCode,
-        storageCondition: storageCondition,
-        batchTracked: !!data.batchTracked,
-        shelfLifeTracked: !!data.shelfLifeTracked,
-        shelfLifeDays: data.shelfLifeDays,
-        isActive: data.isActive !== undefined ? data.isActive : true,
-        weightUom: data.weightUom,
-        grossWeight: data.grossWeight,
-        isHazmat: !!data.isHazmat,
-        hazmatClass: data.hazmatClass,
-        hasUniqueBarcode: !!data.hasUniqueBarcode,
-        abcClass: data.abcClass,
-        currency: data.currency,
-        standardCost: data.standardCost,
-        moq: data.moq,
-        storageUnits: { create: data.storageUnits },
-        barcodes: data.barcodes ? { create: data.barcodes } : undefined,
-      },
+      data: this.buildCreateData(data, storageCondition),
       include: { storageUnits: true, barcodes: true },
     });
   }
@@ -131,5 +144,73 @@ export class SkusService {
     return this.prisma.sku.findMany({
       include: { storageUnits: true, barcodes: true },
     });
+  }
+
+  async bulkImport(rows: any[]) {
+    const results: any[] = [];
+    const codesSeenInFile = new Set<string>();
+    const barcodesSeenInFile = new Set<string>();
+
+    for (let i = 0; i < rows.length; i++) {
+      const rowNumber = i + 2; // +2 because row 1 is the header, and Excel is 1-indexed
+      const data = rows[i];
+      const errors = this.validateSkuData(data);
+
+      const upperCode = data.code ? String(data.code).toUpperCase() : '';
+      if (upperCode && codesSeenInFile.has(upperCode)) {
+        errors.push(`Duplicate SKU Code within this file: ${upperCode}`);
+      }
+
+      if (data.barcodes && data.barcodes.length > 0) {
+        for (const bc of data.barcodes) {
+          if (bc.barcode && barcodesSeenInFile.has(bc.barcode)) {
+            errors.push(`Duplicate Barcode within this file: ${bc.barcode}`);
+          }
+        }
+      }
+
+      if (errors.length === 0 && upperCode) {
+        const existingCode = await this.prisma.sku.findUnique({ where: { code: upperCode } });
+        if (existingCode) {
+          errors.push(`SKU Code already exists in the database: ${upperCode}`);
+        }
+      }
+
+      if (errors.length === 0 && data.barcodes && data.barcodes.length > 0) {
+        const barcodeValues = data.barcodes.map((b: any) => b.barcode).filter(Boolean);
+        if (barcodeValues.length) {
+          const existingBarcodes = await this.prisma.skuBarcode.findMany({
+            where: { barcode: { in: barcodeValues } },
+          });
+          if (existingBarcodes.length > 0) {
+            errors.push(`Barcode(s) already exist in the database: ${existingBarcodes.map((e) => e.barcode).join(', ')}`);
+          }
+        }
+      }
+
+      if (errors.length > 0) {
+        results.push({ row: rowNumber, code: data.code || '(blank)', status: 'error', errors });
+        continue;
+      }
+
+      try {
+        const storageCondition = data.storageCondition || 'AMBIENT';
+        await this.prisma.sku.create({ data: this.buildCreateData(data, storageCondition) });
+        results.push({ row: rowNumber, code: upperCode, status: 'success' });
+        codesSeenInFile.add(upperCode);
+        if (data.barcodes) {
+          data.barcodes.forEach((b: any) => b.barcode && barcodesSeenInFile.add(b.barcode));
+        }
+      } catch (err: any) {
+        results.push({ row: rowNumber, code: data.code || '(blank)', status: 'error', errors: [err.message || 'Unknown error'] });
+      }
+    }
+
+    return {
+      totalRows: rows.length,
+      successCount: results.filter((r) => r.status === 'success').length,
+      failCount: results.filter((r) => r.status === 'error').length,
+      results,
+    };
   }
 }

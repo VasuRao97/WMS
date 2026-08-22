@@ -1,5 +1,19 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import * as XLSX from 'xlsx';
 import { SkusService } from './skus.service';
+
+function toBool(val: any): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') return val.trim().toUpperCase() === 'TRUE';
+  return false;
+}
+
+function toNumberOrUndefined(val: any): number | undefined {
+  if (val === undefined || val === null || val === '') return undefined;
+  const n = Number(val);
+  return isNaN(n) ? undefined : n;
+}
 
 @Controller('skus')
 export class SkusController {
@@ -13,5 +27,67 @@ export class SkusController {
   @Get()
   findAll() {
     return this.skusService.findAll();
+  }
+
+  @Post('import')
+  @UseInterceptors(FileInterceptor('file'))
+  async importFile(@UploadedFile() file: Express.Multer.File) {
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    const rows = rawRows.map((r) => {
+      const storageUnits: any[] = [];
+      if (r['Storage Unit 1 Type']) {
+        storageUnits.push({
+          unitType: String(r['Storage Unit 1 Type']).toUpperCase(),
+          qtyInBaseUom: toNumberOrUndefined(r['Storage Unit 1 Qty']),
+          isPreferred: toBool(r['Storage Unit 1 Preferred']),
+        });
+      }
+      if (r['Storage Unit 2 Type']) {
+        storageUnits.push({
+          unitType: String(r['Storage Unit 2 Type']).toUpperCase(),
+          qtyInBaseUom: toNumberOrUndefined(r['Storage Unit 2 Qty']),
+          isPreferred: toBool(r['Storage Unit 2 Preferred']),
+        });
+      }
+
+      const barcodes: any[] = [];
+      if (r['Barcode 1 Value']) {
+        barcodes.push({ barcode: String(r['Barcode 1 Value']), type: String(r['Barcode 1 Type']).toUpperCase() || 'EACH' });
+      }
+      if (r['Barcode 2 Value']) {
+        barcodes.push({ barcode: String(r['Barcode 2 Value']), type: String(r['Barcode 2 Type']).toUpperCase() || 'EACH' });
+      }
+
+      return {
+        code: r['SKU Code'] ? String(r['SKU Code']).trim() : '',
+        description: r['Description'] ? String(r['Description']).trim() : '',
+        category: r['Category'] ? String(r['Category']).trim() : '',
+        subCategory: r['Sub Category'] ? String(r['Sub Category']).trim() : undefined,
+        baseUom: r['Base UOM'] ? String(r['Base UOM']).toUpperCase().trim() : '',
+        hsnCode: r['HSN Code'] ? String(r['HSN Code']).trim() : '',
+        storageCondition: r['Storage Condition'] ? String(r['Storage Condition']).toUpperCase().trim() : 'AMBIENT',
+        batchTracked: toBool(r['Batch Tracked']),
+        shelfLifeTracked: toBool(r['Shelf Life Tracked']),
+        shelfLifeDays: toNumberOrUndefined(r['Shelf Life Days']),
+        isActive: r['Active'] === '' ? true : toBool(r['Active']),
+        weightUom: r['Weight UOM'] ? String(r['Weight UOM']).toUpperCase().trim() : undefined,
+        grossWeight: toNumberOrUndefined(r['Gross Weight']),
+        isHazmat: toBool(r['Hazmat']),
+        hazmatClass: r['Hazmat Class'] ? String(r['Hazmat Class']).trim() : undefined,
+        hasUniqueBarcode: toBool(r['Has Unique Barcode']),
+        abcClass: r['ABC Class'] ? String(r['ABC Class']).toUpperCase().trim() : undefined,
+        currency: r['Currency'] ? String(r['Currency']).trim() : undefined,
+        standardCost: toNumberOrUndefined(r['Standard Cost']),
+        moq: toNumberOrUndefined(r['MOQ']),
+        storageUnits,
+        barcodes,
+      };
+    });
+
+    return this.skusService.bulkImport(rows);
   }
 }

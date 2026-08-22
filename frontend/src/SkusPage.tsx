@@ -17,15 +17,55 @@ type Sku = {
   barcodes: Barcode[];
 };
 
+type ImportResultRow = {
+  row: number;
+  code: string;
+  status: 'success' | 'error';
+  errors?: string[];
+};
+
+type ImportSummary = {
+  totalRows: number;
+  successCount: number;
+  failCount: number;
+  results: ImportResultRow[];
+};
+
 function SkusPage() {
   const [skus, setSkus] = useState<Sku[]>([]);
   const [search, setSearch] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportSummary | null>(null);
 
-  useEffect(() => {
+  const loadSkus = () => {
     fetch('http://localhost:3000/skus')
       .then((res) => res.json())
       .then((data) => setSkus(data));
+  };
+
+  useEffect(() => {
+    loadSkus();
   }, []);
+
+  const handleImport = async () => {
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const res = await fetch('http://localhost:3000/skus/import', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+    setImportResult(data);
+    setImporting(false);
+    setFile(null);
+    loadSkus();
+  };
 
   const filtered = skus.filter(
     (s) =>
@@ -37,6 +77,35 @@ function SkusPage() {
   return (
     <div style={{ maxWidth: 900, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>SKU Master</h1>
+
+      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+        <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
+        <input
+          type="file"
+          accept=".xlsx"
+          onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)}
+        />
+        <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
+          {importing ? 'Importing...' : 'Import'}
+        </button>
+
+        {importResult && (
+          <div style={{ marginTop: 16 }}>
+            <p>
+              <strong>{importResult.successCount}</strong> succeeded,{' '}
+              <strong>{importResult.failCount}</strong> failed, out of{' '}
+              {importResult.totalRows} rows.
+            </p>
+            <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
+              {importResult.results.map((r) => (
+                <li key={r.row} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
+                  Row {r.row} ({r.code}): {r.status === 'success' ? 'Imported' : r.errors?.join('; ')}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
 
       <input
         placeholder="Search by code, description, or category..."
