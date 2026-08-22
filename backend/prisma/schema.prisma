@@ -19,12 +19,11 @@ datasource db {
 // ------------------------------------------------------------
 
 enum Role {
-  ADMIN
   SUPER_ADMIN
+  COMPANY_ADMIN
   WAREHOUSE_MANAGER
-  RECEIVER
-  PICKER
-  DISPATCHER
+  WAREHOUSE_SUPERVISOR
+  OPERATOR
 }
 
 model Company {
@@ -39,15 +38,16 @@ model Company {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String
-  name         String
-  role         Role
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  companyId    String?
-  company      Company? @relation(fields: [companyId], references: [id])
+  id                 String      @id @default(uuid())
+  email              String      @unique
+  passwordHash       String
+  name               String
+  role               Role
+  isActive           Boolean     @default(true)
+  createdAt          DateTime    @default(now())
+  companyId          String?
+  company            Company?    @relation(fields: [companyId], references: [id])
+  assignedWarehouses Warehouse[]
 
   receiptsCreated   InboundReceipt[] @relation("ReceiptCreatedBy")
   putawaysCompleted PutawayTask[]    @relation("PutawayCompletedBy")
@@ -58,15 +58,16 @@ model User {
 }
 
 model Warehouse {
-  id        String   @id @default(uuid())
-  code      String   @unique
-  name      String
-  address   String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  companyId String
-  company   Company  @relation(fields: [companyId], references: [id])
-  erpCode   String?
+  id            String   @id @default(uuid())
+  code          String   @unique
+  name          String
+  address       String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id])
+  erpCode       String?
+  assignedUsers User[]
 
   locations       Location[]
   inboundReceipts InboundReceipt[]
