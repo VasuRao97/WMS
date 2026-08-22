@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import SkusPage from './SkusPage';
+import LoginPage from './LoginPage';
 
 type Warehouse = {
   id: string;
@@ -8,6 +9,11 @@ type Warehouse = {
   address?: string;
 };
 
+function authHeaders() {
+  const token = localStorage.getItem('token');
+  return { Authorization: `Bearer ${token}` };
+}
+
 function WarehousesPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [code, setCode] = useState('');
@@ -15,7 +21,7 @@ function WarehousesPage() {
   const [address, setAddress] = useState('');
 
   const loadWarehouses = () => {
-    fetch('http://localhost:3000/warehouses')
+    fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
       .then((res) => res.json())
       .then((data) => setWarehouses(data));
   };
@@ -28,7 +34,7 @@ function WarehousesPage() {
     e.preventDefault();
     await fetch('http://localhost:3000/warehouses', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ code, name, address }),
     });
     setCode('');
@@ -59,16 +65,42 @@ function WarehousesPage() {
 
 function App() {
   const [tab, setTab] = useState<'warehouses' | 'skus'>('warehouses');
+  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('token'));
+  const [user, setUser] = useState<any>(
+    localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
+  );
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setIsLoggedIn(false);
+    setUser(null);
+  };
+
+  if (!isLoggedIn) {
+    return (
+      <LoginPage
+        onLoginSuccess={() => {
+          setIsLoggedIn(true);
+          setUser(JSON.parse(localStorage.getItem('user')!));
+        }}
+      />
+    );
+  }
 
   return (
     <div>
-      <nav style={{ display: 'flex', gap: 12, padding: 16, borderBottom: '1px solid #ccc', fontFamily: 'sans-serif' }}>
+      <nav style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 16, borderBottom: '1px solid #ccc', fontFamily: 'sans-serif' }}>
         <button onClick={() => setTab('warehouses')} style={{ fontWeight: tab === 'warehouses' ? 'bold' : 'normal' }}>
           Warehouses
         </button>
         <button onClick={() => setTab('skus')} style={{ fontWeight: tab === 'skus' ? 'bold' : 'normal' }}>
           SKUs
         </button>
+        <span style={{ marginLeft: 'auto', fontSize: 14 }}>
+          {user?.email} ({user?.role})
+        </span>
+        <button onClick={handleLogout}>Log Out</button>
       </nav>
       {tab === 'warehouses' ? <WarehousesPage /> : <SkusPage />}
     </div>

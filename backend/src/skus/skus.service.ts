@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 const BASE_UOM_VALUES = ['PIECE', 'PACK', 'CASE', 'PALLET', 'BOX'];
@@ -14,7 +14,6 @@ export class SkusService {
 
   private validateSkuData(data: any): string[] {
     const errors: string[] = [];
-
     if (!data.code || !/^[A-Za-z0-9-]{1,30}$/.test(data.code)) {
       errors.push('SKU Code is required: alphanumeric/hyphens only, max 30 characters.');
     }
@@ -83,11 +82,10 @@ export class SkusService {
         }
       }
     }
-
     return errors;
   }
 
-  private buildCreateData(data: any, storageCondition: string) {
+  private buildCreateData(data: any, storageCondition: string, companyId: string) {
     return {
       code: data.code.toUpperCase(),
       description: data.description,
@@ -109,44 +107,59 @@ export class SkusService {
       currency: data.currency || undefined,
       standardCost: data.standardCost || undefined,
       moq: data.moq || undefined,
+      company: { connect: { id: companyId } },
       storageUnits: { create: data.storageUnits },
       barcodes: data.barcodes && data.barcodes.length ? { create: data.barcodes } : undefined,
     };
   }
 
-  async create(data: any) {
-    const errors = this.validateSkuData(data);
+  private companyFilter(user: any) {
+    return user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
+  }
 
+  private async assertSkuAccess(id: string, user: any) {
+    const sku = await this.prisma.sku.findUnique({ where: { id } });
+    if (!sku) throw new NotFoundException('SKU not found.');
+    if (user.role !== 'SUPER_ADMIN' && sku.companyId !== user.companyId) {
+      throw new ForbiddenException('You do not have access to this SKU.');
+    }
+    return sku;
+  }
+
+  async create(data: any, user: any) {
+    if (!user.companyId) {
+      throw new ForbiddenException('Super admin accounts cannot create SKUs directly — log in as a company admin instead.');
+    }
+    const errors = this.validateSkuData(data);
     if (data.barcodes && data.barcodes.length > 0) {
       const barcodeValues = data.barcodes.map((b: any) => b.barcode).filter(Boolean);
       if (barcodeValues.length) {
-        const existing = await this.prisma.skuBarcode.findMany({
-          where: { barcode: { in: barcodeValues } },
-        });
+        const existing = await this.prisma.skuBarcode.findMany({ where: { barcode: { in: barcodeValues } } });
         if (existing.length > 0) {
           errors.push(`Barcode(s) already in use: ${existing.map((e) => e.barcode).join(', ')}`);
         }
       }
     }
-
-    if (errors.length > 0) {
-      throw new BadRequestException(errors);
-    }
+    if (errors.length > 0) throw new BadRequestException(errors);
 
     const storageCondition = data.storageCondition || 'AMBIENT';
     return this.prisma.sku.create({
-      data: this.buildCreateData(data, storageCondition),
+      data: this.buildCreateData(data, storageCondition, user.companyId),
       include: { storageUnits: true, barcodes: true },
     });
   }
 
-  findAll() {
+  findAll(user: any) {
     return this.prisma.sku.findMany({
+      where: this.companyFilter(user),
       include: { storageUnits: true, barcodes: true },
     });
   }
 
-  async bulkImport(rows: any[]) {
+  async bulkImport(rows: any[], user: any) {
+    if (!user.companyId) {
+      throw new ForbiddenException('Super admin accounts cannot import SKUs directly — log in as a company admin instead.');
+    }
     const results: any[] = [];
     const codesSeenInFile = new Set<string>();
     const barcodesSeenInFile = new Set<string>();
@@ -155,12 +168,10 @@ export class SkusService {
       const rowNumber = i + 2;
       const data = rows[i];
       const errors = this.validateSkuData(data);
-
       const upperCode = data.code ? String(data.code).toUpperCase() : '';
       if (upperCode && codesSeenInFile.has(upperCode)) {
         errors.push(`Duplicate SKU Code within this file: ${upperCode}`);
       }
-
       if (data.barcodes && data.barcodes.length > 0) {
         for (const bc of data.barcodes) {
           if (bc.barcode && barcodesSeenInFile.has(bc.barcode)) {
@@ -168,39 +179,29 @@ export class SkusService {
           }
         }
       }
-
       if (errors.length === 0 && upperCode) {
         const existingCode = await this.prisma.sku.findUnique({ where: { code: upperCode } });
-        if (existingCode) {
-          errors.push(`SKU Code already exists in the database: ${upperCode}`);
-        }
+        if (existingCode) errors.push(`SKU Code already exists in the database: ${upperCode}`);
       }
-
       if (errors.length === 0 && data.barcodes && data.barcodes.length > 0) {
         const barcodeValues = data.barcodes.map((b: any) => b.barcode).filter(Boolean);
         if (barcodeValues.length) {
-          const existingBarcodes = await this.prisma.skuBarcode.findMany({
-            where: { barcode: { in: barcodeValues } },
-          });
+          const existingBarcodes = await this.prisma.skuBarcode.findMany({ where: { barcode: { in: barcodeValues } } });
           if (existingBarcodes.length > 0) {
             errors.push(`Barcode(s) already exist in the database: ${existingBarcodes.map((e) => e.barcode).join(', ')}`);
           }
         }
       }
-
       if (errors.length > 0) {
         results.push({ row: rowNumber, code: data.code || '(blank)', status: 'error', errors });
         continue;
       }
-
       try {
         const storageCondition = data.storageCondition || 'AMBIENT';
-        await this.prisma.sku.create({ data: this.buildCreateData(data, storageCondition) });
+        await this.prisma.sku.create({ data: this.buildCreateData(data, storageCondition, user.companyId) });
         results.push({ row: rowNumber, code: upperCode, status: 'success' });
         codesSeenInFile.add(upperCode);
-        if (data.barcodes) {
-          data.barcodes.forEach((b: any) => b.barcode && barcodesSeenInFile.add(b.barcode));
-        }
+        if (data.barcodes) data.barcodes.forEach((b: any) => b.barcode && barcodesSeenInFile.add(b.barcode));
       } catch (err: any) {
         results.push({ row: rowNumber, code: data.code || '(blank)', status: 'error', errors: [err.message || 'Unknown error'] });
       }
@@ -214,22 +215,18 @@ export class SkusService {
     };
   }
 
-  // --- Deactivate (soft delete) ---
-  async deactivate(id: string) {
-    const sku = await this.prisma.sku.findUnique({ where: { id } });
-    if (!sku) throw new NotFoundException('SKU not found.');
+  async deactivate(id: string, user: any) {
+    await this.assertSkuAccess(id, user);
     return this.prisma.sku.update({ where: { id }, data: { isActive: false } });
   }
 
-  async reactivate(id: string) {
-    const sku = await this.prisma.sku.findUnique({ where: { id } });
-    if (!sku) throw new NotFoundException('SKU not found.');
+  async reactivate(id: string, user: any) {
+    await this.assertSkuAccess(id, user);
     return this.prisma.sku.update({ where: { id }, data: { isActive: true } });
   }
 
-  // --- Hard delete (blocked if the SKU has any real transaction history) ---
   private async getLinkedCounts(skuId: string) {
-    const sku = await this.prisma.sku.findUnique({
+    return this.prisma.sku.findUnique({
       where: { id: skuId },
       include: {
         _count: {
@@ -244,21 +241,19 @@ export class SkusService {
         },
       },
     });
-    return sku;
   }
 
-  async remove(id: string) {
+  async remove(id: string, user: any) {
+    await this.assertSkuAccess(id, user);
     const sku = await this.getLinkedCounts(id);
     if (!sku) throw new NotFoundException('SKU not found.');
-
     const c = sku._count;
     const totalLinked = c.stockMovements + c.receiptLines + c.putawayTasks + c.outboundOrderLine + c.allocations + c.returns;
     if (totalLinked > 0) {
       throw new BadRequestException(
-        `Cannot permanently delete "${sku.code}" — it has ${totalLinked} linked transaction record(s). Deactivate it instead to hide it without losing history.`,
+        `Cannot permanently delete "${sku.code}" — it has ${totalLinked} linked transaction record(s). Deactivate it instead.`,
       );
     }
-
     await this.prisma.$transaction([
       this.prisma.skuStorageUnit.deleteMany({ where: { skuId: id } }),
       this.prisma.skuBarcode.deleteMany({ where: { skuId: id } }),
@@ -267,8 +262,9 @@ export class SkusService {
     return { deleted: true, code: sku.code };
   }
 
-  async removeAll() {
+  async removeAll(user: any) {
     const skus = await this.prisma.sku.findMany({
+      where: this.companyFilter(user),
       include: {
         _count: {
           select: {
@@ -282,20 +278,14 @@ export class SkusService {
         },
       },
     });
-
     const deletable: string[] = [];
     const blocked: string[] = [];
-
     for (const sku of skus) {
       const c = sku._count;
       const totalLinked = c.stockMovements + c.receiptLines + c.putawayTasks + c.outboundOrderLine + c.allocations + c.returns;
-      if (totalLinked > 0) {
-        blocked.push(sku.code);
-      } else {
-        deletable.push(sku.id);
-      }
+      if (totalLinked > 0) blocked.push(sku.code);
+      else deletable.push(sku.id);
     }
-
     if (deletable.length > 0) {
       await this.prisma.$transaction([
         this.prisma.skuStorageUnit.deleteMany({ where: { skuId: { in: deletable } } }),
@@ -303,21 +293,15 @@ export class SkusService {
         this.prisma.sku.deleteMany({ where: { id: { in: deletable } } }),
       ]);
     }
-
-    return {
-      deletedCount: deletable.length,
-      blockedCount: blocked.length,
-      blockedCodes: blocked,
-    };
+    return { deletedCount: deletable.length, blockedCount: blocked.length, blockedCodes: blocked };
   }
 
-  // --- Export: flat rows matching the import template shape ---
-  async exportRows() {
+  async exportRows(user: any) {
     const skus = await this.prisma.sku.findMany({
+      where: this.companyFilter(user),
       include: { storageUnits: true, barcodes: true },
       orderBy: { code: 'asc' },
     });
-
     return skus.map((s) => {
       const su1 = s.storageUnits[0];
       const su2 = s.storageUnits[1];
@@ -358,19 +342,16 @@ export class SkusService {
     });
   }
 
-  // --- Summary / analytics ---
-  async getSummary() {
-    const skus = await this.prisma.sku.findMany();
+  async getSummary(user: any) {
+    const skus = await this.prisma.sku.findMany({ where: this.companyFilter(user) });
     const total = skus.length;
     const active = skus.filter((s) => s.isActive).length;
     const inactive = total - active;
-
     const byCategory: Record<string, number> = {};
     const byAbc: Record<string, number> = {};
     let hazmatCount = 0;
     let batchTrackedCount = 0;
     let shelfLifeTrackedCount = 0;
-
     for (const s of skus) {
       byCategory[s.category] = (byCategory[s.category] || 0) + 1;
       const abc = s.abcClass || 'Unclassified';
@@ -379,16 +360,6 @@ export class SkusService {
       if (s.batchTracked) batchTrackedCount++;
       if (s.shelfLifeTracked) shelfLifeTrackedCount++;
     }
-
-    return {
-      total,
-      active,
-      inactive,
-      hazmatCount,
-      batchTrackedCount,
-      shelfLifeTrackedCount,
-      byCategory,
-      byAbc,
-    };
+    return { total, active, inactive, hazmatCount, batchTrackedCount, shelfLifeTrackedCount, byCategory, byAbc };
   }
-} 
+}

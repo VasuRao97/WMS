@@ -31,6 +31,11 @@ type Summary = {
   byAbc: Record<string, number>;
 };
 
+function authHeaders() {
+  const token = localStorage.getItem('token');
+  return { Authorization: `Bearer ${token}` };
+}
+
 function SkusPage() {
   const [skus, setSkus] = useState<Sku[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -41,13 +46,13 @@ function SkusPage() {
   const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
 
   const loadSkus = () => {
-    fetch('http://localhost:3000/skus')
+    fetch('http://localhost:3000/skus', { headers: authHeaders() })
       .then((res) => res.json())
       .then((data) => setSkus(data));
   };
 
   const loadSummary = () => {
-    fetch('http://localhost:3000/skus/summary')
+    fetch('http://localhost:3000/skus/summary', { headers: authHeaders() })
       .then((res) => res.json())
       .then((data) => setSummary(data));
   };
@@ -67,7 +72,11 @@ function SkusPage() {
     setImportResult(null);
     const formData = new FormData();
     formData.append('file', file);
-    const res = await fetch('http://localhost:3000/skus/import', { method: 'POST', body: formData });
+    const res = await fetch('http://localhost:3000/skus/import', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: formData,
+    });
     const data = await res.json();
     setImportResult(data);
     setImporting(false);
@@ -76,18 +85,28 @@ function SkusPage() {
   };
 
   const handleExport = () => {
-    window.open('http://localhost:3000/skus/export', '_blank');
+    const token = localStorage.getItem('token');
+    fetch('http://localhost:3000/skus/export', { headers: authHeaders() })
+      .then((res) => res.blob())
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'SKU_Master_Export.xlsx';
+        a.click();
+        window.URL.revokeObjectURL(url);
+      });
   };
 
   const handleDeactivate = async (id: string, isActive: boolean) => {
     const action = isActive ? 'deactivate' : 'reactivate';
-    await fetch(`http://localhost:3000/skus/${id}/${action}`, { method: 'PATCH' });
+    await fetch(`http://localhost:3000/skus/${id}/${action}`, { method: 'PATCH', headers: authHeaders() });
     refreshAll();
   };
 
   const handleDelete = async (id: string, code: string) => {
     if (!confirm(`Permanently delete ${code}? This cannot be undone.`)) return;
-    const res = await fetch(`http://localhost:3000/skus/${id}`, { method: 'DELETE' });
+    const res = await fetch(`http://localhost:3000/skus/${id}`, { method: 'DELETE', headers: authHeaders() });
     const data = await res.json();
     if (!res.ok) {
       alert(data.message || 'Could not delete this SKU.');
@@ -98,7 +117,7 @@ function SkusPage() {
 
   const handleDeleteAll = async () => {
     if (!confirm('Permanently delete ALL SKUs that have no transaction history? This cannot be undone.')) return;
-    const res = await fetch('http://localhost:3000/skus/all', { method: 'DELETE' });
+    const res = await fetch('http://localhost:3000/skus/all', { method: 'DELETE', headers: authHeaders() });
     const data = await res.json();
     setDeleteAllResult(
       `Deleted ${data.deletedCount} SKU(s). ${data.blockedCount} blocked (have transaction history)${data.blockedCodes.length ? ': ' + data.blockedCodes.join(', ') : ''}.`,

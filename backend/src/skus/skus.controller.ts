@@ -1,15 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
 import { SkusService } from './skus.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
 
 function toBool(val: any): boolean {
   if (typeof val === 'boolean') return val;
   if (typeof val === 'string') return val.trim().toUpperCase() === 'TRUE';
   return false;
 }
-
 function toNumberOrUndefined(val: any): number | undefined {
   if (val === undefined || val === null || val === '') return undefined;
   const n = Number(val);
@@ -17,32 +18,32 @@ function toNumberOrUndefined(val: any): number | undefined {
 }
 
 @Controller('skus')
+@UseGuards(JwtAuthGuard)
 export class SkusController {
   constructor(private readonly skusService: SkusService) {}
 
   @Post()
-  create(@Body() body: any) {
-    return this.skusService.create(body);
+  create(@Body() body: any, @CurrentUser() user: any) {
+    return this.skusService.create(body, user);
   }
 
   @Get()
-  findAll() {
-    return this.skusService.findAll();
+  findAll(@CurrentUser() user: any) {
+    return this.skusService.findAll(user);
   }
 
   @Get('summary')
-  getSummary() {
-    return this.skusService.getSummary();
+  getSummary(@CurrentUser() user: any) {
+    return this.skusService.getSummary(user);
   }
 
   @Get('export')
-  async export(@Res() res: Response) {
-    const rows = await this.skusService.exportRows();
+  async export(@Res() res: Response, @CurrentUser() user: any) {
+    const rows = await this.skusService.exportRows(user);
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'SKU Master');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': 'attachment; filename="SKU_Master_Export.xlsx"',
@@ -51,28 +52,28 @@ export class SkusController {
   }
 
   @Patch(':id/deactivate')
-  deactivate(@Param('id') id: string) {
-    return this.skusService.deactivate(id);
+  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.skusService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
-  reactivate(@Param('id') id: string) {
-    return this.skusService.reactivate(id);
+  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.skusService.reactivate(id, user);
   }
 
   @Delete('all')
-  removeAll() {
-    return this.skusService.removeAll();
+  removeAll(@CurrentUser() user: any) {
+    return this.skusService.removeAll(user);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.skusService.remove(id);
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.skusService.remove(id, user);
   }
 
   @Post('import')
   @UseInterceptors(FileInterceptor('file'))
-  async importFile(@UploadedFile() file: Express.Multer.File) {
+  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
     const workbook = XLSX.read(file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
@@ -94,7 +95,6 @@ export class SkusController {
           isPreferred: toBool(r['Storage Unit 2 Preferred']),
         });
       }
-
       const barcodes: any[] = [];
       if (r['Barcode 1 Value']) {
         barcodes.push({ barcode: String(r['Barcode 1 Value']), type: String(r['Barcode 1 Type']).toUpperCase() || 'EACH' });
@@ -102,7 +102,6 @@ export class SkusController {
       if (r['Barcode 2 Value']) {
         barcodes.push({ barcode: String(r['Barcode 2 Value']), type: String(r['Barcode 2 Type']).toUpperCase() || 'EACH' });
       }
-
       return {
         code: r['SKU Code'] ? String(r['SKU Code']).trim() : '',
         description: r['Description'] ? String(r['Description']).trim() : '',
@@ -129,6 +128,6 @@ export class SkusController {
       };
     });
 
-    return this.skusService.bulkImport(rows);
+    return this.skusService.bulkImport(rows, user);
   }
 }
