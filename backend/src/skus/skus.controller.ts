@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import * as XLSX from 'xlsx';
 import { SkusService } from './skus.service';
 
@@ -27,6 +28,46 @@ export class SkusController {
   @Get()
   findAll() {
     return this.skusService.findAll();
+  }
+
+  @Get('summary')
+  getSummary() {
+    return this.skusService.getSummary();
+  }
+
+  @Get('export')
+  async export(@Res() res: Response) {
+    const rows = await this.skusService.exportRows();
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'SKU Master');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': 'attachment; filename="SKU_Master_Export.xlsx"',
+    });
+    res.send(buffer);
+  }
+
+  @Patch(':id/deactivate')
+  deactivate(@Param('id') id: string) {
+    return this.skusService.deactivate(id);
+  }
+
+  @Patch(':id/reactivate')
+  reactivate(@Param('id') id: string) {
+    return this.skusService.reactivate(id);
+  }
+
+  @Delete('all')
+  removeAll() {
+    return this.skusService.removeAll();
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string) {
+    return this.skusService.remove(id);
   }
 
   @Post('import')
