@@ -20,10 +20,22 @@ datasource db {
 
 enum Role {
   ADMIN
+  SUPER_ADMIN
   WAREHOUSE_MANAGER
   RECEIVER
   PICKER
   DISPATCHER
+}
+
+model Company {
+  id         String      @id @default(uuid())
+  name       String
+  code       String      @unique
+  isActive   Boolean     @default(true)
+  createdAt  DateTime    @default(now())
+  users      User[]
+  warehouses Warehouse[]
+  skus       Sku[]
 }
 
 model User {
@@ -34,6 +46,8 @@ model User {
   role         Role
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
+  companyId    String?
+  company      Company? @relation(fields: [companyId], references: [id])
 
   receiptsCreated   InboundReceipt[] @relation("ReceiptCreatedBy")
   putawaysCompleted PutawayTask[]    @relation("PutawayCompletedBy")
@@ -50,6 +64,9 @@ model Warehouse {
   address   String?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id])
+  erpCode   String?
 
   locations       Location[]
   inboundReceipts InboundReceipt[]
@@ -86,66 +103,70 @@ model Location {
   @@unique([warehouseId, code])
 }
 
-  model Sku { 
-    id String @id @default(uuid()) 
-    code String @unique 
-    description String 
-    category String @default("Uncategorized") 
-    subCategory String? 
-    baseUom String 
-    hsnCode String 
-    storageCondition String @default("AMBIENT") 
-    batchTracked Boolean @default(false) 
-    shelfLifeTracked Boolean @default(false) 
-    shelfLifeDays Int? 
-    isActive Boolean @default(true) 
-    weightUom String? 
-    grossWeight Decimal? 
-    isHazmat Boolean @default(false) 
-    hazmatClass String? 
-    hasUniqueBarcode Boolean @default(false) 
-    abcClass String? 
-    currency String? 
-    standardCost Decimal? 
-    moq Decimal? 
-    createdAt DateTime @default(now()) 
-    storageUnits SkuStorageUnit[] 
-    barcodes SkuBarcode[] 
-    asParent SkuRelationship[] @relation("ParentSku") 
-    asChild SkuRelationship[] @relation("ChildSku") 
-    stockMovements StockMovement[] 
-    receiptLines InboundReceiptLine[] 
-    putawayTasks PutawayTask[] 
-    outboundOrderLine OutboundOrderLine[] 
-    allocations Allocation[] 
-    returns Return[]
-    }
+model Sku {
+  id                String               @id @default(uuid())
+  code              String               @unique
+  description       String
+  category          String               @default("Uncategorized")
+  subCategory       String?
+  baseUom           String
+  hsnCode           String
+  storageCondition  String               @default("AMBIENT")
+  batchTracked      Boolean              @default(false)
+  shelfLifeTracked  Boolean              @default(false)
+  shelfLifeDays     Int?
+  isActive          Boolean              @default(true)
+  weightUom         String?
+  grossWeight       Decimal?
+  isHazmat          Boolean              @default(false)
+  hazmatClass       String?
+  hasUniqueBarcode  Boolean              @default(false)
+  abcClass          String?
+  currency          String?
+  standardCost      Decimal?
+  moq               Decimal?
+  createdAt         DateTime             @default(now())
+  companyId         String
+  company           Company              @relation(fields: [companyId], references: [id])
+  erpCode           String?
+  storageUnits      SkuStorageUnit[]
+  barcodes          SkuBarcode[]
+  asParent          SkuRelationship[]    @relation("ParentSku")
+  asChild           SkuRelationship[]    @relation("ChildSku")
+  stockMovements    StockMovement[]
+  receiptLines      InboundReceiptLine[]
+  putawayTasks      PutawayTask[]
+  outboundOrderLine OutboundOrderLine[]
+  allocations       Allocation[]
+  returns           Return[]
+}
 
-model SkuStorageUnit     {
-  id String @id @default(uuid())
-  skuId String
-  sku Sku @relation(fields: [skuId], references: [id])
-  unitType String
+model SkuStorageUnit {
+  id           String  @id @default(uuid())
+  skuId        String
+  sku          Sku     @relation(fields: [skuId], references: [id])
+  unitType     String
   qtyInBaseUom Decimal
-  isPreferred Boolean @default(false)
+  isPreferred  Boolean @default(false)
 }
 
 model SkuBarcode {
-  id String @id @default(uuid())
-  skuId String
-  sku Sku @relation(fields: [skuId], references: [id])
+  id      String @id @default(uuid())
+  skuId   String
+  sku     Sku    @relation(fields: [skuId], references: [id])
   barcode String
-  type String
+  type    String
 }
 
 model SkuRelationship {
-  id String @id @default(uuid())
+  id          String  @id @default(uuid())
   parentSkuId String
-  parentSku Sku @relation("ParentSku", fields: [parentSkuId], references: [id])
-  childSkuId String
-  childSku Sku @relation("ChildSku", fields: [childSkuId], references: [id])
-  quantity Decimal
+  parentSku   Sku     @relation("ParentSku", fields: [parentSkuId], references: [id])
+  childSkuId  String
+  childSku    Sku     @relation("ChildSku", fields: [childSkuId], references: [id])
+  quantity    Decimal
 }
+
 // ------------------------------------------------------------
 // INVENTORY LEDGER — the single source of truth for stock
 // ------------------------------------------------------------
