@@ -1,7 +1,15 @@
-import { Body, Controller, Delete, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import * as XLSX from 'xlsx';
 import { WarehousesService } from './warehouses.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
+
+function toNumberOrUndefined(val: any): number | undefined {
+  if (val === undefined || val === null || val === '') return undefined;
+  const n = Number(val);
+  return isNaN(n) ? undefined : n;
+}
 
 @Controller('warehouses')
 @UseGuards(JwtAuthGuard)
@@ -9,7 +17,7 @@ export class WarehousesController {
   constructor(private readonly warehousesService: WarehousesService) {}
 
   @Post()
-  create(@Body() body: { code: string; name: string; address?: string }, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: any) {
     return this.warehousesService.create(body, user);
   }
 
@@ -23,8 +31,66 @@ export class WarehousesController {
     return this.warehousesService.getCustomerSummary(user);
   }
 
+  @Patch(':id/deactivate')
+  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.warehousesService.deactivate(id, user);
+  }
+
+  @Patch(':id/reactivate')
+  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.warehousesService.reactivate(id, user);
+  }
+
   @Delete('all')
   removeAll(@CurrentUser() user: any) {
     return this.warehousesService.removeAll(user);
+  }
+
+  @Post('import')
+  @UseInterceptors(FileInterceptor('file'))
+  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    // Read by sheet NAME, not position — the "How To Use"/"Legend & Rules"
+    // tabs sit alongside the data tab in this template, unlike SKU/Customer
+    // where the data sheet has always been sheet[0].
+    const sheet = workbook.Sheets['Warehouse Import'];
+    if (!sheet) {
+      return { totalWarehouses: 0, successCount: 0, failCount: 0, results: [{ code: '(file)', status: 'error', errors: ['No "Warehouse Import" sheet found in this file.'] }] };
+    }
+    const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    const grouped = new Map<string, any>();
+
+    for (const r of rawRows) {
+      const code = r['Location Code'] ? String(r['Location Code']).trim().toUpperCase() : '';
+      if (!code) continue;
+
+      if (!grouped.has(code)) {
+        grouped.set(code, {
+          code,
+          nodeType: r['Type of Node'] ? String(r['Type of Node']).trim() : '',
+          city: r['City Name'] ? String(r['City Name']).trim() : '',
+          address: r['Address'] ? String(r['Address']).trim() : '',
+          pincode: r['Pincode'] ? String(r['Pincode']).trim() : '',
+          latitude: toNumberOrUndefined(r['Latitude']),
+          longitude: toNumberOrUndefined(r['Longitude']),
+          threePlName: r['3PL Name'] ? String(r['3PL Name']).trim() : undefined,
+          noOfDocks: toNumberOrUndefined(r['No of Docks']),
+          areaSqFt: toNumberOrUndefined(r['Area sq ft']),
+          storageTypes: [] as any[],
+          dispatchFlows: [] as any[],
+        });
+      }
+
+      const wh = grouped.get(code);
+      if (r['Storage Type']) {
+        wh.storageTypes.push({ storageType: String(r['Storage Type']).trim(), palletPositions: toNumberOrUndefined(r['Pallet Positions']) });
+      }
+      if (r['Dispatch Flow']) {
+        wh.dispatchFlows.push({ flowType: String(r['Dispatch Flow']).trim() });
+      }
+    }
+
+    return this.warehousesService.bulkImport(Array.from(grouped.values()), user);
   }
 }

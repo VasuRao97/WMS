@@ -1,31 +1,205 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+
+const NODE_TYPE_VALUES = ['FACTORY', 'DISTRIBUTOR', 'REGIONAL_DC', 'NATIONAL_DC', 'CNF', 'CROSS_DOCK'];
+const STORAGE_TYPE_VALUES = ['GROUND_FLOOR', 'SPR', 'DRIVE_IN', 'MIX', 'ASRS'];
+const DISPATCH_FLOW_VALUES = ['FULL_PALLET', 'CASE_PICK', 'BROKEN_CASE'];
+
+const NODE_TYPE_LABELS: Record<string, string> = {
+  FACTORY: 'Factory',
+  DISTRIBUTOR: 'Distributor',
+  REGIONAL_DC: 'Regional DC',
+  NATIONAL_DC: 'National DC',
+  CNF: 'CNF',
+  CROSS_DOCK: 'Cross-dock',
+};
+
+// Normalizes free-text label variants ("Ground/Floor", "Drive-in", "Regional DC",
+// "Full Pallet") into the SCREAMING_SNAKE_CASE canonical values this app stores,
+// matching the convention already used for MovementType/LocationType etc.
+function normalizeCode(value: any): string {
+  return String(value).trim().toUpperCase().replace(/[\s/-]+/g, '_');
+}
 
 @Injectable()
 export class WarehousesService {
   constructor(private prisma: PrismaService) {}
 
-  create(data: { code: string; name: string; address?: string }, user: any) {
-    if (!user.companyId) {
-      throw new ForbiddenException(
-        'Super admin accounts cannot create warehouses directly — log in as a company admin instead.',
-      );
+  private validateWarehouseData(data: any): string[] {
+    const errors: string[] = [];
+    if (!data.code || !/^[A-Za-z0-9-]{1,30}$/.test(data.code)) {
+      errors.push('Location Code is required: alphanumeric/hyphens only, max 30 characters.');
     }
+    const nodeType = data.nodeType ? normalizeCode(data.nodeType) : '';
+    if (!nodeType) {
+      errors.push('Type of Node is required.');
+    } else if (!NODE_TYPE_VALUES.includes(nodeType)) {
+      errors.push(`Type of Node must be one of: ${Object.values(NODE_TYPE_LABELS).join(', ')}`);
+    }
+    if (!data.city) errors.push('City Name is required.');
+    if (!data.address) errors.push('Address is required.');
+    if (!data.pincode || !/^\d{6}$/.test(String(data.pincode))) errors.push('Pincode is required: 6 digits.');
+    if (data.noOfDocks !== undefined && data.noOfDocks !== null && data.noOfDocks !== '' && Number(data.noOfDocks) < 0) {
+      errors.push('No of Docks cannot be negative.');
+    }
+    if (data.areaSqFt !== undefined && data.areaSqFt !== null && data.areaSqFt !== '' && Number(data.areaSqFt) <= 0) {
+      errors.push('Area sq ft must be a positive number.');
+    }
+
+    const storageTypes = data.storageTypes || [];
+    let hasMix = false;
+    let hasSpecific = false;
+    for (const s of storageTypes) {
+      const type = normalizeCode(s.storageType);
+      if (!STORAGE_TYPE_VALUES.includes(type)) {
+        errors.push(`Storage Type must be one of: Ground/Floor, SPR, Drive-in, Mix, ASRS (got "${s.storageType}").`);
+      }
+      if (!s.palletPositions || Number(s.palletPositions) <= 0) {
+        errors.push('Pallet Positions must be a positive number when Storage Type is given.');
+      }
+      if (type === 'MIX') hasMix = true;
+      else hasSpecific = true;
+    }
+    if (hasMix && hasSpecific) {
+      errors.push('A warehouse cannot combine "Mix" with specific Storage Type entries — pick one approach.');
+    }
+
+    const dispatchFlows = data.dispatchFlows || [];
+    for (const f of dispatchFlows) {
+      const type = normalizeCode(f.flowType);
+      if (!DISPATCH_FLOW_VALUES.includes(type)) {
+        errors.push(`Dispatch Flow must be one of: Full Pallet, Case Pick, Broken Case (got "${f.flowType}").`);
+      }
+    }
+    return errors;
+  }
+
+  private buildCreateData(data: any, companyId: string, name: string) {
+    const nodeType = normalizeCode(data.nodeType);
+    const storageTypes = (data.storageTypes || []).map((s: any) => ({
+      storageType: normalizeCode(s.storageType),
+      palletPositions: s.palletPositions,
+    }));
+    const dispatchFlowTypes = new Set<string>((data.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType)));
+
+    return {
+      code: data.code.toUpperCase(),
+      name,
+      address: data.address,
+      city: data.city,
+      pincode: String(data.pincode),
+      nodeType,
+      latitude: data.latitude !== undefined && data.latitude !== '' ? Number(data.latitude) : undefined,
+      longitude: data.longitude !== undefined && data.longitude !== '' ? Number(data.longitude) : undefined,
+      threePlName: data.threePlName || undefined,
+      noOfDocks: data.noOfDocks !== undefined && data.noOfDocks !== '' ? Number(data.noOfDocks) : undefined,
+      areaSqFt: data.areaSqFt !== undefined && data.areaSqFt !== '' ? Number(data.areaSqFt) : undefined,
+      company: { connect: { id: companyId } },
+      storageTypes: storageTypes.length ? { create: storageTypes } : undefined,
+      dispatchFlows: dispatchFlowTypes.size ? { create: [...dispatchFlowTypes].map((flowType) => ({ flowType })) } : undefined,
+    };
+  }
+
+  async create(data: any, user: any) {
+    if (!user.companyId) {
+      throw new ForbiddenException('Super admin accounts cannot create warehouses directly — log in as a company admin instead.');
+    }
+    const errors = this.validateWarehouseData(data);
+    if (!data.name || !String(data.name).trim()) errors.push('Name is required.');
+    if (errors.length > 0) throw new BadRequestException(errors);
+
+    const existing = await this.prisma.warehouse.findUnique({
+      where: { companyId_code: { companyId: user.companyId, code: data.code.toUpperCase() } },
+    });
+    if (existing) throw new BadRequestException(`Location Code "${data.code}" already exists.`);
+
     return this.prisma.warehouse.create({
-      data: {
-        code: data.code,
-        name: data.name,
-        address: data.address,
-        company: { connect: { id: user.companyId } },
-      },
+      data: this.buildCreateData(data, user.companyId, data.name),
+      include: { storageTypes: true, dispatchFlows: true },
     });
   }
 
   findAll(user: any) {
-    if (user.role === 'SUPER_ADMIN') {
-      return this.prisma.warehouse.findMany();
+    const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
+    return this.prisma.warehouse.findMany({
+      where,
+      include: { storageTypes: true, dispatchFlows: true },
+      orderBy: { code: 'asc' },
+    });
+  }
+
+  // Groups repeated-Location-Code rows the same way CustomersService.bulkImport
+  // groups repeated-Bill-To-ID rows: warehouse-level fields are read from the
+  // first row seen for a code (later repeats/blanks on those columns are
+  // ignored either way); Storage Type / Dispatch Flow rows accumulate from
+  // every row that carries them, independently of each other.
+  async bulkImport(groupedRows: any[], user: any) {
+    if (!user.companyId) {
+      throw new ForbiddenException('Super admin accounts cannot import warehouses directly — log in as a company admin instead.');
     }
-    return this.prisma.warehouse.findMany({ where: { companyId: user.companyId } });
+    const results: any[] = [];
+    const codesSeenInFile = new Set<string>();
+
+    for (const group of groupedRows) {
+      const upperCode = group.code ? String(group.code).toUpperCase() : '';
+      const errors = this.validateWarehouseData(group);
+
+      if (upperCode && codesSeenInFile.has(upperCode)) {
+        errors.push(`Duplicate Location Code within this file: ${upperCode}`);
+      }
+      if (errors.length === 0 && upperCode) {
+        const existing = await this.prisma.warehouse.findUnique({
+          where: { companyId_code: { companyId: user.companyId, code: upperCode } },
+        });
+        if (existing) errors.push(`Location Code already exists in the database: ${upperCode}`);
+      }
+      if (errors.length > 0) {
+        results.push({ code: group.code || '(blank)', status: 'error', errors });
+        continue;
+      }
+
+      const nodeType = normalizeCode(group.nodeType);
+      const name = group.city ? `${group.city} ${NODE_TYPE_LABELS[nodeType]}` : upperCode;
+
+      try {
+        await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name) });
+        results.push({
+          code: upperCode,
+          status: 'success',
+          storageTypeCount: (group.storageTypes || []).length,
+          dispatchFlowCount: (group.dispatchFlows || []).length,
+        });
+        codesSeenInFile.add(upperCode);
+      } catch (err: any) {
+        results.push({ code: group.code || '(blank)', status: 'error', errors: [err.message || 'Unknown error'] });
+      }
+    }
+
+    return {
+      totalWarehouses: groupedRows.length,
+      successCount: results.filter((r) => r.status === 'success').length,
+      failCount: results.filter((r) => r.status === 'error').length,
+      results,
+    };
+  }
+
+  private async assertAccess(id: string, user: any) {
+    const warehouse = await this.prisma.warehouse.findUnique({ where: { id } });
+    if (!warehouse) throw new NotFoundException('Warehouse not found.');
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) {
+      throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+    return warehouse;
+  }
+
+  async deactivate(id: string, user: any) {
+    await this.assertAccess(id, user);
+    return this.prisma.warehouse.update({ where: { id }, data: { isActive: false } });
+  }
+
+  async reactivate(id: string, user: any) {
+    await this.assertAccess(id, user);
+    return this.prisma.warehouse.update({ where: { id }, data: { isActive: true } });
   }
 
   async removeAll(user: any) {
@@ -54,7 +228,14 @@ export class WarehousesService {
       else deletable.push(wh.id);
     }
     if (deletable.length > 0) {
-      await this.prisma.warehouse.deleteMany({ where: { id: { in: deletable } } });
+      // storageTypes/dispatchFlows are inherent detail of the warehouse (like
+      // SkuStorageUnit/SkuBarcode for a SKU) — not "linked data" that blocks
+      // deletion, just child rows that must go first (FK is ON DELETE RESTRICT).
+      await this.prisma.$transaction([
+        this.prisma.warehouseStorageType.deleteMany({ where: { warehouseId: { in: deletable } } }),
+        this.prisma.warehouseDispatchFlow.deleteMany({ where: { warehouseId: { in: deletable } } }),
+        this.prisma.warehouse.deleteMany({ where: { id: { in: deletable } } }),
+      ]);
     }
     return { deletedCount: deletable.length, blockedCount: blocked.length, blockedCodes: blocked };
   }

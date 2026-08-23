@@ -107,9 +107,8 @@ for a given entity (e.g. `SkusService.validateSkuData`) so the two paths can't d
 new entities' validation this way rather than duplicating rules between create and import.
 
 ### ERP integration hook (not yet wired)
-`erpCode` fields exist on `Sku` and `Warehouse` (and should be added to `Customer` if it grows
-one) purely as a landing spot for a future SAP/ERP master-data sync — there is no real
-integration behind them yet.
+`erpCode` fields exist on `Sku`, `Warehouse`, and `Customer` purely as a landing spot for a
+future SAP/ERP master-data sync — there is no real integration behind them yet.
 
 ### Backend module shape
 Each feature is a self-contained Nest module (`warehouses/`, `skus/`, `customers/`, `auth/`):
@@ -127,6 +126,21 @@ thrown via `BadRequestException`). Match this style for new endpoints rather tha
 import (`sheet_to_json` → per-row validation, dedup within the file, dedup against the DB,
 row-by-row success/error results) and export (`json_to_sheet` → buffer streamed via `Response`).
 Reuse this shape for other modules needing Excel import/export.
+
+**Read import sheets by name, not position.** SKU/Customer read `workbook.SheetNames[0]`
+(historical, works because their templates only ever had one meaningful sheet). Warehouse
+Master's template ships with "How To Use" and "Legend & Rules" tabs alongside the data —
+`warehouses.controller.ts` reads `workbook.Sheets['Warehouse Import']` explicitly. Do this for
+any new import too; reading by position is a real footgun (bit a template earlier in this
+project's history — a sheet got reordered and the importer silently read the wrong tab).
+
+**Free-text classification values get normalized to `SCREAMING_SNAKE_CASE`, not stored as an
+enum.** See `warehouses.service.ts`'s `normalizeCode()` — `"Ground/Floor"` → `GROUND_FLOOR`,
+`"Drive-in"` → `DRIVE_IN`, `"Regional DC"` → `REGIONAL_DC` (strip whitespace/`/`/`-`, uppercase).
+This lets both the manual-create form (which submits the canonical value directly) and the Excel
+import (which submits whatever human-readable label was typed in a cell) validate against the
+same restricted list without a lookup table. Reuse this helper — don't hand-roll a new
+label→code mapping per field.
 
 ### Every master-data entity gets a "Delete All" — build it in from day one
 Warehouses, SKUs, and Customers all have a `DELETE /<resource>/all` endpoint (`removeAll` in the
@@ -153,9 +167,9 @@ warehouses and a customer during development (2026-08-23); see git history / con
 need the details. This applies doubly once real per-warehouse Inventory/Location data exists.
 
 ### Frontend
-No router — `App.tsx` is a single component with local `tab` state switching between page
-components (`WarehousesPage` inline in `App.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`,
-`LoginPage.tsx`). No API client/fetch wrapper — every page repeats the same pattern: a bare
+No router — `App.tsx` is a thin shell with local `tab` state switching between page components
+(`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
+API client/fetch wrapper — every page repeats the same pattern: a bare
 `fetch('http://localhost:3000/<resource>', { headers: authHeaders() })` (backend base URL is
 hardcoded, not env-driven), a `authHeaders()` closure reading `localStorage.getItem('token')`,
 and a 401 handler that does `localStorage.clear(); window.location.reload()`. Auth state
@@ -171,12 +185,19 @@ reusable pattern rather than per-page.
 ## Status: what's built vs. what's next
 
 Fully built, tested, and committed: Auth + multi-tenancy (JWT, `JwtAuthGuard`, tenant isolation
-proven), Warehouses (create/list, a "Customers per Warehouse" rollup table with Local/Upcountry
-split, Delete All), SKU Master (full CRUD incl. deactivate/reactivate/delete, bulk Excel
-import/export with per-row errors, live summary analytics, Delete All), Customer Master (full
-CRUD incl. multi ship-to per customer with per-ship-to GSTIN and a Local/Upcountry delivery-zone
-tag for dispatch planning, bulk Excel import using a repeated-Bill-To-ID-per-row grouping
-pattern, Delete All).
+proven), **Warehouse Master** — doubles as a network-node master, not just storage warehouses:
+`nodeType` (Factory/Distributor/Regional DC/National DC/CNF/Cross-dock, one `Warehouse` table for
+all of them, operational fields optional on every row regardless of type), city/pincode/lat-long,
+3PL name, docks, area sq ft, a repeatable `WarehouseStorageType` breakdown (storage type × pallet
+positions, "Mix" as a value in the same list with a same-warehouse exclusivity guardrail against
+mixing it with specific types), a repeatable `WarehouseDispatchFlow` capability list (Full
+Pallet/Case Pick/Broken Case, no paired quantity), bulk Excel import (single-sheet,
+repeated-Location-Code grouping, name auto-derived from City+Type since the template has no name
+column), deactivate/reactivate, a "Customers per Warehouse" rollup with Local/Upcountry split,
+Delete All. SKU Master (full CRUD incl. deactivate/reactivate/delete, bulk Excel import/export
+with per-row errors, live summary analytics, Delete All). Customer Master (full CRUD incl. multi
+ship-to per customer with per-ship-to GSTIN and a Local/Upcountry delivery-zone tag for dispatch
+planning, bulk Excel import using a repeated-Bill-To-ID-per-row grouping pattern, Delete All).
 
 Explicitly deferred (don't assume these exist): `SUPER_ADMIN` account creation, role/`@Roles()`
 enforcement, per-warehouse access enforcement, company-admin user invite flow, `SkuRelationship`

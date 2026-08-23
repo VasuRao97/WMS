@@ -71,6 +71,18 @@ model Warehouse {
   latitude  Float?
   longitude Float?
 
+  // Network node master fields — a Warehouse row can be any node type in the
+  // client's network (Factory FG, Distributor, Regional DC, National DC,
+  // CNF, Cross-dock). Operational fields below are optional on every row
+  // regardless of node type: a Distributor might be tracked as fully as an
+  // RDC, or left as a bare reference point — client's choice per facility.
+  nodeType    String? // FACTORY | DISTRIBUTOR | REGIONAL_DC | NATIONAL_DC | CNF | CROSS_DOCK
+  city        String?
+  pincode     String?
+  threePlName String? // free text; "OWN" by convention if self-operated
+  noOfDocks   Int?
+  areaSqFt    Decimal? // total facility footprint, not broken down by storage type
+
   assignedUsers User[]
 
   shipToAssignments CustomerShipTo[]
@@ -78,8 +90,25 @@ model Warehouse {
   inboundReceipts   InboundReceipt[]
   outboundOrders    OutboundOrder[]
   stockMovements    StockMovement[]
+  storageTypes      WarehouseStorageType[]
+  dispatchFlows     WarehouseDispatchFlow[]
 
   @@unique([companyId, code])
+}
+
+model WarehouseStorageType {
+  id              String    @id @default(uuid())
+  warehouseId     String
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id])
+  storageType     String // GROUND_FLOOR | SPR | DRIVE_IN | MIX | ASRS
+  palletPositions Decimal
+}
+
+model WarehouseDispatchFlow {
+  id          String    @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  flowType    String // FULL_PALLET | CASE_PICK | BROKEN_CASE
 }
 
 model Customer {
