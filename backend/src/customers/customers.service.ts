@@ -58,6 +58,32 @@ export class CustomersService {
     });
     if (existing) throw new BadRequestException(`Customer code "${data.code}" already exists.`);
 
+    const shipToCreateData: any[] = [];
+    if (data.shipToLocations && data.shipToLocations.length) {
+      for (const s of data.shipToLocations) {
+        let warehouseId: string | undefined = undefined;
+        if (s.warehouseCode) {
+          const wh = await this.prisma.warehouse.findUnique({
+            where: { companyId_code: { companyId: user.companyId, code: s.warehouseCode.toUpperCase() } },
+          });
+          if (!wh) {
+            throw new BadRequestException(`Warehouse code "${s.warehouseCode}" not found for this company.`);
+          }
+          warehouseId = wh.id;
+        }
+        shipToCreateData.push({
+          address: s.address,
+          pincode: s.pincode,
+          state: s.state,
+          gstNumber: s.gstNumber || undefined,
+          latitude: s.latitude || undefined,
+          longitude: s.longitude || undefined,
+          isDefault: !!s.isDefault,
+          warehouseId,
+        });
+      }
+    }
+
     return this.prisma.customer.create({
       data: {
         code: data.code.toUpperCase(),
@@ -73,28 +99,18 @@ export class CustomersService {
         isActive: data.isActive !== undefined ? !!data.isActive : true,
         erpCode: data.erpCode || undefined,
         company: { connect: { id: user.companyId } },
-        shipToLocations:
-          data.shipToLocations && data.shipToLocations.length
-            ? {
-                create: data.shipToLocations.map((s: any) => ({
-                  address: s.address,
-                  pincode: s.pincode,
-                  state: s.state,
-                  gstNumber: s.gstNumber || undefined,
-                  latitude: s.latitude || undefined,
-                  longitude: s.longitude || undefined,
-                  isDefault: !!s.isDefault,
-                })),
-              }
-            : undefined,
+        shipToLocations: shipToCreateData.length ? { create: shipToCreateData } : undefined,
       },
-      include: { shipToLocations: true },
+      include: { shipToLocations: { include: { warehouse: true } } },
     });
   }
 
   findAll(user: any) {
     const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
-    return this.prisma.customer.findMany({ where, include: { shipToLocations: true } });
+    return this.prisma.customer.findMany({
+      where,
+      include: { shipToLocations: { include: { warehouse: true } } },
+    });
   }
 
   private async assertAccess(id: string, user: any) {

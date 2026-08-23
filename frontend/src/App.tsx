@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import SkusPage from './SkusPage';
 import LoginPage from './LoginPage';
+import CustomersPage from './CustomersPage';
 
 type Warehouse = {
   id: string;
@@ -64,7 +65,7 @@ function WarehousesPage() {
 }
 
 function App() {
-  const [tab, setTab] = useState<'warehouses' | 'skus'>('warehouses');
+  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers'>('warehouses');
   const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('token'));
   const [user, setUser] = useState<any>(
     localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
@@ -97,12 +98,15 @@ function App() {
         <button onClick={() => setTab('skus')} style={{ fontWeight: tab === 'skus' ? 'bold' : 'normal' }}>
           SKUs
         </button>
+        <button onClick={() => setTab('customers')} style={{ fontWeight: tab === 'customers' ? 'bold' : 'normal' }}>
+  Customers
+</button>
         <span style={{ marginLeft: 'auto', fontSize: 14 }}>
           {user?.email} ({user?.role})
         </span>
         <button onClick={handleLogout}>Log Out</button>
       </nav>
-      {tab === 'warehouses' ? <WarehousesPage /> : <SkusPage />}
+      {tab === 'warehouses' ? <WarehousesPage /> : tab === 'skus' ? <SkusPage /> : <CustomersPage />}
     </div>
   );
 }
