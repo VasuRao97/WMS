@@ -225,7 +225,7 @@ function WarehousesPage() {
 
   return (
     <div style={{ maxWidth: 1100, margin: '40px auto', fontFamily: 'sans-serif' }}>
-      <h1>Warehouses</h1>
+      <h1>Warehouse Master</h1>
 
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
