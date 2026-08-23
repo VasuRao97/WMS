@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+type Warehouse = { code: string; name: string } | null;
+
 type ShipTo = {
   id: string;
   address: string;
@@ -7,6 +9,7 @@ type ShipTo = {
   state: string;
   gstNumber?: string;
   isDefault: boolean;
+  warehouse: Warehouse;
 };
 
 type Customer = {
@@ -24,19 +27,22 @@ type Customer = {
   shipToLocations: ShipTo[];
 };
 
-type ShipToInput = { address: string; pincode: string; state: string; gstNumber: string; isDefault: boolean };
+type ShipToInput = { shipToCode: string; address: string; pincode: string; state: string; gstNumber: string; warehouseCode: string; isDefault: boolean };
 
 function authHeaders() {
   const token = localStorage.getItem('token');
   return { Authorization: `Bearer ${token}` };
 }
 
-const emptyShipTo: ShipToInput = { address: '', pincode: '', state: '', gstNumber: '', isDefault: false };
+const emptyShipTo: ShipToInput = { shipToCode: '', address: '', pincode: '', state: '', gstNumber: '', warehouseCode: '', isDefault: false };
 
 function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null); 
+  const [importing, setImporting] = useState(false); 
+  const [importResult, setImportResult] = useState<any>(null);
 
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
@@ -51,10 +57,29 @@ function CustomersPage() {
   const [formError, setFormError] = useState('');
 
   const loadCustomers = () => {
-    fetch('http://localhost:3000/customers', { headers: authHeaders() })
-      .then((res) => res.json())
-      .then((data) => setCustomers(data));
-  };
+  fetch('http://localhost:3000/customers', { headers: authHeaders() })
+    .then((res) => {
+      if (res.status === 401) {
+        localStorage.clear();
+        window.location.reload();
+        return [];
+      }
+      return res.json();
+    })
+    .then((data) => setCustomers(Array.isArray(data) ? data : []));
+};
+
+const handleImport = async () => { 
+  if (!file) return; setImporting(true); 
+  setImportResult(null); 
+  const formData = new FormData(); 
+  formData.append('file', file); 
+  const res = await fetch('http://localhost:3000/customers/import', { method: 'POST', headers: authHeaders(), body: formData, }); 
+  const data = await res.json(); 
+  setImportResult(data); 
+  setImporting(false); 
+  setFile(null); 
+  loadCustomers(); };
 
   useEffect(() => {
     loadCustomers();
@@ -86,7 +111,9 @@ function CustomersPage() {
     e.preventDefault();
     setFormError('');
 
-    const validShipTos = shipTos.filter((s) => s.address || s.pincode || s.state);
+    const validShipTos = shipTos
+      .filter((s) => s.address || s.pincode || s.state)
+      .map((s) => ({ ...s, warehouseCode: s.warehouseCode || undefined }));
 
     const res = await fetch('http://localhost:3000/customers', {
       method: 'POST',
@@ -133,14 +160,23 @@ function CustomersPage() {
   );
 
   return (
-    <div style={{ maxWidth: 1000, margin: '40px auto', fontFamily: 'sans-serif' }}>
+    <div style={{ maxWidth: 1050, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Customer Master</h1>
+      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}> 
+      <h3 style={{ marginTop: 0 }}>Import from Excel</h3> 
+      <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
+      <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>{importing ? 'Importing...' : 'Import'} 
+        </button> {importResult && ( <div style={{ marginTop: 16 }}> <p> 
+          <strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalCustomers} customers. </p>
+           <ul style={{ maxHeight: 200, overflowY: 'auto' }}> {importResult.results?.map((r: any, i: number) => ( <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}> {r.code}: {r.status === 'success' ? `Imported (${r.shipToCount} ship-to location(s))` : r.errors?.join('; ')} </li> ))} 
+           </ul> </div> )} 
+           </div>
 
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Add Customer</h3>
         <form onSubmit={handleSubmit}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-            <input placeholder="Code" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 120 }} />
+            <input placeholder="Bill To ID" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 120 }} />
             <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required style={{ width: 200 }} />
             <input placeholder="Category" value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 140 }} />
             <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: 180 }} />
@@ -156,10 +192,13 @@ function CustomersPage() {
           <h4>Ship-to Locations</h4>
           {shipTos.map((s, i) => (
             <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-              <input placeholder="Address" value={s.address} onChange={(e) => updateShipTo(i, 'address', e.target.value)} style={{ width: 200 }} />
-              <input placeholder="Pincode" value={s.pincode} onChange={(e) => updateShipTo(i, 'pincode', e.target.value)} style={{ width: 100 }} />
-              <input placeholder="State" value={s.state} onChange={(e) => updateShipTo(i, 'state', e.target.value)} style={{ width: 140 }} />
-              <input placeholder="GST Number" value={s.gstNumber} onChange={(e) => updateShipTo(i, 'gstNumber', e.target.value)} style={{ width: 180 }} />
+              <input placeholder="Ship To ID" value={s.shipToCode} onChange={(e) => updateShipTo(i, 'shipToCode', e.target.value)} style={{ width: 110 }} />
+              <input placeholder="Address" value={s.address} onChange={(e) => updateShipTo(i, 'address', e.target.value)} style={{ width: 180 }} />
+              <input placeholder="Address" value={s.address} onChange={(e) => updateShipTo(i, 'address', e.target.value)} style={{ width: 180 }} />
+              <input placeholder="Pincode" value={s.pincode} onChange={(e) => updateShipTo(i, 'pincode', e.target.value)} style={{ width: 90 }} />
+              <input placeholder="State" value={s.state} onChange={(e) => updateShipTo(i, 'state', e.target.value)} style={{ width: 120 }} />
+              <input placeholder="GST Number" value={s.gstNumber} onChange={(e) => updateShipTo(i, 'gstNumber', e.target.value)} style={{ width: 160 }} />
+              <input placeholder="Warehouse Code (e.g. MH01)" value={s.warehouseCode} onChange={(e) => updateShipTo(i, 'warehouseCode', e.target.value)} style={{ width: 160 }} />
               <label style={{ fontSize: 13 }}>
                 <input type="checkbox" checked={s.isDefault} onChange={(e) => updateShipTo(i, 'isDefault', e.target.checked)} /> Default
               </label>
@@ -228,20 +267,26 @@ function CustomersPage() {
                       <table style={{ width: '100%' }}>
                         <thead>
                           <tr style={{ textAlign: 'left', fontSize: 13, color: '#666' }}>
+                            <th style={{ padding: 4 }}>Ship To ID</th>
                             <th style={{ padding: 4 }}>Address</th>
                             <th style={{ padding: 4 }}>Pincode</th>
                             <th style={{ padding: 4 }}>State</th>
                             <th style={{ padding: 4 }}>GST Number</th>
+                            <th style={{ padding: 4 }}>Serving Warehouse</th>
                             <th style={{ padding: 4 }}>Default?</th>
                           </tr>
                         </thead>
                         <tbody>
                           {c.shipToLocations.map((s) => (
                             <tr key={s.id}>
+                              <td style={{ padding: 4 }}>{s.shipToCode || '—'}</td>
                               <td style={{ padding: 4 }}>{s.address}</td>
                               <td style={{ padding: 4 }}>{s.pincode}</td>
                               <td style={{ padding: 4 }}>{s.state}</td>
                               <td style={{ padding: 4 }}>{s.gstNumber || '—'}</td>
+                              <td style={{ padding: 4 }}>
+                                {s.warehouse ? `${s.warehouse.code} — ${s.warehouse.name}` : '—'}
+                              </td>
                               <td style={{ padding: 4 }}>{s.isDefault ? 'Yes' : ''}</td>
                             </tr>
                           ))}

@@ -22,10 +22,17 @@ function WarehousesPage() {
   const [address, setAddress] = useState('');
 
   const loadWarehouses = () => {
-    fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
-      .then((res) => res.json())
-      .then((data) => setWarehouses(data));
-  };
+  fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
+    .then((res) => {
+      if (res.status === 401) {
+        localStorage.clear();
+        window.location.reload();
+        return [];
+      }
+      return res.json();
+    })
+    .then((data) => setWarehouses(Array.isArray(data) ? data : []));
+};
 
   useEffect(() => {
     loadWarehouses();

@@ -11,25 +11,16 @@ export class CustomersService {
 
   private validate(data: any): string[] {
     const errors: string[] = [];
-
     if (!data.code || !/^[A-Za-z0-9-]{1,30}$/.test(data.code)) {
-      errors.push('Customer Code is required: alphanumeric/hyphens only, max 30 characters.');
+      errors.push('Bill To ID is required: alphanumeric/hyphens only, max 30 characters.');
     }
     if (!data.name || data.name.length < 2 || data.name.length > 200) {
       errors.push('Customer Name is required: 2-200 characters.');
     }
-    if (data.email && !EMAIL_REGEX.test(data.email)) {
-      errors.push('Email format is invalid.');
-    }
-    if (data.pan && !PAN_REGEX.test(data.pan)) {
-      errors.push('PAN format is invalid (expected e.g. ABCDE1234F).');
-    }
-    if (data.gstNumber && !GST_REGEX.test(data.gstNumber)) {
-      errors.push('Billing GST number format is invalid.');
-    }
-    if (data.pincode && !/^\d{6}$/.test(data.pincode)) {
-      errors.push('Pincode must be 6 digits.');
-    }
+    if (data.email && !EMAIL_REGEX.test(data.email)) errors.push('Email format is invalid.');
+    if (data.pan && !PAN_REGEX.test(data.pan)) errors.push('PAN format is invalid (expected e.g. ABCDE1234F).');
+    if (data.gstNumber && !GST_REGEX.test(data.gstNumber)) errors.push('Billing GST number format is invalid.');
+    if (data.pincode && !/^\d{6}$/.test(data.pincode)) errors.push('Pincode must be 6 digits.');
 
     if (data.shipToLocations && data.shipToLocations.length > 0) {
       let defaultCount = 0;
@@ -42,8 +33,34 @@ export class CustomersService {
       }
       if (defaultCount > 1) errors.push('Only one Ship-to location can be marked as Default.');
     }
-
     return errors;
+  }
+
+  private async resolveShipTos(shipToLocations: any[], user: any, errors: string[]) {
+    const resolved: any[] = [];
+    for (const s of shipToLocations || []) {
+      let warehouseId: string | undefined = undefined;
+      if (s.warehouseCode) {
+        const wh = await this.prisma.warehouse.findUnique({
+          where: { companyId_code: { companyId: user.companyId, code: s.warehouseCode.toUpperCase() } },
+        });
+        if (!wh) {
+          errors.push(`Warehouse code "${s.warehouseCode}" not found for this company.`);
+          continue;
+        }
+        warehouseId = wh.id;
+      }
+      resolved.push({
+        shipToCode: s.shipToCode || undefined,
+        address: s.address,
+        pincode: s.pincode,
+        state: s.state,
+        gstNumber: s.gstNumber || undefined,
+        isDefault: !!s.isDefault,
+        warehouseId,
+      });
+    }
+    return resolved;
   }
 
   async create(data: any, user: any) {
@@ -51,38 +68,13 @@ export class CustomersService {
       throw new ForbiddenException('Super admin accounts cannot create customers directly — log in as a company admin instead.');
     }
     const errors = this.validate(data);
+    const shipToCreateData = await this.resolveShipTos(data.shipToLocations, user, errors);
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const existing = await this.prisma.customer.findUnique({
       where: { companyId_code: { companyId: user.companyId, code: data.code.toUpperCase() } },
     });
-    if (existing) throw new BadRequestException(`Customer code "${data.code}" already exists.`);
-
-    const shipToCreateData: any[] = [];
-    if (data.shipToLocations && data.shipToLocations.length) {
-      for (const s of data.shipToLocations) {
-        let warehouseId: string | undefined = undefined;
-        if (s.warehouseCode) {
-          const wh = await this.prisma.warehouse.findUnique({
-            where: { companyId_code: { companyId: user.companyId, code: s.warehouseCode.toUpperCase() } },
-          });
-          if (!wh) {
-            throw new BadRequestException(`Warehouse code "${s.warehouseCode}" not found for this company.`);
-          }
-          warehouseId = wh.id;
-        }
-        shipToCreateData.push({
-          address: s.address,
-          pincode: s.pincode,
-          state: s.state,
-          gstNumber: s.gstNumber || undefined,
-          latitude: s.latitude || undefined,
-          longitude: s.longitude || undefined,
-          isDefault: !!s.isDefault,
-          warehouseId,
-        });
-      }
-    }
+    if (existing) throw new BadRequestException(`Bill To ID "${data.code}" already exists.`);
 
     return this.prisma.customer.create({
       data: {
@@ -107,10 +99,7 @@ export class CustomersService {
 
   findAll(user: any) {
     const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
-    return this.prisma.customer.findMany({
-      where,
-      include: { shipToLocations: { include: { warehouse: true } } },
-    });
+    return this.prisma.customer.findMany({ where, include: { shipToLocations: { include: { warehouse: true } } } });
   }
 
   private async assertAccess(id: string, user: any) {
@@ -139,5 +128,66 @@ export class CustomersService {
       this.prisma.customer.delete({ where: { id } }),
     ]);
     return { deleted: true, code: customer.code };
+  }
+
+  async bulkImport(groupedCustomers: any[], user: any) {
+    if (!user.companyId) {
+      throw new ForbiddenException('Super admin accounts cannot import customers directly — log in as a company admin instead.');
+    }
+    const results: any[] = [];
+    const codesSeenInFile = new Set<string>();
+
+    for (const group of groupedCustomers) {
+      const upperCode = group.code ? String(group.code).toUpperCase() : '';
+      const errors = this.validate(group);
+
+      if (upperCode && codesSeenInFile.has(upperCode)) {
+        errors.push(`Duplicate Bill To ID within this file: ${upperCode}`);
+      }
+
+      const shipToCreateData = await this.resolveShipTos(group.shipToLocations, user, errors);
+
+      if (errors.length === 0 && upperCode) {
+        const existing = await this.prisma.customer.findUnique({
+          where: { companyId_code: { companyId: user.companyId, code: upperCode } },
+        });
+        if (existing) errors.push(`Bill To ID already exists in the database: ${upperCode}`);
+      }
+
+      if (errors.length > 0) {
+        results.push({ code: group.code || '(blank)', status: 'error', errors });
+        continue;
+      }
+
+      try {
+        await this.prisma.customer.create({
+          data: {
+            code: upperCode,
+            name: group.name,
+            category: group.category || undefined,
+            email: group.email || undefined,
+            phone: group.phone || undefined,
+            pan: group.pan || undefined,
+            billingAddress: group.billingAddress || undefined,
+            pincode: group.pincode || undefined,
+            state: group.state || undefined,
+            gstNumber: group.gstNumber || undefined,
+            company: { connect: { id: user.companyId } },
+            shipToLocations: shipToCreateData.length ? { create: shipToCreateData } : undefined,
+          },
+        });
+        results.push({ code: upperCode, status: 'success', shipToCount: shipToCreateData.length });
+        codesSeenInFile.add(upperCode);
+      } catch (err: any) {
+        results.push({ code: group.code || '(blank)', status: 'error', errors: [err.message || 'Unknown error'] });
+      }
+    }
+
+    return {
+      totalCustomers: groupedCustomers.length,
+      successCount: results.filter((r) => r.status === 'success').length,
+      failCount: results.filter((r) => r.status === 'error').length,
+      results,
+    };
   }
 }

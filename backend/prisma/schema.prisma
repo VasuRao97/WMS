@@ -108,6 +108,7 @@ model CustomerShipTo {
   id          String     @id @default(uuid())
   customerId  String
   customer    Customer   @relation(fields: [customerId], references: [id])
+  shipToCode  String?
   address     String
   pincode     String
   state       String

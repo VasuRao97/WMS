@@ -46,10 +46,17 @@ function SkusPage() {
   const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
 
   const loadSkus = () => {
-    fetch('http://localhost:3000/skus', { headers: authHeaders() })
-      .then((res) => res.json())
-      .then((data) => setSkus(data));
-  };
+  fetch('http://localhost:3000/skus', { headers: authHeaders() })
+    .then((res) => {
+      if (res.status === 401) {
+        localStorage.clear();
+        window.location.reload();
+        return [];
+      }
+      return res.json();
+    })
+    .then((data) => setSkus(Array.isArray(data) ? data : []));
+};
 
   const loadSummary = () => {
     fetch('http://localhost:3000/skus/summary', { headers: authHeaders() })
