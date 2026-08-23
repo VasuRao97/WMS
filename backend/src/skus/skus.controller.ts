@@ -5,17 +5,7 @@ import * as XLSX from 'xlsx';
 import { SkusService } from './skus.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
-
-function toBool(val: any): boolean {
-  if (typeof val === 'boolean') return val;
-  if (typeof val === 'string') return val.trim().toUpperCase() === 'TRUE';
-  return false;
-}
-function toNumberOrUndefined(val: any): number | undefined {
-  if (val === undefined || val === null || val === '') return undefined;
-  const n = Number(val);
-  return isNaN(n) ? undefined : n;
-}
+import { toBool, toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 @Controller('skus')
 @UseGuards(JwtAuthGuard)
@@ -74,7 +64,12 @@ export class SkusController {
   @Post('import')
   @UseInterceptors(FileInterceptor('file'))
   async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
-    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    } catch {
+      return { totalRows: 0, successCount: 0, failCount: 0, results: [{ row: 0, code: '(file)', status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+    }
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });

@@ -81,10 +81,15 @@ Codes are **unique per company, never globally** — `Sku.code`, `Warehouse.code
 WAREHOUSE_SUPERVISOR | OPERATOR` (`SUPER_ADMIN` is platform-level, no `companyId`, sees every
 company — but there is no controlled way to create one yet; it needs a setup script, deliberately
 not exposed via public `/auth/register`). Tenant scoping is enforced **in each service method**,
-not by a global Prisma middleware: the convention (see `skus.service.ts`) is a
-`companyFilter(user)` helper returning `{}` for `SUPER_ADMIN` and `{ companyId: user.companyId }`
-otherwise, plus an `assertSkuAccess`-style per-record ownership check before mutating a single
-record. Follow this pattern for any new service rather than trusting the client-supplied id alone.
+not by a global Prisma middleware: the convention is `companyFilter(user)` from
+`backend/src/common/tenant.util.ts` — returns `{}` for `SUPER_ADMIN` and `{ companyId:
+user.companyId }` otherwise — imported by every service's `findAll`/`removeAll`/summary queries,
+plus an `assertSkuAccess`-style per-record ownership check before mutating a single record.
+Follow this pattern for any new service rather than trusting the client-supplied id alone —
+**and remember any lookup keyed by a value that isn't itself `companyId`-scoped (e.g. SKU
+barcodes) still needs an explicit tenant filter joined through its parent record**; this was
+missed once (`SkuBarcode` has no `companyId` column, so its uniqueness check needs `sku: {
+companyId: user.companyId }` in the `where`, not just `barcode: { in: [...] }`).
 
 `RolesGuard` + `@Roles()` (`backend/src/auth/roles.guard.ts`, `roles.decorator.ts`) implement
 role-based checks but are **not currently wired into any controller** — only `JwtAuthGuard` is
@@ -117,6 +122,15 @@ module) alongside its controller/service. Controllers use `@CurrentUser()`
 (`auth/current-user.decorator.ts`, reads `request.user` set by `JwtStrategy`) to get the
 authenticated `{ userId, email, role, companyId }`, and depend on `JwtAuthGuard` for auth.
 
+`backend/src/common/` holds cross-module utilities every service/controller should import rather
+than re-implement: `tenant.util.ts` (`companyFilter`), `normalize.util.ts` (`normalizeCode`, for
+free-text classification fields — see below), `validation.util.ts` (`CODE_REGEX`, `PINCODE_REGEX`
+— every master-data code field follows the same alphanumeric/hyphen/30-char rule), and
+`xlsx-parse.util.ts` (`toBool`, `toNumberOrUndefined`, for reading Excel cell values in import
+controllers). These didn't always exist — SKU/Warehouse/Customer each grew their own copies
+first and got consolidated in a cleanup pass (2026-08-23); don't let a fourth master-data module
+reintroduce a fifth copy.
+
 There is **no DTO/class-validator layer** — request bodies are typed `any` and validated by hand
 in the service (see `SkusService.validateSkuData`, which returns a string[] of error messages
 thrown via `BadRequestException`). Match this style for new endpoints rather than introducing
@@ -135,12 +149,14 @@ any new import too; reading by position is a real footgun (bit a template earlie
 project's history — a sheet got reordered and the importer silently read the wrong tab).
 
 **Free-text classification values get normalized to `SCREAMING_SNAKE_CASE`, not stored as an
-enum.** See `warehouses.service.ts`'s `normalizeCode()` — `"Ground/Floor"` → `GROUND_FLOOR`,
+enum.** See `common/normalize.util.ts`'s `normalizeCode()` — `"Ground/Floor"` → `GROUND_FLOOR`,
 `"Drive-in"` → `DRIVE_IN`, `"Regional DC"` → `REGIONAL_DC` (strip whitespace/`/`/`-`, uppercase).
 This lets both the manual-create form (which submits the canonical value directly) and the Excel
 import (which submits whatever human-readable label was typed in a cell) validate against the
 same restricted list without a lookup table. Reuse this helper — don't hand-roll a new
-label→code mapping per field.
+label→code mapping per field (this was missed once for `CustomerShipTo.deliveryZone`, which had
+two inconsistent hand-rolled normalizations — one trimmed, one didn't — that disagreed on the
+same input).
 
 ### Every master-data entity gets a "Delete All" — build it in from day one
 Warehouses, SKUs, and Customers all have a `DELETE /<resource>/all` endpoint (`removeAll` in the
@@ -224,3 +240,8 @@ import features must be exercised through the actual frontend, not Thunder Clien
   than trusting the editor's display.
 - Before chasing a repeat error, confirm the file actually saved (unsaved-changes dot on the VS
   Code tab) — some "same error keeps happening" loops have just been an unsaved file.
+- If a dev-server preview tool's log stream shows compilation finishing ("Found 0 errors...")
+  but never shows the Nest bootstrap lines that normally follow immediately after, don't assume
+  the process crashed — the log stream can just stop flushing. Confirm with a direct request
+  (`curl http://localhost:3000/`) before concluding the server is down; a real failure will
+  refuse the connection, a log-streaming hiccup will respond normally.

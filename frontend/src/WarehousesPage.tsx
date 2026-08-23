@@ -238,7 +238,7 @@ function WarehousesPage() {
           <div style={{ marginTop: 16 }}>
             <p><strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalWarehouses} warehouses.</p>
             <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
-              {importResult.results.map((r, i) => (
+              {importResult.results?.map((r, i) => (
                 <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
                   {r.code}: {r.status === 'success' ? `Imported (${r.storageTypeCount} storage entr${r.storageTypeCount === 1 ? 'y' : 'ies'}, ${r.dispatchFlowCount} dispatch flow(s))` : r.errors?.join('; ')}
                 </li>

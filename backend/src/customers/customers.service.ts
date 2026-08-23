@@ -1,5 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { companyFilter } from '../common/tenant.util';
+import { CODE_REGEX, PINCODE_REGEX } from '../common/validation.util';
 
 const GST_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
@@ -12,7 +14,7 @@ export class CustomersService {
 
   private validate(data: any): string[] {
     const errors: string[] = [];
-    if (!data.code || !/^[A-Za-z0-9-]{1,30}$/.test(data.code)) {
+    if (!data.code || !CODE_REGEX.test(data.code)) {
       errors.push('Bill To ID is required: alphanumeric/hyphens only, max 30 characters.');
     }
     if (!data.name || data.name.length < 2 || data.name.length > 200) {
@@ -21,16 +23,16 @@ export class CustomersService {
     if (data.email && !EMAIL_REGEX.test(data.email)) errors.push('Email format is invalid.');
     if (data.pan && !PAN_REGEX.test(data.pan)) errors.push('PAN format is invalid (expected e.g. ABCDE1234F).');
     if (data.gstNumber && !GST_REGEX.test(data.gstNumber)) errors.push('Billing GST number format is invalid.');
-    if (data.pincode && !/^\d{6}$/.test(data.pincode)) errors.push('Pincode must be 6 digits.');
+    if (data.pincode && !PINCODE_REGEX.test(data.pincode)) errors.push('Pincode must be 6 digits.');
 
     if (data.shipToLocations && data.shipToLocations.length > 0) {
       let defaultCount = 0;
       for (const s of data.shipToLocations) {
         if (!s.address) errors.push('Each Ship-to location requires an address.');
-        if (!s.pincode || !/^\d{6}$/.test(s.pincode)) errors.push('Each Ship-to location requires a valid 6-digit pincode.');
+        if (!s.pincode || !PINCODE_REGEX.test(s.pincode)) errors.push('Each Ship-to location requires a valid 6-digit pincode.');
         if (!s.state) errors.push('Each Ship-to location requires a state.');
         if (s.gstNumber && !GST_REGEX.test(s.gstNumber)) errors.push(`Ship-to GST number format is invalid: ${s.gstNumber}`);
-        if (s.deliveryZone && !DELIVERY_ZONE_VALUES.includes(String(s.deliveryZone).toUpperCase())) {
+        if (s.deliveryZone && !DELIVERY_ZONE_VALUES.includes(String(s.deliveryZone).trim().toUpperCase())) {
           errors.push(`Ship-to Local/Upcountry must be one of: ${DELIVERY_ZONE_VALUES.join(', ')}`);
         }
         if (s.isDefault) defaultCount++;
@@ -98,13 +100,15 @@ export class CustomersService {
         company: { connect: { id: user.companyId } },
         shipToLocations: shipToCreateData.length ? { create: shipToCreateData } : undefined,
       },
-      include: { shipToLocations: { include: { warehouse: true } } },
+      include: { shipToLocations: { include: { warehouse: { select: { code: true, name: true } } } } },
     });
   }
 
   findAll(user: any) {
-    const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
-    return this.prisma.customer.findMany({ where, include: { shipToLocations: { include: { warehouse: true } } } });
+    return this.prisma.customer.findMany({
+      where: companyFilter(user),
+      include: { shipToLocations: { include: { warehouse: { select: { code: true, name: true } } } } },
+    });
   }
 
   private async assertAccess(id: string, user: any) {
@@ -136,8 +140,7 @@ export class CustomersService {
   }
 
   async removeAll(user: any) {
-    const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
-    const customers = await this.prisma.customer.findMany({ where, select: { id: true } });
+    const customers = await this.prisma.customer.findMany({ where: companyFilter(user), select: { id: true } });
     const ids = customers.map((c) => c.id);
     if (ids.length > 0) {
       await this.prisma.$transaction([

@@ -1,5 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { companyFilter } from '../common/tenant.util';
+import { CODE_REGEX } from '../common/validation.util';
 
 const BASE_UOM_VALUES = ['PIECE', 'PACK', 'CASE', 'PALLET', 'BOX'];
 const STORAGE_CONDITION_VALUES = ['AMBIENT', 'CHILLED', 'FROZEN', 'NA'];
@@ -8,13 +10,22 @@ const ABC_VALUES = ['A', 'B', 'C'];
 const STORAGE_UNIT_TYPES = ['EACH', 'INNER', 'CASE', 'PALLET'];
 const BARCODE_TYPES = ['EACH', 'CASE', 'OTHER'];
 
+// baseUom/storageCondition/weightUom/abcClass are matched case-insensitively
+// against the lists above — the Excel importer pre-uppercases these columns,
+// but a manual create/import caller sending "Piece" instead of "PIECE"
+// should be accepted the same way, not rejected just because it skipped the
+// controller's own uppercasing.
+function upper(value: any): string {
+  return value === undefined || value === null ? value : String(value).toUpperCase().trim();
+}
+
 @Injectable()
 export class SkusService {
   constructor(private prisma: PrismaService) {}
 
   private validateSkuData(data: any): string[] {
     const errors: string[] = [];
-    if (!data.code || !/^[A-Za-z0-9-]{1,30}$/.test(data.code)) {
+    if (!data.code || !CODE_REGEX.test(data.code)) {
       errors.push('SKU Code is required: alphanumeric/hyphens only, max 30 characters.');
     }
     if (!data.description || data.description.length < 3 || data.description.length > 200) {
@@ -22,23 +33,23 @@ export class SkusService {
     }
     if (!data.baseUom) {
       errors.push('Base UOM is required.');
-    } else if (!BASE_UOM_VALUES.includes(data.baseUom)) {
+    } else if (!BASE_UOM_VALUES.includes(upper(data.baseUom))) {
       errors.push(`Base UOM must be one of: ${BASE_UOM_VALUES.join(', ')}`);
     }
     if (!data.hsnCode || !/^\d{4}(\d{2})?(\d{2})?$/.test(String(data.hsnCode))) {
       errors.push('HSN Code is required: numeric only, 4, 6, or 8 digits.');
     }
-    const storageCondition = data.storageCondition || 'AMBIENT';
+    const storageCondition = data.storageCondition ? upper(data.storageCondition) : 'AMBIENT';
     if (!STORAGE_CONDITION_VALUES.includes(storageCondition)) {
       errors.push(`Storage Condition must be one of: ${STORAGE_CONDITION_VALUES.join(', ')}`);
     }
-    if (data.shelfLifeTracked && (!data.shelfLifeDays || data.shelfLifeDays <= 0)) {
-      errors.push('Shelf Life Days is required (positive number) when Shelf-Life Tracked is true.');
+    if (data.shelfLifeTracked && (!data.shelfLifeDays || data.shelfLifeDays <= 0 || !Number.isInteger(Number(data.shelfLifeDays)))) {
+      errors.push('Shelf Life Days is required (a positive whole number) when Shelf-Life Tracked is true.');
     }
     if (data.grossWeight && !data.weightUom) {
       errors.push('Weight UOM is required when Gross Weight is provided.');
     }
-    if (data.weightUom && !WEIGHT_UOM_VALUES.includes(data.weightUom)) {
+    if (data.weightUom && !WEIGHT_UOM_VALUES.includes(upper(data.weightUom))) {
       errors.push(`Weight UOM must be one of: ${WEIGHT_UOM_VALUES.join(', ')}`);
     }
     if (data.grossWeight !== undefined && data.grossWeight !== null && data.grossWeight !== '' && Number(data.grossWeight) <= 0) {
@@ -47,7 +58,7 @@ export class SkusService {
     if (data.isHazmat && !data.hazmatClass) {
       errors.push('Hazmat Class is required when Hazmat is true.');
     }
-    if (data.abcClass && !ABC_VALUES.includes(data.abcClass)) {
+    if (data.abcClass && !ABC_VALUES.includes(upper(data.abcClass))) {
       errors.push(`ABC Classification must be one of: ${ABC_VALUES.join(', ')}`);
     }
     if (data.standardCost !== undefined && data.standardCost !== null && data.standardCost !== '' && Number(data.standardCost) < 0) {
@@ -91,30 +102,26 @@ export class SkusService {
       description: data.description,
       category: data.category || 'Uncategorized',
       subCategory: data.subCategory || undefined,
-      baseUom: data.baseUom,
+      baseUom: upper(data.baseUom),
       hsnCode: String(data.hsnCode),
       storageCondition,
       batchTracked: !!data.batchTracked,
       shelfLifeTracked: !!data.shelfLifeTracked,
       shelfLifeDays: data.shelfLifeDays || undefined,
       isActive: data.isActive !== undefined ? !!data.isActive : true,
-      weightUom: data.weightUom || undefined,
+      weightUom: data.weightUom ? upper(data.weightUom) : undefined,
       grossWeight: data.grossWeight || undefined,
       isHazmat: !!data.isHazmat,
       hazmatClass: data.hazmatClass || undefined,
       hasUniqueBarcode: !!data.hasUniqueBarcode,
-      abcClass: data.abcClass || undefined,
+      abcClass: data.abcClass ? upper(data.abcClass) : undefined,
       currency: data.currency || undefined,
-      standardCost: data.standardCost || undefined,
+      standardCost: data.standardCost !== undefined && data.standardCost !== null && data.standardCost !== '' ? data.standardCost : undefined,
       moq: data.moq || undefined,
       company: { connect: { id: companyId } },
       storageUnits: { create: data.storageUnits },
       barcodes: data.barcodes && data.barcodes.length ? { create: data.barcodes } : undefined,
     };
-  }
-
-  private companyFilter(user: any) {
-    return user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
   }
 
   private async assertSkuAccess(id: string, user: any) {
@@ -134,7 +141,9 @@ export class SkusService {
     if (data.barcodes && data.barcodes.length > 0) {
       const barcodeValues = data.barcodes.map((b: any) => b.barcode).filter(Boolean);
       if (barcodeValues.length) {
-        const existing = await this.prisma.skuBarcode.findMany({ where: { barcode: { in: barcodeValues } } });
+        const existing = await this.prisma.skuBarcode.findMany({
+          where: { barcode: { in: barcodeValues }, sku: { companyId: user.companyId } },
+        });
         if (existing.length > 0) {
           errors.push(`Barcode(s) already in use: ${existing.map((e) => e.barcode).join(', ')}`);
         }
@@ -142,7 +151,13 @@ export class SkusService {
     }
     if (errors.length > 0) throw new BadRequestException(errors);
 
-    const storageCondition = data.storageCondition || 'AMBIENT';
+    const upperCode = data.code.toUpperCase();
+    const existingCode = await this.prisma.sku.findUnique({
+      where: { companyId_code: { companyId: user.companyId, code: upperCode } },
+    });
+    if (existingCode) throw new BadRequestException(`SKU Code "${data.code}" already exists.`);
+
+    const storageCondition = data.storageCondition ? upper(data.storageCondition) : 'AMBIENT';
     return this.prisma.sku.create({
       data: this.buildCreateData(data, storageCondition, user.companyId),
       include: { storageUnits: true, barcodes: true },
@@ -151,7 +166,7 @@ export class SkusService {
 
   findAll(user: any) {
     return this.prisma.sku.findMany({
-      where: this.companyFilter(user),
+      where: companyFilter(user),
       include: { storageUnits: true, barcodes: true },
     });
   }
@@ -188,7 +203,9 @@ export class SkusService {
       if (errors.length === 0 && data.barcodes && data.barcodes.length > 0) {
         const barcodeValues = data.barcodes.map((b: any) => b.barcode).filter(Boolean);
         if (barcodeValues.length) {
-          const existingBarcodes = await this.prisma.skuBarcode.findMany({ where: { barcode: { in: barcodeValues } } });
+          const existingBarcodes = await this.prisma.skuBarcode.findMany({
+            where: { barcode: { in: barcodeValues }, sku: { companyId: user.companyId } },
+          });
           if (existingBarcodes.length > 0) {
             errors.push(`Barcode(s) already exist in the database: ${existingBarcodes.map((e) => e.barcode).join(', ')}`);
           }
@@ -199,7 +216,7 @@ export class SkusService {
         continue;
       }
       try {
-        const storageCondition = data.storageCondition || 'AMBIENT';
+        const storageCondition = data.storageCondition ? upper(data.storageCondition) : 'AMBIENT';
         await this.prisma.sku.create({ data: this.buildCreateData(data, storageCondition, user.companyId) });
         results.push({ row: rowNumber, code: upperCode, status: 'success' });
         codesSeenInFile.add(upperCode);
@@ -230,7 +247,8 @@ export class SkusService {
   private async getLinkedCounts(skuId: string) {
     return this.prisma.sku.findUnique({
       where: { id: skuId },
-      include: {
+      select: {
+        code: true,
         _count: {
           select: {
             stockMovements: true,
@@ -239,6 +257,8 @@ export class SkusService {
             outboundOrderLine: true,
             allocations: true,
             returns: true,
+            asParent: true,
+            asChild: true,
           },
         },
       },
@@ -250,7 +270,8 @@ export class SkusService {
     const sku = await this.getLinkedCounts(id);
     if (!sku) throw new NotFoundException('SKU not found.');
     const c = sku._count;
-    const totalLinked = c.stockMovements + c.receiptLines + c.putawayTasks + c.outboundOrderLine + c.allocations + c.returns;
+    const totalLinked =
+      c.stockMovements + c.receiptLines + c.putawayTasks + c.outboundOrderLine + c.allocations + c.returns + c.asParent + c.asChild;
     if (totalLinked > 0) {
       throw new BadRequestException(
         `Cannot permanently delete "${sku.code}" — it has ${totalLinked} linked transaction record(s). Deactivate it instead.`,
@@ -266,8 +287,10 @@ export class SkusService {
 
   async removeAll(user: any) {
     const skus = await this.prisma.sku.findMany({
-      where: this.companyFilter(user),
-      include: {
+      where: companyFilter(user),
+      select: {
+        id: true,
+        code: true,
         _count: {
           select: {
             stockMovements: true,
@@ -276,6 +299,8 @@ export class SkusService {
             outboundOrderLine: true,
             allocations: true,
             returns: true,
+            asParent: true,
+            asChild: true,
           },
         },
       },
@@ -284,7 +309,8 @@ export class SkusService {
     const blocked: string[] = [];
     for (const sku of skus) {
       const c = sku._count;
-      const totalLinked = c.stockMovements + c.receiptLines + c.putawayTasks + c.outboundOrderLine + c.allocations + c.returns;
+      const totalLinked =
+        c.stockMovements + c.receiptLines + c.putawayTasks + c.outboundOrderLine + c.allocations + c.returns + c.asParent + c.asChild;
       if (totalLinked > 0) blocked.push(sku.code);
       else deletable.push(sku.id);
     }
@@ -300,7 +326,7 @@ export class SkusService {
 
   async exportRows(user: any) {
     const skus = await this.prisma.sku.findMany({
-      where: this.companyFilter(user),
+      where: companyFilter(user),
       include: { storageUnits: true, barcodes: true },
       orderBy: { code: 'asc' },
     });
@@ -345,7 +371,7 @@ export class SkusService {
   }
 
   async getSummary(user: any) {
-    const skus = await this.prisma.sku.findMany({ where: this.companyFilter(user) });
+    const skus = await this.prisma.sku.findMany({ where: companyFilter(user) });
     const total = skus.length;
     const active = skus.filter((s) => s.isActive).length;
     const inactive = total - active;

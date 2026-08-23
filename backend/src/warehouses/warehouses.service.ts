@@ -1,5 +1,9 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizeCode } from '../common/normalize.util';
+import { companyFilter } from '../common/tenant.util';
+import { CODE_REGEX, PINCODE_REGEX } from '../common/validation.util';
+import { toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 const NODE_TYPE_VALUES = ['FACTORY', 'DISTRIBUTOR', 'REGIONAL_DC', 'NATIONAL_DC', 'CNF', 'CROSS_DOCK'];
 const STORAGE_TYPE_VALUES = ['GROUND_FLOOR', 'SPR', 'DRIVE_IN', 'MIX', 'ASRS'];
@@ -14,20 +18,13 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   CROSS_DOCK: 'Cross-dock',
 };
 
-// Normalizes free-text label variants ("Ground/Floor", "Drive-in", "Regional DC",
-// "Full Pallet") into the SCREAMING_SNAKE_CASE canonical values this app stores,
-// matching the convention already used for MovementType/LocationType etc.
-function normalizeCode(value: any): string {
-  return String(value).trim().toUpperCase().replace(/[\s/-]+/g, '_');
-}
-
 @Injectable()
 export class WarehousesService {
   constructor(private prisma: PrismaService) {}
 
   private validateWarehouseData(data: any): string[] {
     const errors: string[] = [];
-    if (!data.code || !/^[A-Za-z0-9-]{1,30}$/.test(data.code)) {
+    if (!data.code || !CODE_REGEX.test(data.code)) {
       errors.push('Location Code is required: alphanumeric/hyphens only, max 30 characters.');
     }
     const nodeType = data.nodeType ? normalizeCode(data.nodeType) : '';
@@ -38,12 +35,18 @@ export class WarehousesService {
     }
     if (!data.city) errors.push('City Name is required.');
     if (!data.address) errors.push('Address is required.');
-    if (!data.pincode || !/^\d{6}$/.test(String(data.pincode))) errors.push('Pincode is required: 6 digits.');
+    if (!data.pincode || !PINCODE_REGEX.test(String(data.pincode))) errors.push('Pincode is required: 6 digits.');
     if (data.noOfDocks !== undefined && data.noOfDocks !== null && data.noOfDocks !== '' && Number(data.noOfDocks) < 0) {
       errors.push('No of Docks cannot be negative.');
     }
     if (data.areaSqFt !== undefined && data.areaSqFt !== null && data.areaSqFt !== '' && Number(data.areaSqFt) <= 0) {
       errors.push('Area sq ft must be a positive number.');
+    }
+    if (data.latitude !== undefined && data.latitude !== null && data.latitude !== '' && isNaN(Number(data.latitude))) {
+      errors.push('Latitude must be a number.');
+    }
+    if (data.longitude !== undefined && data.longitude !== null && data.longitude !== '' && isNaN(Number(data.longitude))) {
+      errors.push('Longitude must be a number.');
     }
 
     const storageTypes = data.storageTypes || [];
@@ -89,11 +92,11 @@ export class WarehousesService {
       city: data.city,
       pincode: String(data.pincode),
       nodeType,
-      latitude: data.latitude !== undefined && data.latitude !== '' ? Number(data.latitude) : undefined,
-      longitude: data.longitude !== undefined && data.longitude !== '' ? Number(data.longitude) : undefined,
+      latitude: toNumberOrUndefined(data.latitude),
+      longitude: toNumberOrUndefined(data.longitude),
       threePlName: data.threePlName || undefined,
-      noOfDocks: data.noOfDocks !== undefined && data.noOfDocks !== '' ? Number(data.noOfDocks) : undefined,
-      areaSqFt: data.areaSqFt !== undefined && data.areaSqFt !== '' ? Number(data.areaSqFt) : undefined,
+      noOfDocks: toNumberOrUndefined(data.noOfDocks),
+      areaSqFt: toNumberOrUndefined(data.areaSqFt),
       company: { connect: { id: companyId } },
       storageTypes: storageTypes.length ? { create: storageTypes } : undefined,
       dispatchFlows: dispatchFlowTypes.size ? { create: [...dispatchFlowTypes].map((flowType) => ({ flowType })) } : undefined,
@@ -120,9 +123,8 @@ export class WarehousesService {
   }
 
   findAll(user: any) {
-    const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
     return this.prisma.warehouse.findMany({
-      where,
+      where: companyFilter(user),
       include: { storageTypes: true, dispatchFlows: true },
       orderBy: { code: 'asc' },
     });
@@ -163,11 +165,12 @@ export class WarehousesService {
 
       try {
         await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name) });
+        const dispatchFlowCount = new Set((group.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType))).size;
         results.push({
           code: upperCode,
           status: 'success',
           storageTypeCount: (group.storageTypes || []).length,
-          dispatchFlowCount: (group.dispatchFlows || []).length,
+          dispatchFlowCount,
         });
         codesSeenInFile.add(upperCode);
       } catch (err: any) {
@@ -203,10 +206,11 @@ export class WarehousesService {
   }
 
   async removeAll(user: any) {
-    const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
     const warehouses = await this.prisma.warehouse.findMany({
-      where,
-      include: {
+      where: companyFilter(user),
+      select: {
+        id: true,
+        code: true,
         _count: {
           select: {
             assignedUsers: true,
@@ -241,9 +245,8 @@ export class WarehousesService {
   }
 
   async getCustomerSummary(user: any) {
-    const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
     const warehouses = await this.prisma.warehouse.findMany({
-      where,
+      where: companyFilter(user),
       include: { shipToAssignments: { select: { customerId: true, deliveryZone: true } } },
       orderBy: { code: 'asc' },
     });

@@ -4,12 +4,7 @@ import * as XLSX from 'xlsx';
 import { CustomersService } from './customers.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
-
-function toBool(val: any): boolean {
-  if (typeof val === 'boolean') return val;
-  if (typeof val === 'string') return val.trim().toUpperCase() === 'TRUE';
-  return false;
-}
+import { toBool } from '../common/xlsx-parse.util';
 
 @Controller('customers')
 @UseGuards(JwtAuthGuard)
@@ -49,7 +44,12 @@ export class CustomersController {
   @Post('import')
   @UseInterceptors(FileInterceptor('file'))
   async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
-    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    } catch {
+      return { totalCustomers: 0, successCount: 0, failCount: 0, results: [{ code: '(file)', status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+    }
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });

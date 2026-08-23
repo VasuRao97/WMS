@@ -6,7 +6,6 @@ import CustomersPage from './CustomersPage';
 
 function App() {
   const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers'>('warehouses');
-  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('token'));
   const [user, setUser] = useState<any>(
     localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
   );
@@ -14,15 +13,13 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    setIsLoggedIn(false);
     setUser(null);
   };
 
-  if (!isLoggedIn) {
+  if (!user) {
     return (
       <LoginPage
         onLoginSuccess={() => {
-          setIsLoggedIn(true);
           setUser(JSON.parse(localStorage.getItem('user')!));
         }}
       />

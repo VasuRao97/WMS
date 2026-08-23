@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 
 type Warehouse = { code: string; name: string } | null;
 
@@ -108,7 +108,7 @@ const handleImport = async () => {
 
   const updateShipTo = (index: number, field: keyof ShipToInput, value: any) => {
     const copy = [...shipTos];
-    (copy[index] as any)[field] = value;
+    copy[index] = { ...copy[index], [field]: value };
     setShipTos(copy);
   };
 
@@ -231,7 +231,6 @@ const handleImport = async () => {
             <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <input placeholder="Ship To ID" value={s.shipToCode} onChange={(e) => updateShipTo(i, 'shipToCode', e.target.value)} style={{ width: 110 }} />
               <input placeholder="Address" value={s.address} onChange={(e) => updateShipTo(i, 'address', e.target.value)} style={{ width: 180 }} />
-              <input placeholder="Address" value={s.address} onChange={(e) => updateShipTo(i, 'address', e.target.value)} style={{ width: 180 }} />
               <input placeholder="Pincode" value={s.pincode} onChange={(e) => updateShipTo(i, 'pincode', e.target.value)} style={{ width: 90 }} />
               <input placeholder="State" value={s.state} onChange={(e) => updateShipTo(i, 'state', e.target.value)} style={{ width: 120 }} />
               <input placeholder="GST Number" value={s.gstNumber} onChange={(e) => updateShipTo(i, 'gstNumber', e.target.value)} style={{ width: 160 }} />
@@ -284,8 +283,8 @@ const handleImport = async () => {
         </thead>
         <tbody>
           {filtered.map((c) => (
-            <>
-              <tr key={c.id} style={{ borderBottom: '1px solid #eee' }}>
+            <Fragment key={c.id}>
+              <tr style={{ borderBottom: '1px solid #eee' }}>
                 <td style={{ padding: 8, fontWeight: 'bold' }}>{c.code}</td>
                 <td style={{ padding: 8 }}>{c.name}</td>
                 <td style={{ padding: 8 }}>{c.category || '—'}</td>
@@ -347,7 +346,7 @@ const handleImport = async () => {
                   </td>
                 </tr>
               )}
-            </>
+            </Fragment>
           ))}
         </tbody>
       </table>

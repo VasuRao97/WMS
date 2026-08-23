@@ -60,8 +60,15 @@ function SkusPage() {
 
   const loadSummary = () => {
     fetch('http://localhost:3000/skus/summary', { headers: authHeaders() })
-      .then((res) => res.json())
-      .then((data) => setSummary(data));
+      .then((res) => {
+        if (res.status === 401) {
+          localStorage.clear();
+          window.location.reload();
+          return null;
+        }
+        return res.json();
+      })
+      .then((data) => data && setSummary(data));
   };
 
   const refreshAll = () => {
@@ -92,7 +99,6 @@ function SkusPage() {
   };
 
   const handleExport = () => {
-    const token = localStorage.getItem('token');
     fetch('http://localhost:3000/skus/export', { headers: authHeaders() })
       .then((res) => res.blob())
       .then((blob) => {
@@ -179,7 +185,7 @@ function SkusPage() {
           <div style={{ marginTop: 16 }}>
             <p><strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalRows} rows.</p>
             <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
-              {importResult.results.map((r) => (
+              {importResult.results?.map((r) => (
                 <li key={r.row} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
                   Row {r.row} ({r.code}): {r.status === 'success' ? 'Imported' : r.errors?.join('; ')}
                 </li>

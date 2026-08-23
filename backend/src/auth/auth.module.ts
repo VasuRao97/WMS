@@ -10,7 +10,10 @@ import { PrismaService } from '../prisma/prisma.service';
   imports: [
     PassportModule,
     JwtModule.register({
-      secret: process.env.JWT_SECRET,
+      // Must derive the secret the same way jwt.strategy.ts does, or a token
+      // signed here can fail verification there (or vice versa) whenever
+      // JWT_SECRET is unset.
+      secret: process.env.JWT_SECRET || 'change-me-in-production',
       signOptions: { expiresIn: '8h' },
     }),
   ],
