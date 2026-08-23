@@ -5,9 +5,10 @@ import { AppService } from './app.service';
 import { WarehousesModule } from './warehouses/warehouses.module';
 import { SkusModule } from './skus/skus.module';
 import { AuthModule } from './auth/auth.module';
+import { CustomersModule } from './customers/customers.module';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), WarehousesModule, SkusModule, AuthModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), WarehousesModule, SkusModule, AuthModule, CustomersModule],
   controllers: [AppController],
   providers: [AppService],
 })
