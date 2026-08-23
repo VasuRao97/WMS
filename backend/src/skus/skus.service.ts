@@ -107,7 +107,10 @@ export class SkusService {
       storageCondition,
       batchTracked: !!data.batchTracked,
       shelfLifeTracked: !!data.shelfLifeTracked,
-      shelfLifeDays: data.shelfLifeDays || undefined,
+      // shelfLifeDays is Prisma Int (unlike the Decimal fields below, which
+      // accept a numeric string directly) — must actually be a number, not
+      // whatever type the caller happened to send.
+      shelfLifeDays: data.shelfLifeDays !== undefined && data.shelfLifeDays !== null && data.shelfLifeDays !== '' ? Number(data.shelfLifeDays) : undefined,
       isActive: data.isActive !== undefined ? !!data.isActive : true,
       weightUom: data.weightUom ? upper(data.weightUom) : undefined,
       grossWeight: data.grossWeight || undefined,

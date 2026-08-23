@@ -215,6 +215,12 @@ with per-row errors, live summary analytics, Delete All). Customer Master (full 
 ship-to per customer with per-ship-to GSTIN and a Local/Upcountry delivery-zone tag for dispatch
 planning, bulk Excel import using a repeated-Bill-To-ID-per-row grouping pattern, Delete All).
 
+All three master-data pages (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`) now have
+a manual "Add ___" form, collapsed behind a `showForm` toggle (`▸ Add ___ manually` /
+`▾ Hide manual entry`, closed by default) — bulk Excel import is the primary path for these
+master lists at real scale, manual entry is a secondary affordance. Apply the same toggle
+pattern to any new master-data page's manual-create form.
+
 Explicitly deferred (don't assume these exist): `SUPER_ADMIN` account creation, role/`@Roles()`
 enforcement, per-warehouse access enforcement, company-admin user invite flow, `SkuRelationship`
 (kits/combos — schema exists, no logic), Inventory Control Policy master (min/max, reorder

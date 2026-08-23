@@ -92,6 +92,7 @@ function WarehousesPage() {
   const [storageTypes, setStorageTypes] = useState<StorageTypeInput[]>([{ ...emptyStorageType }]);
   const [dispatchFlows, setDispatchFlows] = useState<string[]>([]);
   const [formError, setFormError] = useState('');
+  const [showForm, setShowForm] = useState(false);
 
   const loadWarehouses = () => {
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
@@ -249,6 +250,13 @@ function WarehousesPage() {
         {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
       </div>
 
+      <div style={{ marginBottom: 24 }}>
+        <button type="button" onClick={() => setShowForm(!showForm)}>
+          {showForm ? '▾ Hide manual entry' : '▸ Add Warehouse manually'}
+        </button>
+      </div>
+
+      {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Add Warehouse</h3>
         <form onSubmit={handleSubmit}>
@@ -301,6 +309,7 @@ function WarehousesPage() {
           </div>
         </form>
       </div>
+      )}
 
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
         <thead>

@@ -76,6 +76,7 @@ function CustomersPage() {
   const [gstNumber, setGstNumber] = useState('');
   const [shipTos, setShipTos] = useState<ShipToInput[]>([{ ...emptyShipTo }]);
   const [formError, setFormError] = useState('');
+  const [showForm, setShowForm] = useState(false);
 
   const loadCustomers = () => {
   fetch('http://localhost:3000/customers', { headers: authHeaders() })
@@ -209,6 +210,13 @@ const handleImport = async () => {
            </ul> </div> )} 
            </div>
 
+      <div style={{ marginBottom: 24 }}>
+        <button type="button" onClick={() => setShowForm(!showForm)}>
+          {showForm ? '▾ Hide manual entry' : '▸ Add Customer manually'}
+        </button>
+      </div>
+
+      {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Add Customer</h3>
         <form onSubmit={handleSubmit}>
@@ -256,6 +264,7 @@ const handleImport = async () => {
           </div>
         </form>
       </div>
+      )}
 
       <p style={{ fontSize: 14, color: '#555' }}>
         Ship-to zones: <strong>{localCount}</strong> Local · <strong>{upcountryCount}</strong> Upcountry

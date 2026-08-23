@@ -31,6 +31,20 @@ type Summary = {
   byAbc: Record<string, number>;
 };
 
+type StorageUnitInput = { unitType: string; qtyInBaseUom: string; isPreferred: boolean };
+type BarcodeInput = { barcode: string; type: string };
+
+// Mirrors the restricted lists in backend/src/skus/skus.service.ts — keep in sync.
+const BASE_UOM_OPTIONS = ['PIECE', 'PACK', 'CASE', 'PALLET', 'BOX'];
+const STORAGE_CONDITION_OPTIONS = ['AMBIENT', 'CHILLED', 'FROZEN', 'NA'];
+const WEIGHT_UOM_OPTIONS = ['KG', 'G', 'LB', 'TONNES'];
+const ABC_OPTIONS = ['A', 'B', 'C'];
+const STORAGE_UNIT_TYPE_OPTIONS = ['EACH', 'INNER', 'CASE', 'PALLET'];
+const BARCODE_TYPE_OPTIONS = ['EACH', 'CASE', 'OTHER'];
+
+const emptyStorageUnit: StorageUnitInput = { unitType: '', qtyInBaseUom: '', isPreferred: false };
+const emptyBarcode: BarcodeInput = { barcode: '', type: 'EACH' };
+
 function authHeaders() {
   const token = localStorage.getItem('token');
   return { Authorization: `Bearer ${token}` };
@@ -44,6 +58,30 @@ function SkusPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
   const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+
+  const [code, setCode] = useState('');
+  const [description, setDescription] = useState('');
+  const [category, setCategory] = useState('');
+  const [subCategory, setSubCategory] = useState('');
+  const [baseUom, setBaseUom] = useState('');
+  const [hsnCode, setHsnCode] = useState('');
+  const [storageCondition, setStorageCondition] = useState('AMBIENT');
+  const [batchTracked, setBatchTracked] = useState(false);
+  const [shelfLifeTracked, setShelfLifeTracked] = useState(false);
+  const [shelfLifeDays, setShelfLifeDays] = useState('');
+  const [weightUom, setWeightUom] = useState('');
+  const [grossWeight, setGrossWeight] = useState('');
+  const [isHazmat, setIsHazmat] = useState(false);
+  const [hazmatClass, setHazmatClass] = useState('');
+  const [hasUniqueBarcode, setHasUniqueBarcode] = useState(false);
+  const [abcClass, setAbcClass] = useState('');
+  const [currency, setCurrency] = useState('');
+  const [standardCost, setStandardCost] = useState('');
+  const [moq, setMoq] = useState('');
+  const [storageUnits, setStorageUnits] = useState<StorageUnitInput[]>([{ ...emptyStorageUnit }]);
+  const [barcodes, setBarcodes] = useState<BarcodeInput[]>([]);
+  const [formError, setFormError] = useState('');
 
   const loadSkus = () => {
   fetch('http://localhost:3000/skus', { headers: authHeaders() })
@@ -79,6 +117,91 @@ function SkusPage() {
   useEffect(() => {
     refreshAll();
   }, []);
+
+  const updateStorageUnit = (index: number, field: keyof StorageUnitInput, value: any) => {
+    const copy = [...storageUnits];
+    copy[index] = { ...copy[index], [field]: value };
+    setStorageUnits(copy);
+  };
+  const addStorageUnit = () => setStorageUnits([...storageUnits, { ...emptyStorageUnit }]);
+  const removeStorageUnit = (index: number) => setStorageUnits(storageUnits.filter((_, i) => i !== index));
+
+  const updateBarcode = (index: number, field: keyof BarcodeInput, value: string) => {
+    const copy = [...barcodes];
+    copy[index] = { ...copy[index], [field]: value };
+    setBarcodes(copy);
+  };
+  const addBarcode = () => setBarcodes([...barcodes, { ...emptyBarcode }]);
+  const removeBarcode = (index: number) => setBarcodes(barcodes.filter((_, i) => i !== index));
+
+  const resetForm = () => {
+    setCode('');
+    setDescription('');
+    setCategory('');
+    setSubCategory('');
+    setBaseUom('');
+    setHsnCode('');
+    setStorageCondition('AMBIENT');
+    setBatchTracked(false);
+    setShelfLifeTracked(false);
+    setShelfLifeDays('');
+    setWeightUom('');
+    setGrossWeight('');
+    setIsHazmat(false);
+    setHazmatClass('');
+    setHasUniqueBarcode(false);
+    setAbcClass('');
+    setCurrency('');
+    setStandardCost('');
+    setMoq('');
+    setStorageUnits([{ ...emptyStorageUnit }]);
+    setBarcodes([]);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError('');
+
+    const validStorageUnits = storageUnits
+      .filter((u) => u.unitType && u.qtyInBaseUom)
+      .map((u) => ({ unitType: u.unitType, qtyInBaseUom: Number(u.qtyInBaseUom), isPreferred: u.isPreferred }));
+    const validBarcodes = barcodes.filter((b) => b.barcode).map((b) => ({ barcode: b.barcode, type: b.type }));
+
+    const res = await fetch('http://localhost:3000/skus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        code,
+        description,
+        category: category || undefined,
+        subCategory: subCategory || undefined,
+        baseUom,
+        hsnCode,
+        storageCondition,
+        batchTracked,
+        shelfLifeTracked,
+        shelfLifeDays: shelfLifeDays || undefined,
+        weightUom: weightUom || undefined,
+        grossWeight: grossWeight || undefined,
+        isHazmat,
+        hazmatClass: hazmatClass || undefined,
+        hasUniqueBarcode,
+        abcClass: abcClass || undefined,
+        currency: currency || undefined,
+        standardCost: standardCost || undefined,
+        moq: moq || undefined,
+        storageUnits: validStorageUnits,
+        barcodes: validBarcodes,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setFormError(Array.isArray(data.message) ? data.message.join(' | ') : data.message);
+      return;
+    }
+    resetForm();
+    refreshAll();
+  };
 
   const handleImport = async () => {
     if (!file) return;
@@ -195,6 +318,107 @@ function SkusPage() {
         )}
         {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
       </div>
+
+      <div style={{ marginBottom: 24 }}>
+        <button type="button" onClick={() => setShowForm(!showForm)}>
+          {showForm ? '▾ Hide manual entry' : '▸ Add SKU manually'}
+        </button>
+      </div>
+
+      {showForm && (
+      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+        <h3 style={{ marginTop: 0 }}>Add SKU</h3>
+        <form onSubmit={handleSubmit}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <input placeholder="SKU Code" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 140 }} />
+            <input placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} required style={{ width: 220 }} />
+            <input placeholder="Category" value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 140 }} />
+            <input placeholder="Sub Category" value={subCategory} onChange={(e) => setSubCategory(e.target.value)} style={{ width: 140 }} />
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <select value={baseUom} onChange={(e) => setBaseUom(e.target.value)} required style={{ width: 140 }}>
+              <option value="">Base UOM</option>
+              {BASE_UOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <input placeholder="HSN Code" value={hsnCode} onChange={(e) => setHsnCode(e.target.value)} required style={{ width: 120 }} />
+            <select value={storageCondition} onChange={(e) => setStorageCondition(e.target.value)} style={{ width: 140 }}>
+              {STORAGE_CONDITION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <select value={abcClass} onChange={(e) => setAbcClass(e.target.value)} style={{ width: 120 }}>
+              <option value="">ABC Class</option>
+              {ABC_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12 }}>
+            <label style={{ fontSize: 14 }}>
+              <input type="checkbox" checked={batchTracked} onChange={(e) => setBatchTracked(e.target.checked)} /> Batch Tracked
+            </label>
+            <label style={{ fontSize: 14 }}>
+              <input type="checkbox" checked={shelfLifeTracked} onChange={(e) => setShelfLifeTracked(e.target.checked)} /> Shelf-Life Tracked
+            </label>
+            {shelfLifeTracked && (
+              <input placeholder="Shelf Life Days" value={shelfLifeDays} onChange={(e) => setShelfLifeDays(e.target.value)} style={{ width: 130 }} />
+            )}
+            <label style={{ fontSize: 14 }}>
+              <input type="checkbox" checked={hasUniqueBarcode} onChange={(e) => setHasUniqueBarcode(e.target.checked)} /> Has Unique Barcode
+            </label>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <select value={weightUom} onChange={(e) => setWeightUom(e.target.value)} style={{ width: 110 }}>
+              <option value="">Weight UOM</option>
+              {WEIGHT_UOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <input placeholder="Gross Weight" value={grossWeight} onChange={(e) => setGrossWeight(e.target.value)} style={{ width: 110 }} />
+            <input placeholder="Currency" value={currency} onChange={(e) => setCurrency(e.target.value)} style={{ width: 100 }} />
+            <input placeholder="Standard Cost" value={standardCost} onChange={(e) => setStandardCost(e.target.value)} style={{ width: 120 }} />
+            <input placeholder="MOQ" value={moq} onChange={(e) => setMoq(e.target.value)} style={{ width: 100 }} />
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12, alignItems: 'center' }}>
+            <label style={{ fontSize: 14 }}>
+              <input type="checkbox" checked={isHazmat} onChange={(e) => setIsHazmat(e.target.checked)} /> Hazmat
+            </label>
+            {isHazmat && (
+              <input placeholder="Hazmat Class" value={hazmatClass} onChange={(e) => setHazmatClass(e.target.value)} style={{ width: 140 }} />
+            )}
+          </div>
+
+          <h4 style={{ marginBottom: 8 }}>Storage Units</h4>
+          {storageUnits.map((u, i) => (
+            <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <select value={u.unitType} onChange={(e) => updateStorageUnit(i, 'unitType', e.target.value)} style={{ width: 130 }}>
+                <option value="">Unit Type</option>
+                {STORAGE_UNIT_TYPE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+              <input placeholder="Qty in Base UOM" value={u.qtyInBaseUom} onChange={(e) => updateStorageUnit(i, 'qtyInBaseUom', e.target.value)} style={{ width: 130 }} />
+              <label style={{ fontSize: 13 }}>
+                <input type="checkbox" checked={u.isPreferred} onChange={(e) => updateStorageUnit(i, 'isPreferred', e.target.checked)} /> Preferred
+              </label>
+              {storageUnits.length > 1 && (
+                <button type="button" onClick={() => removeStorageUnit(i)} style={{ color: 'crimson' }}>Remove</button>
+              )}
+            </div>
+          ))}
+          <button type="button" onClick={addStorageUnit} style={{ marginBottom: 16 }}>+ Add another Storage Unit</button>
+
+          <h4 style={{ marginBottom: 8 }}>Barcodes</h4>
+          {barcodes.map((b, i) => (
+            <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <input placeholder="Barcode" value={b.barcode} onChange={(e) => updateBarcode(i, 'barcode', e.target.value)} style={{ width: 160 }} />
+              <select value={b.type} onChange={(e) => updateBarcode(i, 'type', e.target.value)} style={{ width: 110 }}>
+                {BARCODE_TYPE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+              <button type="button" onClick={() => removeBarcode(i)} style={{ color: 'crimson' }}>Remove</button>
+            </div>
+          ))}
+          <button type="button" onClick={addBarcode} style={{ marginBottom: 16 }}>+ Add a Barcode</button>
+
+          {formError && <p style={{ color: 'crimson' }}>{formError}</p>}
+          <div>
+            <button type="submit">Add SKU</button>
+          </div>
+        </form>
+      </div>
+      )}
 
       <input
         placeholder="Search by code, description, or category..."
