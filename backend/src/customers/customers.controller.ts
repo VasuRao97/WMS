@@ -36,6 +36,11 @@ export class CustomersController {
     return this.customersService.reactivate(id, user);
   }
 
+  @Delete('all')
+  removeAll(@CurrentUser() user: any) {
+    return this.customersService.removeAll(user);
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string, @CurrentUser() user: any) {
     return this.customersService.remove(id, user);
@@ -80,6 +85,7 @@ export class CustomersController {
           state: r['Ship To State'] ? String(r['Ship To State']).trim() : '',
           gstNumber: r['Ship To GST Number'] ? String(r['Ship To GST Number']).trim() : undefined,
           warehouseCode: r['Ship To Warehouse Code'] ? String(r['Ship To Warehouse Code']).trim() : undefined,
+          deliveryZone: r['Ship To Local/Upcountry'] ? String(r['Ship To Local/Upcountry']).trim().toUpperCase() : undefined,
           isDefault: toBool(r['Ship To Default']),
         });
       }

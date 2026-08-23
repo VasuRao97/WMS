@@ -105,20 +105,21 @@ model Customer {
 }
 
 model CustomerShipTo {
-  id          String     @id @default(uuid())
-  customerId  String
-  customer    Customer   @relation(fields: [customerId], references: [id])
-  shipToCode  String?
-  address     String
-  pincode     String
-  state       String
-  gstNumber   String?
-  latitude    Float?
-  longitude   Float?
-  isDefault   Boolean    @default(false)
-  warehouseId String?
-  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
-  createdAt   DateTime   @default(now())
+  id           String     @id @default(uuid())
+  customerId   String
+  customer     Customer   @relation(fields: [customerId], references: [id])
+  shipToCode   String?
+  address      String
+  pincode      String
+  state        String
+  gstNumber    String?
+  latitude     Float?
+  longitude    Float?
+  isDefault    Boolean    @default(false)
+  warehouseId  String?
+  warehouse    Warehouse? @relation(fields: [warehouseId], references: [id])
+  deliveryZone String? // LOCAL | UPCOUNTRY — relative to the serving warehouse, for dispatch planning
+  createdAt    DateTime   @default(now())
 }
 
 enum LocationType {

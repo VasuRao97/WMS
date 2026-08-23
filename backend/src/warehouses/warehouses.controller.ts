@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Post, UseGuards } from '@nestjs/common';
 import { WarehousesService } from './warehouses.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -16,5 +16,15 @@ export class WarehousesController {
   @Get()
   findAll(@CurrentUser() user: any) {
     return this.warehousesService.findAll(user);
+  }
+
+  @Get('customer-summary')
+  getCustomerSummary(@CurrentUser() user: any) {
+    return this.warehousesService.getCustomerSummary(user);
+  }
+
+  @Delete('all')
+  removeAll(@CurrentUser() user: any) {
+    return this.warehousesService.removeAll(user);
   }
 }

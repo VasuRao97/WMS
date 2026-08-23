@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 const GST_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DELIVERY_ZONE_VALUES = ['LOCAL', 'UPCOUNTRY'];
 
 @Injectable()
 export class CustomersService {
@@ -29,6 +30,9 @@ export class CustomersService {
         if (!s.pincode || !/^\d{6}$/.test(s.pincode)) errors.push('Each Ship-to location requires a valid 6-digit pincode.');
         if (!s.state) errors.push('Each Ship-to location requires a state.');
         if (s.gstNumber && !GST_REGEX.test(s.gstNumber)) errors.push(`Ship-to GST number format is invalid: ${s.gstNumber}`);
+        if (s.deliveryZone && !DELIVERY_ZONE_VALUES.includes(String(s.deliveryZone).toUpperCase())) {
+          errors.push(`Ship-to Local/Upcountry must be one of: ${DELIVERY_ZONE_VALUES.join(', ')}`);
+        }
         if (s.isDefault) defaultCount++;
       }
       if (defaultCount > 1) errors.push('Only one Ship-to location can be marked as Default.');
@@ -58,6 +62,7 @@ export class CustomersService {
         gstNumber: s.gstNumber || undefined,
         isDefault: !!s.isDefault,
         warehouseId,
+        deliveryZone: s.deliveryZone ? String(s.deliveryZone).toUpperCase().trim() : undefined,
       });
     }
     return resolved;
@@ -128,6 +133,19 @@ export class CustomersService {
       this.prisma.customer.delete({ where: { id } }),
     ]);
     return { deleted: true, code: customer.code };
+  }
+
+  async removeAll(user: any) {
+    const where = user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
+    const customers = await this.prisma.customer.findMany({ where, select: { id: true } });
+    const ids = customers.map((c) => c.id);
+    if (ids.length > 0) {
+      await this.prisma.$transaction([
+        this.prisma.customerShipTo.deleteMany({ where: { customerId: { in: ids } } }),
+        this.prisma.customer.deleteMany({ where: { id: { in: ids } } }),
+      ]);
+    }
+    return { deletedCount: ids.length, blockedCount: 0, blockedCodes: [] };
   }
 
   async bulkImport(groupedCustomers: any[], user: any) {
