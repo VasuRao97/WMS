@@ -35,6 +35,7 @@ model Company {
   users      User[]
   warehouses Warehouse[]
   skus       Sku[]
+  customers  Customer[]
 }
 
 model User {
@@ -58,21 +59,62 @@ model User {
 }
 
 model Warehouse {
-  id            String   @id @default(uuid())
-  code          String   @unique
-  name          String
-  address       String?
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  companyId     String
-  company       Company  @relation(fields: [companyId], references: [id])
-  erpCode       String?
+  id        String   @id @default(uuid())
+  code      String
+  name      String
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id])
+  erpCode   String?
+  latitude  Float?
+  longitude Float?
+
   assignedUsers User[]
 
   locations       Location[]
   inboundReceipts InboundReceipt[]
   outboundOrders  OutboundOrder[]
   stockMovements  StockMovement[]
+
+  @@unique([companyId, code])
+}
+
+model Customer {
+  id              String           @id @default(uuid())
+  code            String
+  name            String
+  category        String?
+  email           String?
+  phone           String?
+  pan             String?
+  billingAddress  String?
+  pincode         String?
+  state           String?
+  gstNumber       String?
+  isActive        Boolean          @default(true)
+  companyId       String
+  company         Company          @relation(fields: [companyId], references: [id])
+  erpCode         String?
+  createdAt       DateTime         @default(now())
+  shipToLocations CustomerShipTo[]
+
+  @@unique([companyId, code])
+}
+
+model CustomerShipTo {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  address    String
+  pincode    String
+  state      String
+  gstNumber  String?
+  latitude   Float?
+  longitude  Float?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
 }
 
 enum LocationType {
@@ -106,7 +148,7 @@ model Location {
 
 model Sku {
   id                String               @id @default(uuid())
-  code              String               @unique
+  code              String
   description       String
   category          String               @default("Uncategorized")
   subCategory       String?
@@ -140,6 +182,8 @@ model Sku {
   outboundOrderLine OutboundOrderLine[]
   allocations       Allocation[]
   returns           Return[]
+
+  @@unique([companyId, code])
 }
 
 model SkuStorageUnit {

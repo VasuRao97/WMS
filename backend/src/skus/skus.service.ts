@@ -180,7 +180,9 @@ export class SkusService {
         }
       }
       if (errors.length === 0 && upperCode) {
-        const existingCode = await this.prisma.sku.findUnique({ where: { code: upperCode } });
+        const existingCode = await this.prisma.sku.findUnique({
+  where: { companyId_code: { companyId: user.companyId, code: upperCode } },
+});
         if (existingCode) errors.push(`SKU Code already exists in the database: ${upperCode}`);
       }
       if (errors.length === 0 && data.barcodes && data.barcodes.length > 0) {
