@@ -8,6 +8,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { stripHeaderAsterisks, toBool, toNumberOrUndefined } from '../common/xlsx-parse.util';
+import { MASTER_DATA_READ_ROLES, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
 
 @Controller('skus')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -15,21 +16,25 @@ export class SkusController {
   constructor(private readonly skusService: SkusService) {}
 
   @Post()
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   create(@Body() body: any, @CurrentUser() user: any) {
     return this.skusService.create(body, user);
   }
 
   @Get()
+  @Roles(...MASTER_DATA_READ_ROLES)
   findAll(@CurrentUser() user: any) {
     return this.skusService.findAll(user);
   }
 
   @Get('summary')
+  @Roles(...MASTER_DATA_READ_ROLES)
   getSummary(@CurrentUser() user: any) {
     return this.skusService.getSummary(user);
   }
 
   @Get('export')
+  @Roles(...MASTER_DATA_READ_ROLES)
   async export(@Res() res: Response, @CurrentUser() user: any) {
     const rows = await this.skusService.exportRows(user);
     const worksheet = XLSX.utils.json_to_sheet(rows);
@@ -44,11 +49,13 @@ export class SkusController {
   }
 
   @Patch(':id/deactivate')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   deactivate(@Param('id') id: string, @CurrentUser() user: any) {
     return this.skusService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   reactivate(@Param('id') id: string, @CurrentUser() user: any) {
     return this.skusService.reactivate(id, user);
   }
@@ -66,6 +73,7 @@ export class SkusController {
   }
 
   @Post('import')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   @UseInterceptors(FileInterceptor('file'))
   async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
     let workbook: XLSX.WorkBook;

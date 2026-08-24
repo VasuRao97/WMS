@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
-import { companyFilter } from '../common/tenant.util';
+import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
 import { CODE_REGEX, PINCODE_REGEX } from '../common/validation.util';
 import { toNumberOrUndefined } from '../common/xlsx-parse.util';
 
@@ -172,9 +172,13 @@ export class WarehousesService {
     });
   }
 
-  findAll(user: any) {
+  async findAll(user: any) {
+    const where: any = { ...companyFilter(user) };
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
+    }
     return this.prisma.warehouse.findMany({
-      where: companyFilter(user),
+      where,
       include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
       orderBy: { code: 'asc' },
     });
@@ -296,8 +300,12 @@ export class WarehousesService {
   }
 
   async getCustomerSummary(user: any) {
+    const where: any = { ...companyFilter(user) };
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
+    }
     const warehouses = await this.prisma.warehouse.findMany({
-      where: companyFilter(user),
+      where,
       include: { shipToAssignments: { select: { customerId: true, deliveryZone: true } } },
       orderBy: { code: 'asc' },
     });

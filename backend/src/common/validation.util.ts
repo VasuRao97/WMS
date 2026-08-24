@@ -4,3 +4,4 @@
 // wherever it appears).
 export const CODE_REGEX = /^[A-Za-z0-9-]{1,30}$/;
 export const PINCODE_REGEX = /^\d{6}$/;
+export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

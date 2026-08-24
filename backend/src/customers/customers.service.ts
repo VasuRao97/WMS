@@ -1,11 +1,10 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter } from '../common/tenant.util';
-import { CODE_REGEX, PINCODE_REGEX } from '../common/validation.util';
+import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import { CODE_REGEX, PINCODE_REGEX, EMAIL_REGEX } from '../common/validation.util';
 
 const GST_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DELIVERY_ZONE_VALUES = ['LOCAL', 'UPCOUNTRY'];
 
 @Injectable()
@@ -104,9 +103,19 @@ export class CustomersService {
     });
   }
 
-  findAll(user: any) {
+  // MANAGER/SUPERVISOR see only customers with at least one ship-to linked to
+  // one of their own warehouses (CustomerShipTo.warehouseId). A customer with
+  // no warehouse-linked ship-to is invisible to them until an Admin/Manager
+  // links one — a deliberately conservative default (see CLAUDE.md) rather
+  // than falling back to unscoped visibility for unlinked records.
+  async findAll(user: any) {
+    const where: any = { ...companyFilter(user) };
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      const ownIds = await ownWarehouseIds(this.prisma, user.userId);
+      where.shipToLocations = { some: { warehouseId: { in: ownIds } } };
+    }
     return this.prisma.customer.findMany({
-      where: companyFilter(user),
+      where,
       include: { shipToLocations: { include: { warehouse: { select: { code: true, name: true } } } } },
     });
   }

@@ -7,6 +7,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { stripHeaderAsterisks, toBool } from '../common/xlsx-parse.util';
+import { MASTER_DATA_READ_ROLES, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
 
 @Controller('customers')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -14,21 +15,25 @@ export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
   @Post()
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   create(@Body() body: any, @CurrentUser() user: any) {
     return this.customersService.create(body, user);
   }
 
   @Get()
+  @Roles(...MASTER_DATA_READ_ROLES)
   findAll(@CurrentUser() user: any) {
     return this.customersService.findAll(user);
   }
 
   @Patch(':id/deactivate')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   deactivate(@Param('id') id: string, @CurrentUser() user: any) {
     return this.customersService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   reactivate(@Param('id') id: string, @CurrentUser() user: any) {
     return this.customersService.reactivate(id, user);
   }
@@ -46,6 +51,7 @@ export class CustomersController {
   }
 
   @Post('import')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
   @UseInterceptors(FileInterceptor('file'))
   async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
     let workbook: XLSX.WorkBook;
