@@ -211,7 +211,8 @@ daily attendance view) built on top of this data is still deliberately not built
 permission matrix (toggle-based, replacing the hardcoded `CREATABLE_ROLES`/`MASTER_DATA_*_ROLES`
 constants above — raised and consciously postponed 2026-08-24, revisit once it's clear which rules
 actually need to vary by customer); network/IP-restricted logins for ID-based (Supervisor/Operator)
-accounts; zone-level task assignment (depends on Locations/Bins, not built); `SUPER_ADMIN` account
+accounts; zone-level task assignment (Locations/Bins now exists, but the task-assignment logic
+itself is still not built); `SUPER_ADMIN` account
 creation (still no controlled way to create one); the actual manpower-attendance report/rollup
 built on top of `LoginEvent` (raw data capture + a quick-look history viewer exist, the report
 itself doesn't); tracking *who created* a given user account (a `createdById` audit field) —
@@ -227,6 +228,86 @@ self-review caught the four gaps above. A third pass confirmed the `JwtStrategy`
 a fourth confirmed the login ledger (6/6 — registration and login both record a `LoginEvent` and
 update `lastLoginAt`, a failed login records neither, `GET /users` exposes both fields) — see git
 history for the session if the detail is needed.
+
+### Locations/Bins zone & storage model (2026-08-24)
+`locations/` module + `LocationsPage.tsx` — the last of the five Master Data entities, built after
+a long design pass (see git history/conversation for the full reasoning) rather than a quick
+scaffold, since real bin generation needed its own numbering/hierarchy/capacity decisions first.
+
+**Two independent tags, not one.** `zoneType` (`LocationZoneType` enum, 14 values —
+`UNLOADING_STAGING`, `LOADING_STAGING`, `ACTUAL_STORAGE`, `FORWARD_PICK`, `PICK_FACE`,
+`PACKING_KITTING`, `CROSS_DOCK`, `SLOB`, `RETURNS`, `RE_PUTAWAY`, `QC_HOLD`,
+`TEMP_CONTROLLED_STORAGE`, `HAZMAT`, `DAMAGE_SCRAP`) says what a bin is *for*; `storageType` (free
+text, same convention as `WarehouseStorageType.storageType` — `GROUND_FLOOR | SPR | DRIVE_IN |
+ASRS | STILLAGE`) says how it's *physically built*. `MIX` is deliberately excluded from
+`Location.storageType` — that value only ever means "warehouse hasn't broken this down yet" at
+the `WarehouseStorageType` capacity-planning level; a real physical bin is always concretely one
+of the five. Forward Pick and Pick Face stay separate zone types on purpose (Forward Pick = fast-
+movers near staging; Pick Face = rack-based picking positions), not collapsed into one.
+
+**Three field groups on one table**, populated per `storageType` (a `Location` row is always
+exactly one of these, so — same reasoning as `Warehouse`'s optional-per-`nodeType` fields — this
+stays one table with unused fields left null, not three separate tables):
+- **Rack** (`SPR`/`DRIVE_IN`/`ASRS`): `aisle`, `rack` (bay), `level`, `bin` (shelf-slot, defaults
+  `'1'`), `depth` (multi-deep drive-in lane position, 1=front). Code: `A01-R05-L02-B01`, or with
+  `depth` appended (`-D2`) for a multi-deep lane position.
+- **Ground** (`GROUND_FLOOR`, block-stacked floor storage): `aisle`, `block`, `depth`/`width`
+  (footprint, both required), `height` (stacked layers, default 1). Code: `GF-A01-BLK07`.
+- **Stillage** (`STILLAGE`, cages stacked on cages): `aisle`, `stack`, `height` (required — how
+  many stillages stacked), `depth`/`width` (default 1 each, for when stillage columns themselves
+  sit in a grid rather than a single column). Code: `ST-A01-04`.
+
+`depth`/`width`/`height` are shared dimensional fields whose meaning depends on `storageType`, not
+three separate ground-only concepts — a design realization mid-pass (rack drive-in lanes have
+depth too; stillage stacks can have depth/width too, not just height).
+
+**Capacity is derived, never stored** — same "always derived" philosophy as on-hand stock.
+`LocationsService.attachCapacity()` computes `depth × width × height` for `GROUND_FLOOR`/
+`STILLAGE` rows only (a rack bin is individually addressable, capacity is implicitly 1, not shown).
+
+**Multi-SKU sharing per bin, tiered by ABC class** — `WarehouseStorageType` gained
+`maxSkusClassA`/`maxSkusClassB`/`maxSkusClassC` (default 1/2/null-unbounded), config only, not
+enforced yet. Deliberately *not* scoped to ground/floor storage alone — a multi-deep drive-in
+lane's farthest-from-dock positions sharing two C-class SKUs is exactly the kind of case this
+needs to cover too, and since `WarehouseStorageType` is already keyed per `storageType`+category,
+this falls out for free (no extra field needed). Actually deciding *which* bins get this
+treatment (e.g. "farthest from dock → C-class") is Putaway/slotting logic — explicitly deferred,
+not built.
+
+**`normalizeCode()` (`common/normalize.util.ts`) now also strips `&`** — "Damage & Scrap" used to
+normalize to `DAMAGE_&_SCRAP` (ampersand survived, flanked by underscores) instead of
+`DAMAGE_SCRAP`, failing validation. Caught and fixed during this module's build, 2026-08-24.
+
+**Deliberately deferred** (raised and consciously postponed during the design pass, don't build
+without re-confirming): bulk range-generation ("Aisle A, Racks 1-20, Levels 1-4 → auto-create 80
+bins") and any visualization of a generated layout — parked for a dedicated follow-up conversation
+once the shape of that tool is worked out; Excel bulk import for Locations (today's build is
+manual create/edit/list/deactivate + Delete All only, same starting scope every other master-data
+module had before its own bulk tooling got added); Putaway/slotting logic that actually reads
+`maxSkusClass*`/bin position to decide placement (a smart-allocation value-add — e.g. reserving the
+least-accessible rack positions for slow-moving C-class SKUs — raised explicitly as a future
+feature, not scaffolded); removing `MIX` from `WarehouseStorageType` itself (only excluded from
+`Location.storageType`, the source stayed untouched by deliberate choice — see git history if this
+gets revisited).
+
+**Zone Type → Storage Type narrowing is UI-only, not backend-enforced** (`ZONE_STORAGE_COMPAT` in
+`LocationsPage.tsx`, 2026-08-24) — e.g. a Staging/Cross-Dock/QC Hold/etc. bin's Storage Type
+dropdown only offers Ground/Floor, Pick Face only offers the three rack types, since that's what's
+realistic in practice. `LocationsService` on the backend still accepts *any* valid zoneType+
+storageType combination — this was a deliberate choice (a wrong UI narrowing is a one-line fix; a
+wrong hard backend rule blocks a real warehouse's real layout) but it does mean a future bulk
+importer or a direct API call can create a combination the manual UI would never offer (e.g. a
+Rack-based Loading Staging bay). Flagging this now so it isn't a surprise later: if that gap ever
+causes real data-quality issues, promote `ZONE_STORAGE_COMPAT`'s mapping into a backend check
+(`LocationsService`'s `buildLocationFields`) rather than assuming the UI alone is enough.
+
+Verified end-to-end via a throwaway-company test script (rack/ground/stillage creation and code-
+building, capacity derivation, all rejection paths — missing required fields per storage type,
+`MIX` rejected as a bin storageType, bad zoneType/category, duplicate code — role/warehouse scoping
+allow+deny incl. Operator's zero visibility, update() clearing stale fields across a storageType
+switch, deactivate/reactivate, Delete All both blocked-when-linked and success-when-clean paths),
+44/44 checks passing, plus a manual UI pass confirming the dynamic form fields switch correctly per
+Storage Type and a real Ground/Floor location round-trips through the browser. 2026-08-24.
 
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
@@ -373,8 +454,15 @@ role/warehouse-scoping enforcement across every master-data controller, bulk Exc
 onboarding large Operator batches, self-service edit of your own name/password (role and login ID
 frozen), no Delete All (deactivate only), an append-only login ledger (`LoginEvent`) surfaced as
 "Days Active"/"Last Login" on the list (first-level capture for a future attendance report — not
-built yet); see "Role & Access model" above for the full behavior. See "Platform-managed reference data"
-above for `ProductCategory`/`CategoryPackSpec`, the repository pattern behind several of these.
+built yet); see "Role & Access model" above for the full behavior. **Locations/Bins** (`locations/`
+module + `LocationsPage.tsx`, 2026-08-24) — the fifth and last Master Data entity: a 14-value
+`zoneType` (function) independent of a 5-value `storageType` (rack/ground/stillage physical
+build), three field groups on one table depending on `storageType`, derived (never stored)
+capacity for ground/stillage bins, and role/warehouse scoping matching Warehouse/Customer. No bulk
+range-generation or Excel import yet (manual create/edit/list/deactivate + Delete All only) — see
+"Locations/Bins zone & storage model" above for the full design and what's deliberately deferred.
+See "Platform-managed reference data" above for `ProductCategory`/`CategoryPackSpec`, the
+repository pattern behind several of these.
 
 All three master-data pages (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`) now have
 a manual "Add ___" form, collapsed behind a `showForm` toggle (`▸ Add ___ manually` /
@@ -382,11 +470,11 @@ a manual "Add ___" form, collapsed behind a `showForm` toggle (`▸ Add ___ manu
 master lists at real scale, manual entry is a secondary affordance. Apply the same toggle
 pattern to any new master-data page's manual-create form.
 
-Of the five Master Data entities named in the module build order above (warehouses/locations/
-SKUs/customers/users), one is still genuinely pending: **Locations/Bins** (schema exists, no
-service/controller/frontend — real bin generation needs its own design pass first: numbering
-scheme, aisle/rack/level structure, how pallet counts get carved out by function/zone). Users is
-now built — see immediately above and "Role & Access model" further up.
+All five Master Data entities named in the module build order above (warehouses/locations/SKUs/
+customers/users) are now built — see immediately above, "Role & Access model", and "Locations/Bins
+zone & storage model" further up for Users' and Locations' full behavior respectively. Inbound is
+next per the module build order — Locations/Bins existing (with real zone types and physical
+addressing, not just a schema table) is what unblocks it.
 
 Also explicitly deferred (don't assume these exist): `SUPER_ADMIN` account creation, a
 configurable per-company permission matrix (role/warehouse access rules are enforced but currently
