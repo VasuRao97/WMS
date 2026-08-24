@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 
 type StorageUnit = { id: string; unitType: string; qtyInBaseUom: number; isPreferred: boolean };
 type Barcode = { id: string; barcode: string; type: string };
+type ProductCategory = { id: string; name: string };
 type Sku = {
   id: string;
   code: string;
   description: string;
-  category: string;
+  category: ProductCategory;
+  primaryStorageUnit?: string;
   baseUom: string;
   hsnCode: string;
   storageCondition: string;
@@ -53,6 +55,7 @@ function authHeaders() {
 function SkusPage() {
   const [skus, setSkus] = useState<Sku[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [search, setSearch] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
@@ -64,6 +67,7 @@ function SkusPage() {
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
   const [subCategory, setSubCategory] = useState('');
+  const [primaryStorageUnit, setPrimaryStorageUnit] = useState('');
   const [baseUom, setBaseUom] = useState('');
   const [hsnCode, setHsnCode] = useState('');
   const [storageCondition, setStorageCondition] = useState('AMBIENT');
@@ -109,6 +113,19 @@ function SkusPage() {
       .then((data) => data && setSummary(data));
   };
 
+  const loadCategories = () => {
+    fetch('http://localhost:3000/product-categories', { headers: authHeaders() })
+      .then((res) => {
+        if (res.status === 401) {
+          localStorage.clear();
+          window.location.reload();
+          return [];
+        }
+        return res.json();
+      })
+      .then((data) => setCategories(Array.isArray(data) ? data : []));
+  };
+
   const refreshAll = () => {
     loadSkus();
     loadSummary();
@@ -116,6 +133,7 @@ function SkusPage() {
 
   useEffect(() => {
     refreshAll();
+    loadCategories();
   }, []);
 
   const updateStorageUnit = (index: number, field: keyof StorageUnitInput, value: any) => {
@@ -139,6 +157,7 @@ function SkusPage() {
     setDescription('');
     setCategory('');
     setSubCategory('');
+    setPrimaryStorageUnit('');
     setBaseUom('');
     setHsnCode('');
     setStorageCondition('AMBIENT');
@@ -175,6 +194,7 @@ function SkusPage() {
         description,
         category: category || undefined,
         subCategory: subCategory || undefined,
+        primaryStorageUnit: primaryStorageUnit || undefined,
         baseUom,
         hsnCode,
         storageCondition,
@@ -265,7 +285,7 @@ function SkusPage() {
     (s) =>
       s.code.toLowerCase().includes(search.toLowerCase()) ||
       s.description.toLowerCase().includes(search.toLowerCase()) ||
-      s.category.toLowerCase().includes(search.toLowerCase()),
+      s.category.name.toLowerCase().includes(search.toLowerCase()),
   );
 
   return (
@@ -332,7 +352,10 @@ function SkusPage() {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
             <input placeholder="SKU Code" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 140 }} />
             <input placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} required style={{ width: 220 }} />
-            <input placeholder="Category" value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 140 }} />
+            <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 140 }}>
+              <option value="">Category (Uncategorized)</option>
+              {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+            </select>
             <input placeholder="Sub Category" value={subCategory} onChange={(e) => setSubCategory(e.target.value)} style={{ width: 140 }} />
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -383,6 +406,15 @@ function SkusPage() {
           </div>
 
           <h4 style={{ marginBottom: 8 }}>Storage Units</h4>
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ fontSize: 14 }}>
+              Primary Storage Unit (must match one of the unit types below — used later for putaway/picking sizing):
+            </label>{' '}
+            <select value={primaryStorageUnit} onChange={(e) => setPrimaryStorageUnit(e.target.value)} style={{ width: 130 }}>
+              <option value="">None</option>
+              {STORAGE_UNIT_TYPE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
           {storageUnits.map((u, i) => (
             <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <select value={u.unitType} onChange={(e) => updateStorageUnit(i, 'unitType', e.target.value)} style={{ width: 130 }}>
@@ -444,7 +476,7 @@ function SkusPage() {
             <tr key={sku.id} style={{ borderBottom: '1px solid #eee' }}>
               <td style={{ padding: 8, fontWeight: 'bold' }}>{sku.code}</td>
               <td style={{ padding: 8 }}>{sku.description}</td>
-              <td style={{ padding: 8 }}>{sku.category}</td>
+              <td style={{ padding: 8 }}>{sku.category.name}</td>
               <td style={{ padding: 8 }}>
                 {sku.storageUnits.map((u) => `${u.unitType}=${u.qtyInBaseUom}${u.isPreferred ? ' *' : ''}`).join(', ')}
               </td>

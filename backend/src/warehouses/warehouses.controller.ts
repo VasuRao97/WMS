@@ -77,6 +77,11 @@ export class WarehousesController {
           threePlName: r['3PL Name'] ? String(r['3PL Name']).trim() : undefined,
           noOfDocks: toNumberOrUndefined(r['No of Docks']),
           areaSqFt: toNumberOrUndefined(r['Area sq ft']),
+          gstin: r['GSTIN'] ? String(r['GSTIN']).trim() : undefined,
+          workingDays: r['Working Days'] ? String(r['Working Days']).trim() : undefined,
+          workingHours: r['Working Hours'] ? String(r['Working Hours']).trim() : undefined,
+          contactName: r['Contact Name'] ? String(r['Contact Name']).trim() : undefined,
+          contactPhone: r['Contact Phone'] ? String(r['Contact Phone']).trim() : undefined,
           storageTypes: [] as any[],
           dispatchFlows: [] as any[],
         });
@@ -84,7 +89,14 @@ export class WarehousesController {
 
       const wh = grouped.get(code);
       if (r['Storage Type']) {
-        wh.storageTypes.push({ storageType: String(r['Storage Type']).trim(), palletPositions: toNumberOrUndefined(r['Pallet Positions']) });
+        wh.storageTypes.push({
+          storageType: String(r['Storage Type']).trim(),
+          palletPositions: toNumberOrUndefined(r['Pallet Positions']),
+          category: r['Category'] ? String(r['Category']).trim() : undefined,
+          lengthM: toNumberOrUndefined(r['Dim L (m)']),
+          widthM: toNumberOrUndefined(r['Dim W (m)']),
+          heightM: toNumberOrUndefined(r['Dim H (m)']),
+        });
       }
       if (r['Dispatch Flow']) {
         wh.dispatchFlows.push({ flowType: String(r['Dispatch Flow']).trim() });

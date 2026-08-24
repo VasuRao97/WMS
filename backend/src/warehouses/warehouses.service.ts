@@ -60,6 +60,16 @@ export class WarehousesService {
       if (!s.palletPositions || Number(s.palletPositions) <= 0) {
         errors.push('Pallet Positions must be a positive number when Storage Type is given.');
       }
+      for (const [field, label] of [
+        ['lengthM', 'Dim L'],
+        ['widthM', 'Dim W'],
+        ['heightM', 'Dim H'],
+      ] as const) {
+        const v = s[field];
+        if (v !== undefined && v !== null && v !== '' && Number(v) <= 0) {
+          errors.push(`${label} (m) must be a positive number when given.`);
+        }
+      }
       if (type === 'MIX') hasMix = true;
       else hasSpecific = true;
     }
@@ -77,12 +87,46 @@ export class WarehousesService {
     return errors;
   }
 
-  private buildCreateData(data: any, companyId: string, name: string) {
+  // Resolves each storage-type row's Category (a plain name, like Storage
+  // Type's own human label — "Uncategorized" if left blank) against the
+  // ProductCategory reference list, the same shape as CustomersService's
+  // resolveShipTos resolving a Ship-to's warehouseCode. Also catches a
+  // duplicate (storageType, category) pair within one submission before the
+  // DB's unique constraint would — same category across two different
+  // storage types is fine and produces two separate rows.
+  private async resolveStorageTypes(storageTypes: any[], errors: string[]) {
+    const resolved: any[] = [];
+    const seenKeys = new Set<string>();
+    for (const s of storageTypes || []) {
+      const categoryName = s.category ? String(s.category).trim() : 'Uncategorized';
+      const category = await this.prisma.productCategory.findFirst({
+        where: { name: { equals: categoryName, mode: 'insensitive' } },
+      });
+      if (!category) {
+        errors.push(`Category "${categoryName}" not found — check the Product Category master list.`);
+        continue;
+      }
+      const type = normalizeCode(s.storageType);
+      const key = `${type}::${category.id}`;
+      if (seenKeys.has(key)) {
+        errors.push(`Duplicate Storage Type + Category combination: ${s.storageType} / ${categoryName}.`);
+        continue;
+      }
+      seenKeys.add(key);
+      resolved.push({
+        storageType: type,
+        categoryId: category.id,
+        palletPositions: s.palletPositions,
+        lengthM: toNumberOrUndefined(s.lengthM),
+        widthM: toNumberOrUndefined(s.widthM),
+        heightM: toNumberOrUndefined(s.heightM),
+      });
+    }
+    return resolved;
+  }
+
+  private buildCreateData(data: any, companyId: string, name: string, resolvedStorageTypes: any[]) {
     const nodeType = normalizeCode(data.nodeType);
-    const storageTypes = (data.storageTypes || []).map((s: any) => ({
-      storageType: normalizeCode(s.storageType),
-      palletPositions: s.palletPositions,
-    }));
     const dispatchFlowTypes = new Set<string>((data.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType)));
 
     return {
@@ -97,8 +141,13 @@ export class WarehousesService {
       threePlName: data.threePlName || undefined,
       noOfDocks: toNumberOrUndefined(data.noOfDocks),
       areaSqFt: toNumberOrUndefined(data.areaSqFt),
+      gstin: data.gstin || undefined,
+      workingDays: data.workingDays || undefined,
+      workingHours: data.workingHours || undefined,
+      contactName: data.contactName || undefined,
+      contactPhone: data.contactPhone || undefined,
       company: { connect: { id: companyId } },
-      storageTypes: storageTypes.length ? { create: storageTypes } : undefined,
+      storageTypes: resolvedStorageTypes.length ? { create: resolvedStorageTypes } : undefined,
       dispatchFlows: dispatchFlowTypes.size ? { create: [...dispatchFlowTypes].map((flowType) => ({ flowType })) } : undefined,
     };
   }
@@ -109,6 +158,7 @@ export class WarehousesService {
     }
     const errors = this.validateWarehouseData(data);
     if (!data.name || !String(data.name).trim()) errors.push('Name is required.');
+    const resolvedStorageTypes = await this.resolveStorageTypes(data.storageTypes, errors);
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const existing = await this.prisma.warehouse.findUnique({
@@ -117,15 +167,15 @@ export class WarehousesService {
     if (existing) throw new BadRequestException(`Location Code "${data.code}" already exists.`);
 
     return this.prisma.warehouse.create({
-      data: this.buildCreateData(data, user.companyId, data.name),
-      include: { storageTypes: true, dispatchFlows: true },
+      data: this.buildCreateData(data, user.companyId, data.name, resolvedStorageTypes),
+      include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
     });
   }
 
   findAll(user: any) {
     return this.prisma.warehouse.findMany({
       where: companyFilter(user),
-      include: { storageTypes: true, dispatchFlows: true },
+      include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
       orderBy: { code: 'asc' },
     });
   }
@@ -145,6 +195,7 @@ export class WarehousesService {
     for (const group of groupedRows) {
       const upperCode = group.code ? String(group.code).toUpperCase() : '';
       const errors = this.validateWarehouseData(group);
+      const resolvedStorageTypes = await this.resolveStorageTypes(group.storageTypes, errors);
 
       if (upperCode && codesSeenInFile.has(upperCode)) {
         errors.push(`Duplicate Location Code within this file: ${upperCode}`);
@@ -164,12 +215,12 @@ export class WarehousesService {
       const name = group.city ? `${group.city} ${NODE_TYPE_LABELS[nodeType]}` : upperCode;
 
       try {
-        await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name) });
+        await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name, resolvedStorageTypes) });
         const dispatchFlowCount = new Set((group.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType))).size;
         results.push({
           code: upperCode,
           status: 'success',
-          storageTypeCount: (group.storageTypes || []).length,
+          storageTypeCount: resolvedStorageTypes.length,
           dispatchFlowCount,
         });
         codesSeenInFile.add(upperCode);

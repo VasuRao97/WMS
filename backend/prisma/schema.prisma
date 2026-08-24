@@ -83,6 +83,22 @@ model Warehouse {
   noOfDocks   Int?
   areaSqFt    Decimal? // total facility footprint, not broken down by storage type
 
+  // This facility's own GST registration — distinct from any customer's
+  // gstNumber. Each warehouse is typically its own GST registration in
+  // Indian operations; needed on invoices/e-way bills generated from here.
+  // No format is enforced yet (unlike Customer.gstNumber's GST_REGEX) since
+  // real values haven't been collected — tighten this once they have.
+  gstin String?
+
+  // Static facility facts, free text (like threePlName) — not a dispatch
+  // policy. A real dispatch cutoff/appointment rule belongs to a future
+  // Dispatch Policy stage once Outbound/Dispatch exist to enforce it; this
+  // is just "when is someone physically here," useful on its own regardless.
+  workingDays  String? // e.g. "Mon-Sat" or "24x7"
+  workingHours String? // e.g. "09:00-18:00"
+  contactName  String?
+  contactPhone String?
+
   assignedUsers User[]
 
   shipToAssignments CustomerShipTo[]
@@ -97,11 +113,57 @@ model Warehouse {
 }
 
 model WarehouseStorageType {
-  id              String    @id @default(uuid())
+  id              String          @id @default(uuid())
   warehouseId     String
-  warehouse       Warehouse @relation(fields: [warehouseId], references: [id])
+  warehouse       Warehouse       @relation(fields: [warehouseId], references: [id])
   storageType     String // GROUND_FLOOR | SPR | DRIVE_IN | MIX | ASRS
+  categoryId      String
+  category        ProductCategory @relation(fields: [categoryId], references: [id])
   palletPositions Decimal
+  // Bin dimensions for this (storageType, category) combo, in meters — one
+  // category can need different pallet sizes in different storage types
+  // (e.g. Car Tyres vs Truck Tyres, both in SPR racking), so dimensions live
+  // here rather than on Warehouse or as a per-bin field on Location.
+  lengthM         Decimal?
+  widthM          Decimal?
+  heightM         Decimal?
+
+  @@unique([warehouseId, storageType, categoryId])
+}
+
+// Platform-level reference data for the storage-type breakdown above — NOT a
+// tenant master (no companyId), and not client-editable via any UI. Seeded
+// directly by us so every company's dropdown draws from the same curated
+// list. Phase 1 is a flat list; an `industryId` can be added later to filter
+// this per company without reshaping anything above.
+model ProductCategory {
+  id                String                 @id @default(uuid())
+  name              String                 @unique
+  storageBreakdowns WarehouseStorageType[]
+  skus              Sku[]
+  packSpecs         CategoryPackSpec[]
+}
+
+// Physical dimensions of a Category's packaging at a given unit level (EACH/
+// INNER/CASE/PALLET — same vocabulary as SkuStorageUnit.unitType), keyed by
+// Category rather than by individual Sku: this is the repository Sku.category
+// + Sku.primaryStorageUnit point into, so one correction here (e.g. Car
+// Tyres' case dimensions changed) cascades to every SKU in that category
+// instead of needing a per-SKU edit. Same reasoning as WarehouseStorageType's
+// dimensions — assume uniformity within a category rather than track it per
+// individual record. Platform-managed like ProductCategory itself; nothing
+// populates real numbers here yet.
+model CategoryPackSpec {
+  id         String          @id @default(uuid())
+  categoryId String
+  category   ProductCategory @relation(fields: [categoryId], references: [id])
+  unitType   String
+  lengthCm   Decimal?
+  widthCm    Decimal?
+  heightCm   Decimal?
+  weightKg   Decimal?
+
+  @@unique([categoryId, unitType])
 }
 
 model WarehouseDispatchFlow {
@@ -181,41 +243,49 @@ model Location {
 }
 
 model Sku {
-  id                String               @id @default(uuid())
-  code              String
-  description       String
-  category          String               @default("Uncategorized")
-  subCategory       String?
-  baseUom           String
-  hsnCode           String
-  storageCondition  String               @default("AMBIENT")
-  batchTracked      Boolean              @default(false)
-  shelfLifeTracked  Boolean              @default(false)
-  shelfLifeDays     Int?
-  isActive          Boolean              @default(true)
-  weightUom         String?
-  grossWeight       Decimal?
-  isHazmat          Boolean              @default(false)
-  hazmatClass       String?
-  hasUniqueBarcode  Boolean              @default(false)
-  abcClass          String?
-  currency          String?
-  standardCost      Decimal?
-  moq               Decimal?
-  createdAt         DateTime             @default(now())
-  companyId         String
-  company           Company              @relation(fields: [companyId], references: [id])
-  erpCode           String?
-  storageUnits      SkuStorageUnit[]
-  barcodes          SkuBarcode[]
-  asParent          SkuRelationship[]    @relation("ParentSku")
-  asChild           SkuRelationship[]    @relation("ChildSku")
-  stockMovements    StockMovement[]
-  receiptLines      InboundReceiptLine[]
-  putawayTasks      PutawayTask[]
-  outboundOrderLine OutboundOrderLine[]
-  allocations       Allocation[]
-  returns           Return[]
+  id                 String               @id @default(uuid())
+  code               String
+  description        String
+  categoryId         String
+  category           ProductCategory      @relation(fields: [categoryId], references: [id])
+  subCategory        String?
+  baseUom            String
+  hsnCode            String
+  storageCondition   String               @default("AMBIENT")
+  batchTracked       Boolean              @default(false)
+  shelfLifeTracked   Boolean              @default(false)
+  shelfLifeDays      Int?
+  isActive           Boolean              @default(true)
+  weightUom          String?
+  grossWeight        Decimal?
+  isHazmat           Boolean              @default(false)
+  hazmatClass        String?
+  hasUniqueBarcode   Boolean              @default(false)
+  abcClass           String?
+  currency           String?
+  standardCost       Decimal?
+  moq                Decimal?
+  // Which of this SKU's declared storageUnits (EACH/INNER/CASE/PALLET) is
+  // its primary unit for putaway/picking sizing — must match one of the
+  // unitTypes in storageUnits below. Dimensions themselves aren't stored
+  // here: look up CategoryPackSpec(categoryId, primaryStorageUnit) instead,
+  // so a correction to "Car Tyres' case size" doesn't require editing every
+  // Car Tyres SKU individually.
+  primaryStorageUnit String?
+  createdAt          DateTime             @default(now())
+  companyId          String
+  company            Company              @relation(fields: [companyId], references: [id])
+  erpCode            String?
+  storageUnits       SkuStorageUnit[]
+  barcodes           SkuBarcode[]
+  asParent           SkuRelationship[]    @relation("ParentSku")
+  asChild            SkuRelationship[]    @relation("ChildSku")
+  stockMovements     StockMovement[]
+  receiptLines       InboundReceiptLine[]
+  putawayTasks       PutawayTask[]
+  outboundOrderLine  OutboundOrderLine[]
+  allocations        Allocation[]
+  returns            Return[]
 
   @@unique([companyId, code])
 }

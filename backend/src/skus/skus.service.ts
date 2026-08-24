@@ -72,9 +72,12 @@ export class SkusService {
       errors.push('At least one storage unit is required (e.g. Piece = 1).');
     } else {
       let preferredCount = 0;
+      const unitTypesGiven = new Set<string>();
       for (const unit of data.storageUnits) {
         if (!STORAGE_UNIT_TYPES.includes(unit.unitType)) {
           errors.push(`Storage Unit type must be one of: ${STORAGE_UNIT_TYPES.join(', ')}`);
+        } else {
+          unitTypesGiven.add(unit.unitType);
         }
         if (!unit.qtyInBaseUom || unit.qtyInBaseUom <= 0) {
           errors.push('Storage Unit quantity must be a positive number.');
@@ -84,6 +87,12 @@ export class SkusService {
       if (preferredCount > 1) {
         errors.push('Only one storage unit can be marked as Preferred.');
       }
+      if (data.primaryStorageUnit && !unitTypesGiven.has(upper(data.primaryStorageUnit))) {
+        errors.push(`Primary Storage Unit "${data.primaryStorageUnit}" must be one of this SKU's own Storage Units.`);
+      }
+    }
+    if (data.primaryStorageUnit && !STORAGE_UNIT_TYPES.includes(upper(data.primaryStorageUnit))) {
+      errors.push(`Primary Storage Unit must be one of: ${STORAGE_UNIT_TYPES.join(', ')}`);
     }
 
     if (data.barcodes && data.barcodes.length > 0) {
@@ -96,11 +105,29 @@ export class SkusService {
     return errors;
   }
 
-  private buildCreateData(data: any, storageCondition: string, companyId: string) {
+  // Resolves the SKU's Category name against the ProductCategory reference
+  // list — same shape as WarehousesService.resolveStorageTypes resolving a
+  // storage-type row's category, and CustomersService.resolveShipTos
+  // resolving a Ship-to's warehouseCode. Case-insensitive, defaults to
+  // "Uncategorized" when blank.
+  private async resolveCategory(data: any, errors: string[]): Promise<string | undefined> {
+    const categoryName = data.category ? String(data.category).trim() : 'Uncategorized';
+    const category = await this.prisma.productCategory.findFirst({
+      where: { name: { equals: categoryName, mode: 'insensitive' } },
+    });
+    if (!category) {
+      errors.push(`Category "${categoryName}" not found — check the Product Category master list.`);
+      return undefined;
+    }
+    return category.id;
+  }
+
+  private buildCreateData(data: any, storageCondition: string, companyId: string, categoryId: string) {
     return {
       code: data.code.toUpperCase(),
       description: data.description,
-      category: data.category || 'Uncategorized',
+      category: { connect: { id: categoryId } },
+      primaryStorageUnit: data.primaryStorageUnit ? upper(data.primaryStorageUnit) : undefined,
       subCategory: data.subCategory || undefined,
       baseUom: upper(data.baseUom),
       hsnCode: String(data.hsnCode),
@@ -141,6 +168,7 @@ export class SkusService {
       throw new ForbiddenException('Super admin accounts cannot create SKUs directly — log in as a company admin instead.');
     }
     const errors = this.validateSkuData(data);
+    const categoryId = await this.resolveCategory(data, errors);
     if (data.barcodes && data.barcodes.length > 0) {
       const barcodeValues = data.barcodes.map((b: any) => b.barcode).filter(Boolean);
       if (barcodeValues.length) {
@@ -162,15 +190,15 @@ export class SkusService {
 
     const storageCondition = data.storageCondition ? upper(data.storageCondition) : 'AMBIENT';
     return this.prisma.sku.create({
-      data: this.buildCreateData(data, storageCondition, user.companyId),
-      include: { storageUnits: true, barcodes: true },
+      data: this.buildCreateData(data, storageCondition, user.companyId, categoryId!),
+      include: { storageUnits: true, barcodes: true, category: true },
     });
   }
 
   findAll(user: any) {
     return this.prisma.sku.findMany({
       where: companyFilter(user),
-      include: { storageUnits: true, barcodes: true },
+      include: { storageUnits: true, barcodes: true, category: true },
     });
   }
 
@@ -186,6 +214,7 @@ export class SkusService {
       const rowNumber = i + 2;
       const data = rows[i];
       const errors = this.validateSkuData(data);
+      const categoryId = await this.resolveCategory(data, errors);
       const upperCode = data.code ? String(data.code).toUpperCase() : '';
       if (upperCode && codesSeenInFile.has(upperCode)) {
         errors.push(`Duplicate SKU Code within this file: ${upperCode}`);
@@ -220,7 +249,7 @@ export class SkusService {
       }
       try {
         const storageCondition = data.storageCondition ? upper(data.storageCondition) : 'AMBIENT';
-        await this.prisma.sku.create({ data: this.buildCreateData(data, storageCondition, user.companyId) });
+        await this.prisma.sku.create({ data: this.buildCreateData(data, storageCondition, user.companyId, categoryId!) });
         results.push({ row: rowNumber, code: upperCode, status: 'success' });
         codesSeenInFile.add(upperCode);
         if (data.barcodes) data.barcodes.forEach((b: any) => b.barcode && barcodesSeenInFile.add(b.barcode));
@@ -330,7 +359,7 @@ export class SkusService {
   async exportRows(user: any) {
     const skus = await this.prisma.sku.findMany({
       where: companyFilter(user),
-      include: { storageUnits: true, barcodes: true },
+      include: { storageUnits: true, barcodes: true, category: true },
       orderBy: { code: 'asc' },
     });
     return skus.map((s) => {
@@ -341,8 +370,9 @@ export class SkusService {
       return {
         'SKU Code': s.code,
         'Description': s.description,
-        'Category': s.category,
+        'Category': s.category.name,
         'Sub Category': s.subCategory || '',
+        'Primary Storage Unit': s.primaryStorageUnit || '',
         'Base UOM': s.baseUom,
         'HSN Code': s.hsnCode,
         'Storage Condition': s.storageCondition,
@@ -374,7 +404,7 @@ export class SkusService {
   }
 
   async getSummary(user: any) {
-    const skus = await this.prisma.sku.findMany({ where: companyFilter(user) });
+    const skus = await this.prisma.sku.findMany({ where: companyFilter(user), include: { category: true } });
     const total = skus.length;
     const active = skus.filter((s) => s.isActive).length;
     const inactive = total - active;
@@ -384,7 +414,7 @@ export class SkusService {
     let batchTrackedCount = 0;
     let shelfLifeTrackedCount = 0;
     for (const s of skus) {
-      byCategory[s.category] = (byCategory[s.category] || 0) + 1;
+      byCategory[s.category.name] = (byCategory[s.category.name] || 0) + 1;
       const abc = s.abcClass || 'Unclassified';
       byAbc[abc] = (byAbc[abc] || 0) + 1;
       if (s.isHazmat) hazmatCount++;

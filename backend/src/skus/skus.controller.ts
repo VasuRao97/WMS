@@ -102,6 +102,7 @@ export class SkusController {
         description: r['Description'] ? String(r['Description']).trim() : '',
         category: r['Category'] ? String(r['Category']).trim() : '',
         subCategory: r['Sub Category'] ? String(r['Sub Category']).trim() : undefined,
+        primaryStorageUnit: r['Primary Storage Unit'] ? String(r['Primary Storage Unit']).toUpperCase().trim() : undefined,
         baseUom: r['Base UOM'] ? String(r['Base UOM']).toUpperCase().trim() : '',
         hsnCode: r['HSN Code'] ? String(r['HSN Code']).trim() : '',
         storageCondition: r['Storage Condition'] ? String(r['Storage Condition']).toUpperCase().trim() : 'AMBIENT',

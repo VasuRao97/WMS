@@ -158,6 +158,27 @@ label→code mapping per field (this was missed once for `CustomerShipTo.deliver
 two inconsistent hand-rolled normalizations — one trimmed, one didn't — that disagreed on the
 same input).
 
+### Platform-managed reference data: `ProductCategory` and `CategoryPackSpec`
+Some classification fields are curated centrally rather than typed per-company — `ProductCategory`
+(`id`, `name`, unique) is the first of these: seeded directly via `prisma/seed.ts` (`npx prisma db
+seed`, safe to re-run — upsert by name), with **no client-facing create/edit UI**, just a
+read-only `GET /product-categories` (`product-categories/` module) that other pages' dropdowns
+pull from. `Sku.category` and `WarehouseStorageType.category` are both real FKs into it (resolved
+case-insensitively from a plain name string — same shape as `CustomersService.resolveShipTos`
+resolving a `warehouseCode` — defaulting to `"Uncategorized"` when blank), not free text; this
+keeps a SKU's category and a warehouse's storage-type breakdown's category guaranteed to be the
+same list, so they can be joined without a translation layer. `CategoryPackSpec`
+(`categoryId` + `unitType` → `lengthCm`/`widthCm`/`heightCm`/`weightKg`) is the same pattern one
+level further: `Sku.primaryStorageUnit` names which of a SKU's own `SkuStorageUnit` rows
+(EACH/INNER/CASE/PALLET) is its primary putaway/pick unit, and the actual packaging dimensions for
+"a Car Tyres CASE" live once in `CategoryPackSpec`, not duplicated per SKU — correcting a case size
+later means editing one row, not every SKU in that category. Follow this same repository shape
+(central table, no self-serve UI, name-based resolution defaulting sensibly) for any future field
+that's naturally shared across many records of a classification rather than genuinely per-record.
+`WarehouseStorageType` also carries its own `lengthM`/`widthM`/`heightM` — that's a *different*
+thing (a warehouse's own bin/pallet-position size for that storage type × category, for space
+planning), not to be confused with `CategoryPackSpec`'s per-item packaging dimensions.
+
 ### Every master-data entity gets a "Delete All" — build it in from day one
 Warehouses, SKUs, and Customers all have a `DELETE /<resource>/all` endpoint (`removeAll` in the
 service) plus a "Delete All" button in the list-page UI, wired up from the start rather than
@@ -204,16 +225,21 @@ Fully built, tested, and committed: Auth + multi-tenancy (JWT, `JwtAuthGuard`, t
 proven), **Warehouse Master** — doubles as a network-node master, not just storage warehouses:
 `nodeType` (Factory/Distributor/Regional DC/National DC/CNF/Cross-dock, one `Warehouse` table for
 all of them, operational fields optional on every row regardless of type), city/pincode/lat-long,
-3PL name, docks, area sq ft, a repeatable `WarehouseStorageType` breakdown (storage type × pallet
-positions, "Mix" as a value in the same list with a same-warehouse exclusivity guardrail against
-mixing it with specific types), a repeatable `WarehouseDispatchFlow` capability list (Full
-Pallet/Case Pick/Broken Case, no paired quantity), bulk Excel import (single-sheet,
+GSTIN, working days/hours, primary contact name/phone, 3PL name, docks, area sq ft, a repeatable
+`WarehouseStorageType` breakdown (storage type × `ProductCategory` × pallet positions × optional
+`lengthM`/`widthM`/`heightM`, unique per storage-type+category pair so the same category can span
+multiple storage types, "Mix" as a value in the same list with a same-warehouse exclusivity
+guardrail against mixing it with specific types), a repeatable `WarehouseDispatchFlow` capability
+list (Full Pallet/Case Pick/Broken Case, no paired quantity), bulk Excel import (single-sheet,
 repeated-Location-Code grouping, name auto-derived from City+Type since the template has no name
 column), deactivate/reactivate, a "Customers per Warehouse" rollup with Local/Upcountry split,
-Delete All. SKU Master (full CRUD incl. deactivate/reactivate/delete, bulk Excel import/export
-with per-row errors, live summary analytics, Delete All). Customer Master (full CRUD incl. multi
-ship-to per customer with per-ship-to GSTIN and a Local/Upcountry delivery-zone tag for dispatch
-planning, bulk Excel import using a repeated-Bill-To-ID-per-row grouping pattern, Delete All).
+Delete All. SKU Master (full CRUD incl. deactivate/reactivate/delete, `category` as a
+`ProductCategory` FK rather than free text, `primaryStorageUnit` naming which `SkuStorageUnit` is
+primary, bulk Excel import/export with per-row errors, live summary analytics, Delete All).
+Customer Master (full CRUD incl. multi ship-to per customer with per-ship-to GSTIN and a
+Local/Upcountry delivery-zone tag for dispatch planning, bulk Excel import using a
+repeated-Bill-To-ID-per-row grouping pattern, Delete All). See "Platform-managed reference data"
+above for `ProductCategory`/`CategoryPackSpec`, the repository pattern behind several of these.
 
 All three master-data pages (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`) now have
 a manual "Add ___" form, collapsed behind a `showForm` toggle (`▸ Add ___ manually` /
@@ -221,14 +247,24 @@ a manual "Add ___" form, collapsed behind a `showForm` toggle (`▸ Add ___ manu
 master lists at real scale, manual entry is a secondary affordance. Apply the same toggle
 pattern to any new master-data page's manual-create form.
 
-Explicitly deferred (don't assume these exist): `SUPER_ADMIN` account creation, role/`@Roles()`
-enforcement, per-warehouse access enforcement, company-admin user invite flow, `SkuRelationship`
-(kits/combos — schema exists, no logic), Inventory Control Policy master (min/max, reorder
-point, FIFO/FEFO/LIFO), Opening Balance load, dispatch-proximity distance calculation (lat/long
-fields exist, no algorithm), real SAP/ERP integration, and — per the module build order above —
-everything from **Locations/Bins onward** (next on the roadmap), Inbound, Putaway, Inventory,
-Outbound, Picking, Dispatch, Analytics. Cloud/production deployment hasn't happened; this is
-local Docker Compose (Postgres) only.
+Of the five Master Data entities named in the module build order above (warehouses/locations/
+SKUs/customers/users), two are still genuinely pending: **Locations/Bins** (schema exists, no
+service/controller/frontend — real bin generation needs its own design pass first: numbering
+scheme, aisle/rack/level structure, how pallet counts get carved out by function/zone) and
+**Users** (no page/invite flow exists beyond the one `COMPANY_ADMIN` created at company
+registration — see `SUPER_ADMIN`/role items below).
+
+Also explicitly deferred (don't assume these exist): `SUPER_ADMIN` account creation, role/
+`@Roles()` enforcement, per-warehouse access enforcement, company-admin user invite flow,
+`SkuRelationship` (kits/combos — schema exists, no logic), `CategoryPackSpec` has no real rows yet
+(seeded empty, same as `ProductCategory` was at first), Inventory Control Policy master (min/max,
+reorder point, FIFO/FEFO/LIFO), Opening Balance load, dispatch-proximity distance calculation
+(lat/long fields exist, no algorithm), a dispatch cutoff-time/policy concept (deliberately not
+added alongside Warehouse's working-hours fields — it's a policy, not a static fact, and belongs
+to a future Dispatch Policy stage once Outbound/Dispatch exist to enforce it), real SAP/ERP
+integration, and — per the module build order above — Inbound, Putaway, Inventory, Outbound,
+Picking, Dispatch, Analytics. Cloud/production deployment hasn't happened; this is local Docker
+Compose (Postgres) only.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
@@ -251,3 +287,19 @@ import features must be exercised through the actual frontend, not Thunder Clien
   the process crashed — the log stream can just stop flushing. Confirm with a direct request
   (`curl http://localhost:3000/`) before concluding the server is down; a real failure will
   refuse the connection, a log-streaming hiccup will respond normally.
+- `nest start --watch` can crash outright on its own restart logic — on a file change it shells
+  out to `taskkill` to kill the previous child process, and if that process already exited (a race,
+  not an actual problem) the `taskkill` throws and takes the whole watcher down with it
+  (`ERROR: The process "<pid>" not found` followed by an uncaught exception, exit code 1). The
+  already-running server process is unaffected and keeps serving on its last successful build —
+  confirm with `curl`/`netstat` before assuming it's down — but it won't auto-rebuild on further
+  saves until `npm run start:dev` is relaunched.
+- `npx prisma migrate dev` refuses to run in this shell ("Prisma Migrate has detected that the
+  environment is non-interactive"), including with `--create-only`. Workaround: hand-write the
+  migration folder (`prisma/migrations/<timestamp>_<name>/migration.sql`, matching the DDL style
+  of existing migrations — e.g. `DECIMAL(65,30)` for a bare `Decimal` field) and apply it with
+  `npx prisma migrate deploy`, which runs non-interactively. Check the target table's existing row
+  count first if the migration adds a required column or a new unique constraint — `migrate deploy`
+  will still fail loudly (not silently) if the data doesn't fit, but hand-writing the backfill
+  logic yourself (see the `Sku.categoryId` migration for an example) is on you, `migrate dev` isn't
+  there to generate it for you this way.

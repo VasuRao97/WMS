@@ -1,7 +1,16 @@
 import { useEffect, useState } from 'react';
 
-type StorageType = { id: string; storageType: string; palletPositions: number };
+type StorageType = {
+  id: string;
+  storageType: string;
+  palletPositions: number;
+  category?: { id: string; name: string };
+  lengthM?: number;
+  widthM?: number;
+  heightM?: number;
+};
 type DispatchFlow = { id: string; flowType: string };
+type ProductCategory = { id: string; name: string };
 
 type Warehouse = {
   id: string;
@@ -31,7 +40,14 @@ type WarehouseCustomerSummary = {
   upcountryCount: number;
 };
 
-type StorageTypeInput = { storageType: string; palletPositions: string };
+type StorageTypeInput = {
+  storageType: string;
+  palletPositions: string;
+  category: string;
+  lengthM: string;
+  widthM: string;
+  heightM: string;
+};
 
 type ImportResultRow = { code: string; status: 'success' | 'error'; errors?: string[]; storageTypeCount?: number; dispatchFlowCount?: number };
 type ImportSummary = { totalWarehouses: number; successCount: number; failCount: number; results: ImportResultRow[] };
@@ -68,11 +84,12 @@ function authHeaders() {
   return { Authorization: `Bearer ${token}` };
 }
 
-const emptyStorageType: StorageTypeInput = { storageType: '', palletPositions: '' };
+const emptyStorageType: StorageTypeInput = { storageType: '', palletPositions: '', category: '', lengthM: '', widthM: '', heightM: '' };
 
 function WarehousesPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [customerSummary, setCustomerSummary] = useState<WarehouseCustomerSummary[]>([]);
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
@@ -89,6 +106,11 @@ function WarehousesPage() {
   const [threePlName, setThreePlName] = useState('');
   const [noOfDocks, setNoOfDocks] = useState('');
   const [areaSqFt, setAreaSqFt] = useState('');
+  const [gstin, setGstin] = useState('');
+  const [workingDays, setWorkingDays] = useState('');
+  const [workingHours, setWorkingHours] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
   const [storageTypes, setStorageTypes] = useState<StorageTypeInput[]>([{ ...emptyStorageType }]);
   const [dispatchFlows, setDispatchFlows] = useState<string[]>([]);
   const [formError, setFormError] = useState('');
@@ -120,6 +142,19 @@ function WarehousesPage() {
       .then((data) => setCustomerSummary(Array.isArray(data) ? data : []));
   };
 
+  const loadCategories = () => {
+    fetch('http://localhost:3000/product-categories', { headers: authHeaders() })
+      .then((res) => {
+        if (res.status === 401) {
+          localStorage.clear();
+          window.location.reload();
+          return [];
+        }
+        return res.json();
+      })
+      .then((data) => setCategories(Array.isArray(data) ? data : []));
+  };
+
   const refreshAll = () => {
     loadWarehouses();
     loadCustomerSummary();
@@ -127,6 +162,7 @@ function WarehousesPage() {
 
   useEffect(() => {
     refreshAll();
+    loadCategories();
   }, []);
 
   const updateStorageType = (index: number, field: keyof StorageTypeInput, value: string) => {
@@ -153,6 +189,11 @@ function WarehousesPage() {
     setThreePlName('');
     setNoOfDocks('');
     setAreaSqFt('');
+    setGstin('');
+    setWorkingDays('');
+    setWorkingHours('');
+    setContactName('');
+    setContactPhone('');
     setStorageTypes([{ ...emptyStorageType }]);
     setDispatchFlows([]);
   };
@@ -163,7 +204,14 @@ function WarehousesPage() {
 
     const validStorageTypes = storageTypes
       .filter((s) => s.storageType && s.palletPositions)
-      .map((s) => ({ storageType: s.storageType, palletPositions: Number(s.palletPositions) }));
+      .map((s) => ({
+        storageType: s.storageType,
+        palletPositions: Number(s.palletPositions),
+        category: s.category || undefined,
+        lengthM: s.lengthM || undefined,
+        widthM: s.widthM || undefined,
+        heightM: s.heightM || undefined,
+      }));
 
     const res = await fetch('http://localhost:3000/warehouses', {
       method: 'POST',
@@ -180,6 +228,11 @@ function WarehousesPage() {
         threePlName: threePlName || undefined,
         noOfDocks: noOfDocks || undefined,
         areaSqFt: areaSqFt || undefined,
+        gstin: gstin || undefined,
+        workingDays: workingDays || undefined,
+        workingHours: workingHours || undefined,
+        contactName: contactName || undefined,
+        contactPhone: contactPhone || undefined,
         storageTypes: validStorageTypes.length ? validStorageTypes : undefined,
         dispatchFlows: dispatchFlows.length ? dispatchFlows.map((flowType) => ({ flowType })) : undefined,
       }),
@@ -277,16 +330,34 @@ function WarehousesPage() {
             <input placeholder="3PL Name (or OWN)" value={threePlName} onChange={(e) => setThreePlName(e.target.value)} style={{ width: 160 }} />
             <input placeholder="No of Docks" value={noOfDocks} onChange={(e) => setNoOfDocks(e.target.value)} style={{ width: 110 }} />
             <input placeholder="Area sq ft" value={areaSqFt} onChange={(e) => setAreaSqFt(e.target.value)} style={{ width: 110 }} />
+            <input placeholder="GSTIN" value={gstin} onChange={(e) => setGstin(e.target.value)} style={{ width: 150 }} />
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <input placeholder="Working Days (e.g. Mon-Sat)" value={workingDays} onChange={(e) => setWorkingDays(e.target.value)} style={{ width: 170 }} />
+            <input placeholder="Working Hours (e.g. 09:00-18:00)" value={workingHours} onChange={(e) => setWorkingHours(e.target.value)} style={{ width: 190 }} />
+            <input placeholder="Contact Name" value={contactName} onChange={(e) => setContactName(e.target.value)} style={{ width: 150 }} />
+            <input placeholder="Contact Phone" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} style={{ width: 140 }} />
           </div>
 
           <h4 style={{ marginBottom: 8 }}>Storage Types</h4>
+          <p style={{ marginTop: -4, marginBottom: 8, fontSize: 13, color: '#666' }}>
+            One row per Storage Type + Category combination — the same Category can appear against more than one Storage Type
+            (e.g. Car Tyres split across SPR and Ground/Floor), each with its own Pallet count and dimensions.
+          </p>
           {storageTypes.map((s, i) => (
             <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <select value={s.storageType} onChange={(e) => updateStorageType(i, 'storageType', e.target.value)} style={{ width: 150 }}>
                 <option value="">Storage Type</option>
                 {STORAGE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
+              <select value={s.category} onChange={(e) => updateStorageType(i, 'category', e.target.value)} style={{ width: 150 }}>
+                <option value="">Category (Uncategorized)</option>
+                {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
               <input placeholder="Pallet Positions" value={s.palletPositions} onChange={(e) => updateStorageType(i, 'palletPositions', e.target.value)} style={{ width: 130 }} />
+              <input placeholder="Dim L (m)" value={s.lengthM} onChange={(e) => updateStorageType(i, 'lengthM', e.target.value)} style={{ width: 90 }} />
+              <input placeholder="Dim W (m)" value={s.widthM} onChange={(e) => updateStorageType(i, 'widthM', e.target.value)} style={{ width: 90 }} />
+              <input placeholder="Dim H (m)" value={s.heightM} onChange={(e) => updateStorageType(i, 'heightM', e.target.value)} style={{ width: 90 }} />
               {storageTypes.length > 1 && (
                 <button type="button" onClick={() => removeStorageType(i)} style={{ color: 'crimson' }}>Remove</button>
               )}
@@ -334,7 +405,11 @@ function WarehousesPage() {
               <td style={{ padding: 8 }}>{w.city || '—'}</td>
               <td style={{ padding: 8 }}>{w.noOfDocks ?? '—'}</td>
               <td style={{ padding: 8 }}>
-                {w.storageTypes.length ? w.storageTypes.map((s) => `${labelFor(STORAGE_TYPE_OPTIONS, s.storageType)}=${s.palletPositions}`).join(', ') : '—'}
+                {w.storageTypes.length
+                  ? w.storageTypes
+                      .map((s) => `${labelFor(STORAGE_TYPE_OPTIONS, s.storageType)}/${s.category?.name || 'Uncategorized'}=${s.palletPositions}`)
+                      .join(', ')
+                  : '—'}
               </td>
               <td style={{ padding: 8 }}>
                 {w.dispatchFlows.length ? w.dispatchFlows.map((f) => labelFor(DISPATCH_FLOW_OPTIONS, f.flowType)).join(', ') : '—'}
