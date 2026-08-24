@@ -279,16 +279,67 @@ normalize to `DAMAGE_&_SCRAP` (ampersand survived, flanked by underscores) inste
 `DAMAGE_SCRAP`, failing validation. Caught and fixed during this module's build, 2026-08-24.
 
 **Deliberately deferred** (raised and consciously postponed during the design pass, don't build
-without re-confirming): bulk range-generation ("Aisle A, Racks 1-20, Levels 1-4 → auto-create 80
-bins") and any visualization of a generated layout — parked for a dedicated follow-up conversation
-once the shape of that tool is worked out; Excel bulk import for Locations (today's build is
-manual create/edit/list/deactivate + Delete All only, same starting scope every other master-data
-module had before its own bulk tooling got added); Putaway/slotting logic that actually reads
-`maxSkusClass*`/bin position to decide placement (a smart-allocation value-add — e.g. reserving the
-least-accessible rack positions for slow-moving C-class SKUs — raised explicitly as a future
-feature, not scaffolded); removing `MIX` from `WarehouseStorageType` itself (only excluded from
-`Location.storageType`, the source stayed untouched by deliberate choice — see git history if this
-gets revisited).
+without re-confirming): visualization of a generated layout (the range generator below has no
+diagram/map view yet — parked for a dedicated follow-up conversation); Putaway/slotting logic that
+actually reads `maxSkusClass*`/bin position to decide placement (a smart-allocation value-add —
+e.g. reserving the least-accessible rack positions for slow-moving C-class SKUs — raised explicitly
+as a future feature, not scaffolded); removing `MIX` from `WarehouseStorageType` itself (only
+excluded from `Location.storageType`, the source stayed untouched by deliberate choice — see git
+history if this gets revisited).
+
+### Locations/Bins: range generator, Excel import, edit UI, filtering (2026-08-24)
+Added in a follow-up pass once the core module above was built and committed.
+
+**Range generator** (`POST /locations/generate`, `LocationsService.generate()`) — expands a Rack
+range (`rackRange` × `levelRange` × `binRange` × `depthRange`), a Ground `blockRange`, or a Stillage
+`stackRange` into many individual `Location` rows in one call (e.g. Aisle A01, Rack Range 01-20,
+Level Range 01-04 → 80 rows). A range field accepts `01-20` (zero-padding preserved from whichever
+side of the dash has more digits — `expandRange()` in `locations.service.ts`) or a bare value with
+no dash, repeated as a fixed value for every generated row. Ground/Stillage's `depth`/`width`/
+`height` stay **fixed across the whole batch** — only the Block/Stack identifier varies per row;
+this matches the design-pass conclusion that those dimensions describe one footprint shared by
+every block/stack in a batch, not something that varies row-to-row. Capped at 2000 locations per
+call (`MAX_GENERATE_BATCH`) so a mistyped huge range fails fast with a clear message. Per-row
+results (success/error, same shape as bulk import below) so a partially-conflicting batch still
+creates everything that didn't collide, rather than all-or-nothing.
+
+**Excel bulk import** (`POST /locations/import`, `LocationsService.bulkImport()`) — same
+xlsx → per-row validation → success/error results shape as Warehouse/SKU/Customer/User, reading a
+sheet named exactly `Location Import` (read by name, not position — see the established
+convention). Unlike those other imports, there's no repeated-key grouping pass: each row already
+*is* one Location. Resolves `Warehouse Code` per row via `resolveWarehouseCodeToId()` (same
+`companyId_code` lookup + `WAREHOUSE_SCOPED_ROLES` access check as everywhere else).
+
+**Both the generator and the import reuse a new shared `prepareRow()`** (validate + build fields +
+resolve category + check warehouse access, returning errors instead of throwing) that `create()`
+also now calls — refactored so all three insertion paths (single create, range-expand, Excel row)
+run through identical validation, rather than the generator/import duplicating `create()`'s logic
+with subtly different bugs. Same "one function, many callers" convention as
+`SkusService.validateSkuData`.
+
+**Edit UI** — `LocationsPage.tsx`'s "Add Location" form now doubles as the edit form: `editingId`
+state, `startEdit(location)` pre-fills every field from the row and flips the form to "Edit
+Location" / "Save Changes" + "Cancel", `handleSubmit` POSTs or PATCHes depending on whether
+`editingId` is set. Real bug caught building this: Prisma serializes an unset optional int
+(`depth`/`width`/`height`) as JSON `null`, not an absent key — `startEdit`'s original `!==
+undefined` check let `null` through, which then stringified to the literal text `"null"` and failed
+backend validation ("must be a positive whole number") on every edit of a rack-storage row with no
+Depth set. Fixed to `!= null` (catches both). Worth remembering for any other frontend code reading
+an optional Prisma field back into form state.
+
+**Search/filter row** above the table — Warehouse/Zone Type/Storage Type dropdowns plus a free-text
+search matching code/aisle/rack/level/bin/block/stack/zone, all client-side against the
+already-fetched list (no backend endpoint changes) — this was fine at the scale tested but will
+need to become server-side filtering once a real warehouse's location count gets large enough that
+fetching the full list up front stops being practical.
+
+Verified end-to-end via a throwaway-company test script (23/23: rack/drive-in/ground/stillage range
+generation including zero-padding and a 4x20-row batch, re-generating an identical range correctly
+blocked as all-duplicate, the `MAX_GENERATE_BATCH` cap, generator role/warehouse scoping, Excel
+import success/duplicate-in-file/bad-warehouse-code/`MIX`-rejected/wrong-sheet-name paths) plus a
+manual browser pass (generator creating 10 real rows through the actual UI, the edit-form bug
+above caught and confirmed fixed live, search and Storage Type filtering both narrowing the visible
+list correctly).
 
 **Zone Type → Storage Type narrowing is UI-only, not backend-enforced** (`ZONE_STORAGE_COMPAT` in
 `LocationsPage.tsx`, 2026-08-24) — e.g. a Staging/Cross-Dock/QC Hold/etc. bin's Storage Type
@@ -458,11 +509,13 @@ built yet); see "Role & Access model" above for the full behavior. **Locations/B
 module + `LocationsPage.tsx`, 2026-08-24) — the fifth and last Master Data entity: a 14-value
 `zoneType` (function) independent of a 5-value `storageType` (rack/ground/stillage physical
 build), three field groups on one table depending on `storageType`, derived (never stored)
-capacity for ground/stillage bins, and role/warehouse scoping matching Warehouse/Customer. No bulk
-range-generation or Excel import yet (manual create/edit/list/deactivate + Delete All only) — see
-"Locations/Bins zone & storage model" above for the full design and what's deliberately deferred.
-See "Platform-managed reference data" above for `ProductCategory`/`CategoryPackSpec`, the
-repository pattern behind several of these.
+capacity for ground/stillage bins, and role/warehouse scoping matching Warehouse/Customer. Also has
+a bulk range-generator (`POST /locations/generate` — expand a Rack/Ground/Stillage range into many
+rows in one call), Excel bulk import, an edit UI, and Warehouse/Zone Type/Storage Type/text
+filtering on the list — see "Locations/Bins zone & storage model" and "Locations/Bins: range
+generator, Excel import, edit UI, filtering" above for the full design and what's still deliberately
+deferred (layout visualization, Putaway/slotting logic). See "Platform-managed reference data"
+above for `ProductCategory`/`CategoryPackSpec`, the repository pattern behind several of these.
 
 All three master-data pages (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`) now have
 a manual "Add ___" form, collapsed behind a `showForm` toggle (`▸ Add ___ manually` /
