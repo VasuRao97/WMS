@@ -306,6 +306,13 @@ function LocationsPage() {
     if (!confirm('Permanently delete ALL locations that have no linked data (stock movements, putaway tasks, etc.)? This cannot be undone.')) return;
     const res = await fetch('http://localhost:3000/locations/all', { method: 'DELETE', headers: authHeaders() });
     const data = await res.json();
+    if (!res.ok) {
+      // Without this check, a 403 (Delete All is COMPANY_ADMIN-only) or any
+      // other error response has no blockedCodes field — reading .length on
+      // it threw silently, so the button appeared to do nothing at all.
+      setDeleteAllResult(`Delete All failed: ${Array.isArray(data.message) ? data.message.join(' | ') : data.message || 'Unknown error.'}`);
+      return;
+    }
     setDeleteAllResult(
       `Deleted ${data.deletedCount} location(s). ${data.blockedCount} blocked (have linked data)${data.blockedCodes.length ? ': ' + data.blockedCodes.join(', ') : ''}.`,
     );

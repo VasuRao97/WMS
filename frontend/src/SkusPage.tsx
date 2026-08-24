@@ -275,6 +275,13 @@ function SkusPage() {
     if (!confirm('Permanently delete ALL SKUs that have no transaction history? This cannot be undone.')) return;
     const res = await fetch('http://localhost:3000/skus/all', { method: 'DELETE', headers: authHeaders() });
     const data = await res.json();
+    if (!res.ok) {
+      // Without this check, an error response (e.g. 403 — Delete All is
+      // COMPANY_ADMIN-only) has no blockedCodes field — reading .length on
+      // it threw silently, so the button appeared to do nothing at all.
+      setDeleteAllResult(`Delete All failed: ${Array.isArray(data.message) ? data.message.join(' | ') : data.message || 'Unknown error.'}`);
+      return;
+    }
     setDeleteAllResult(
       `Deleted ${data.deletedCount} SKU(s). ${data.blockedCount} blocked (have transaction history)${data.blockedCodes.length ? ': ' + data.blockedCodes.join(', ') : ''}.`,
     );

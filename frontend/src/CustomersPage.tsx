@@ -178,6 +178,14 @@ const handleImport = async () => {
     if (!confirm('Permanently delete ALL customers (and their ship-to locations)? This cannot be undone.')) return;
     const res = await fetch('http://localhost:3000/customers/all', { method: 'DELETE', headers: authHeaders() });
     const data = await res.json();
+    if (!res.ok) {
+      // Without this check, an error response (e.g. 403 — Delete All is
+      // COMPANY_ADMIN-only) showed as "Deleted undefined customer(s)."
+      // instead of a real error — same silent-failure class as the other
+      // three master-data pages' Delete All buttons.
+      setDeleteAllResult(`Delete All failed: ${Array.isArray(data.message) ? data.message.join(' | ') : data.message || 'Unknown error.'}`);
+      return;
+    }
     setDeleteAllResult(`Deleted ${data.deletedCount} customer(s).`);
     loadCustomers();
   };

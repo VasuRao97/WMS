@@ -270,6 +270,13 @@ function WarehousesPage() {
     if (!confirm('Permanently delete ALL warehouses that have no linked data (customers, locations, transactions)? This cannot be undone.')) return;
     const res = await fetch('http://localhost:3000/warehouses/all', { method: 'DELETE', headers: authHeaders() });
     const data = await res.json();
+    if (!res.ok) {
+      // Without this check, an error response (e.g. 403 — Delete All is
+      // COMPANY_ADMIN-only) has no blockedCodes field — reading .length on
+      // it threw silently, so the button appeared to do nothing at all.
+      setDeleteAllResult(`Delete All failed: ${Array.isArray(data.message) ? data.message.join(' | ') : data.message || 'Unknown error.'}`);
+      return;
+    }
     setDeleteAllResult(
       `Deleted ${data.deletedCount} warehouse(s). ${data.blockedCount} blocked (have linked data)${data.blockedCodes.length ? ': ' + data.blockedCodes.join(', ') : ''}.`,
     );
