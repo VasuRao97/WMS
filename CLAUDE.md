@@ -92,12 +92,21 @@ missed once (`SkuBarcode` has no `companyId` column, so its uniqueness check nee
 companyId: user.companyId }` in the `where`, not just `barcode: { in: [...] }`).
 
 `RolesGuard` + `@Roles()` (`backend/src/auth/roles.guard.ts`, `roles.decorator.ts`) implement
-role-based checks but are **not currently wired into any controller** — only `JwtAuthGuard` is
-applied (`@UseGuards(JwtAuthGuard)`). Right now any logged-in user of any role can do anything a
-`COMPANY_ADMIN` can; authorization today is company-scoping in services, not role checks. A
-`User` ↔ `Warehouse` many-to-many (`assignedWarehouses`) exists in the schema for future
-per-warehouse restriction but is likewise unenforced. If you add role or warehouse enforcement,
-apply `RolesGuard` alongside `JwtAuthGuard` and add `@Roles(...)` on the handler.
+role-based checks — `RolesGuard` special-cases `SUPER_ADMIN` to always pass, otherwise requires
+`user.role` to be one of the names given to `@Roles(...)`; a handler with no `@Roles()` is
+unaffected (open to any authenticated role, same as before). **First and so far only use**:
+every destructive delete endpoint (`DELETE /warehouses/all`, `DELETE|DELETE all /skus`,
+`DELETE|DELETE all /customers`) is `@Roles('COMPANY_ADMIN')`, restricting deletion to Company
+Admin (+ Super Admin) — a `WAREHOUSE_MANAGER` cannot delete anything, by design (2026-08-24); a
+request/approval flow letting a Manager ask their Admin to delete on their behalf is a deliberate
+follow-up, not built yet. Every other endpoint across every controller is still open to any
+authenticated role — right now a `WAREHOUSE_MANAGER`/`WAREHOUSE_SUPERVISOR`/`OPERATOR` can create/
+edit/view anything a `COMPANY_ADMIN` can except delete; authorization elsewhere is still
+company-scoping in services, not role checks. A `User` ↔ `Warehouse` many-to-many
+(`assignedWarehouses`) exists in the schema for future per-warehouse restriction but is likewise
+unenforced. Follow the same pattern (`@UseGuards(JwtAuthGuard, RolesGuard)` at the controller
+level, `@Roles('COMPANY_ADMIN')` — or whichever roles — on the specific handler) for any further
+role enforcement.
 
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a

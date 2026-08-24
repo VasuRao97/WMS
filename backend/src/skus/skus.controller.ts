@@ -4,11 +4,13 @@ import type { Response } from 'express';
 import * as XLSX from 'xlsx';
 import { SkusService } from './skus.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { stripHeaderAsterisks, toBool, toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 @Controller('skus')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class SkusController {
   constructor(private readonly skusService: SkusService) {}
 
@@ -52,11 +54,13 @@ export class SkusController {
   }
 
   @Delete('all')
+  @Roles('COMPANY_ADMIN')
   removeAll(@CurrentUser() user: any) {
     return this.skusService.removeAll(user);
   }
 
   @Delete(':id')
+  @Roles('COMPANY_ADMIN')
   remove(@Param('id') id: string, @CurrentUser() user: any) {
     return this.skusService.remove(id, user);
   }

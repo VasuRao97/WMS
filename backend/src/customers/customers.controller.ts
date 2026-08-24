@@ -3,11 +3,13 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import * as XLSX from 'xlsx';
 import { CustomersService } from './customers.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { stripHeaderAsterisks, toBool } from '../common/xlsx-parse.util';
 
 @Controller('customers')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
@@ -32,11 +34,13 @@ export class CustomersController {
   }
 
   @Delete('all')
+  @Roles('COMPANY_ADMIN')
   removeAll(@CurrentUser() user: any) {
     return this.customersService.removeAll(user);
   }
 
   @Delete(':id')
+  @Roles('COMPANY_ADMIN')
   remove(@Param('id') id: string, @CurrentUser() user: any) {
     return this.customersService.remove(id, user);
   }
