@@ -39,8 +39,8 @@ model Company {
 }
 
 model User {
-  id                 String      @id @default(uuid())
-  email              String      @unique
+  id                 String       @id @default(uuid())
+  email              String       @unique
   passwordHash       String
   name               String
   role               Role
@@ -49,8 +49,8 @@ model User {
   // reporting. Not read by any permission check; the real access rules run purely
   // off `role` + `assignedWarehouses`.
   functionTag        String?
-  isActive           Boolean     @default(true)
-  createdAt          DateTime    @default(now())
+  isActive           Boolean      @default(true)
+  createdAt          DateTime     @default(now())
   // Fast "last seen" lookup — a cached/derived convenience, same relationship
   // to `LoginEvent` below as on-hand stock has to `StockMovement`: the ledger
   // (LoginEvent, append-only, one row per login, forever) is the source of
@@ -58,7 +58,7 @@ model User {
   // alongside every LoginEvent insert so the two never drift.
   lastLoginAt        DateTime?
   companyId          String?
-  company            Company?    @relation(fields: [companyId], references: [id])
+  company            Company?     @relation(fields: [companyId], references: [id])
   assignedWarehouses Warehouse[]
   loginEvents        LoginEvent[]
 
@@ -143,7 +143,7 @@ model WarehouseStorageType {
   id              String          @id @default(uuid())
   warehouseId     String
   warehouse       Warehouse       @relation(fields: [warehouseId], references: [id])
-  storageType     String // GROUND_FLOOR | SPR | DRIVE_IN | MIX | ASRS
+  storageType     String // GROUND_FLOOR | SPR | DRIVE_IN | MIX | ASRS | STILLAGE
   categoryId      String
   category        ProductCategory @relation(fields: [categoryId], references: [id])
   palletPositions Decimal
@@ -154,6 +154,17 @@ model WarehouseStorageType {
   lengthM         Decimal?
   widthM          Decimal?
   heightM         Decimal?
+
+  // How many distinct SKUs are allowed to share one physical Location for
+  // this (storageType, category) combo, tiered by the SKU's own Sku.abcClass
+  // — e.g. an A-class fast-mover typically gets a bin to itself, while
+  // slow-moving C-class SKUs can be co-located to use space efficiently.
+  // Null means "no limit" for that class. This is a config value only —
+  // nothing enforces it yet; that's Putaway/slotting logic, not built yet
+  // (deliberately deferred, 2026-08-24 design pass — see CLAUDE.md).
+  maxSkusClassA Int? @default(1)
+  maxSkusClassB Int? @default(2)
+  maxSkusClassC Int?
 
   @@unique([warehouseId, storageType, categoryId])
 }
@@ -169,6 +180,7 @@ model ProductCategory {
   storageBreakdowns WarehouseStorageType[]
   skus              Sku[]
   packSpecs         CategoryPackSpec[]
+  locations         Location[]
 }
 
 // Physical dimensions of a Category's packaging at a given unit level (EACH/
@@ -240,24 +252,72 @@ model CustomerShipTo {
   createdAt    DateTime   @default(now())
 }
 
-enum LocationType {
-  RECEIVING
-  STORAGE
-  PICKING
-  STAGING
-  DISPATCH
+// What a Location is FOR (function), independent of how it's physically
+// built (that's storageType below). Settled in the 2026-08-24 Locations/Bins
+// design pass — see CLAUDE.md's "Location zone model" section for the full
+// reasoning behind this list (why Forward Pick and Pick Face stay separate,
+// why QC Hold/Temp-Controlled/Hazmat/Damage & Scrap were added, etc.).
+enum LocationZoneType {
+  UNLOADING_STAGING
+  LOADING_STAGING
+  ACTUAL_STORAGE
+  FORWARD_PICK
+  PICK_FACE
+  PACKING_KITTING
+  CROSS_DOCK
+  SLOB
   RETURNS
+  RE_PUTAWAY
+  QC_HOLD
+  TEMP_CONTROLLED_STORAGE
+  HAZMAT
+  DAMAGE_SCRAP
 }
 
 model Location {
-  id          String       @id @default(uuid())
+  id          String           @id @default(uuid())
   warehouseId String
-  warehouse   Warehouse    @relation(fields: [warehouseId], references: [id])
-  code        String // e.g. A-01-02-03 (zone-aisle-rack-level)
+  warehouse   Warehouse        @relation(fields: [warehouseId], references: [id])
+  // Auto-built display/scan code, one template per storageType — e.g.
+  // "A01-R05-L02-B01" (rack), "GF-A01-BLK07" (ground), "ST-A01-04" (stillage).
+  code        String
+  // Named physical-area label (e.g. "Zone 1"), distinct from zoneType's
+  // function tag — a zone groups aisles, zoneType says what the bin is for.
   zone        String?
-  type        LocationType
-  isActive    Boolean      @default(true)
-  createdAt   DateTime     @default(now())
+  zoneType    LocationZoneType
+  // How this bin is physically built. Free text (not a Postgres enum), same
+  // convention as WarehouseStorageType.storageType — validated in the service
+  // against GROUND_FLOOR | SPR | DRIVE_IN | ASRS | STILLAGE. Deliberately
+  // excludes "MIX": that value only ever means "warehouse hasn't broken this
+  // down yet" at the WarehouseStorageType (capacity-planning) level — a real,
+  // physical bin is always concretely one of the five, never "mixed" itself.
+  storageType String
+  categoryId  String?
+  category    ProductCategory? @relation(fields: [categoryId], references: [id])
+
+  // Identifier fields — populate only the group matching storageType. Rack
+  // (SPR/DRIVE_IN/ASRS): aisle+rack+level+bin. Ground (GROUND_FLOOR):
+  // aisle+block. Stillage (STILLAGE): aisle+stack. `aisle` is the one field
+  // shared by all three (every location sits along some walking aisle).
+  aisle String?
+  rack  String? // bay/column within the rack row
+  level String? // vertical tier within the rack (1 = ground)
+  bin   String? // shelf-slot within a level, for shelving/small-parts bins
+  block String? // ground-floor block id (e.g. block-stacked tyre pallets)
+  stack String? // stillage column id (cages stacked one on another)
+
+  // Dimensional fields — shared concept, meaning depends on storageType.
+  // Rack: depth = position in a multi-deep drive-in lane (1=front..N=back).
+  // Ground: depth/width = the block's footprint (e.g. 4 deep x 4 wide);
+  // height = stacked layers, normally 1 (pallets rarely stack on pallets).
+  // Stillage: width/depth = how many stillage columns sit side by side /
+  // front-to-back; height = how many cages stacked vertically in one column.
+  depth  Int?
+  width  Int?
+  height Int?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
 
   stockMovements     StockMovement[]
   putawayFrom        PutawayTask[]        @relation("PutawayFromLocation")
