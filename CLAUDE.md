@@ -94,19 +94,139 @@ companyId: user.companyId }` in the `where`, not just `barcode: { in: [...] }`).
 `RolesGuard` + `@Roles()` (`backend/src/auth/roles.guard.ts`, `roles.decorator.ts`) implement
 role-based checks — `RolesGuard` special-cases `SUPER_ADMIN` to always pass, otherwise requires
 `user.role` to be one of the names given to `@Roles(...)`; a handler with no `@Roles()` is
-unaffected (open to any authenticated role, same as before). **First and so far only use**:
-every destructive delete endpoint (`DELETE /warehouses/all`, `DELETE|DELETE all /skus`,
-`DELETE|DELETE all /customers`) is `@Roles('COMPANY_ADMIN')`, restricting deletion to Company
-Admin (+ Super Admin) — a `WAREHOUSE_MANAGER` cannot delete anything, by design (2026-08-24); a
-request/approval flow letting a Manager ask their Admin to delete on their behalf is a deliberate
-follow-up, not built yet. Every other endpoint across every controller is still open to any
-authenticated role — right now a `WAREHOUSE_MANAGER`/`WAREHOUSE_SUPERVISOR`/`OPERATOR` can create/
-edit/view anything a `COMPANY_ADMIN` can except delete; authorization elsewhere is still
-company-scoping in services, not role checks. A `User` ↔ `Warehouse` many-to-many
-(`assignedWarehouses`) exists in the schema for future per-warehouse restriction but is likewise
-unenforced. Follow the same pattern (`@UseGuards(JwtAuthGuard, RolesGuard)` at the controller
-level, `@Roles('COMPANY_ADMIN')` — or whichever roles — on the specific handler) for any further
-role enforcement.
+unaffected (open to any authenticated role). Every master-data controller (Warehouses, SKUs,
+Customers, Users) now uses this: `common/tenant.util.ts` exports `MASTER_DATA_READ_ROLES`
+(`COMPANY_ADMIN`/`WAREHOUSE_MANAGER`/`WAREHOUSE_SUPERVISOR` — `OPERATOR` excluded) and
+`MASTER_DATA_WRITE_ROLES` (`COMPANY_ADMIN`/`WAREHOUSE_MANAGER` — `WAREHOUSE_SUPERVISOR` also
+excluded), applied per-handler (`@Roles(...MASTER_DATA_READ_ROLES)` on every `GET`,
+`...MASTER_DATA_WRITE_ROLES` on `POST`/`PATCH`/import). Delete endpoints stay tighter still,
+`@Roles('COMPANY_ADMIN')` only (2026-08-23). Follow this same pattern — read/write role constants
+from `tenant.util.ts`, not a hand-typed `@Roles()` list — for any new master-data controller. See
+"Role & Access model" below for the full picture (who can see/create/edit what, and why).
+
+### Role & Access model (2026-08-24)
+The full behavior — hierarchy, visibility, warehouse-scoping, login rules — is written up for
+non-developer reference at `docs/roles-and-access.md`; this section is the terse version for
+working in the code.
+
+**Hierarchy.** `COMPANY_ADMIN > WAREHOUSE_MANAGER > WAREHOUSE_SUPERVISOR > OPERATOR`
+(`SUPER_ADMIN` is platform-level, orthogonal to this — see below). One role per person, no
+per-warehouse role variance. `users/users.service.ts`'s `CREATABLE_ROLES` map is the source of
+truth for who can create/edit whom: `COMPANY_ADMIN` can create any role including another
+`COMPANY_ADMIN` (co-admins are allowed); every other role can create only roles *strictly below*
+itself (`WAREHOUSE_MANAGER` → Supervisor/Operator, `WAREHOUSE_SUPERVISOR` → Operator only,
+`OPERATOR` → nothing). The same map gates *editing* an existing user (their current role must be
+in the editor's creatable set) — `frontend/src/UsersPage.tsx` keeps a client-side mirror of this
+map purely for UX (filtering the role dropdown); the server copy in `users.service.ts` is the real
+enforcement, don't trust the client one.
+
+**Visibility.** `OPERATOR` has zero master-data visibility — no Warehouses/SKUs/Customers/Users
+pages, by design (their eventual surface is transactional/handheld task screens, none built yet).
+`WAREHOUSE_SUPERVISOR` has the same visibility as `WAREHOUSE_MANAGER` but read-only (blocked from
+`MASTER_DATA_WRITE_ROLES`). SKU stays **unscoped** — every readable role sees the full company
+catalog, since a SKU isn't owned by any one warehouse. Warehouse, Customer, and User are **scoped**
+to `assignedWarehouses` for Manager/Supervisor (`common/tenant.util.ts`'s `ownWarehouseIds()` +
+`WAREHOUSE_SCOPED_ROLES`): a Warehouse is visible if its `id` is in the viewer's own
+`assignedWarehouses`; a Customer is visible if it has at least one `CustomerShipTo` whose
+`warehouseId` matches one of the viewer's warehouses (a customer with **no** warehouse-linked
+ship-to is invisible to Manager/Supervisor — a deliberate conservative default, not a fallback to
+full visibility, until an Admin/Manager links one); a User is visible if they share at least one
+warehouse with the viewer (or are the viewer themself). `COMPANY_ADMIN`/`SUPER_ADMIN` are never
+scoped this way — full company (or, for `SUPER_ADMIN`, cross-company) visibility always.
+
+**Login identity.** `COMPANY_ADMIN`/`WAREHOUSE_MANAGER` accounts require a real email address
+(`EMAIL_REQUIRED_ROLES` in `users.service.ts`, checked against `common/validation.util.ts`'s
+`EMAIL_REGEX`); `WAREHOUSE_SUPERVISOR`/`OPERATOR` log in with any unique ID (shop-floor staff
+often don't have one). `User.email` is `@unique` globally regardless of shape — this already
+satisfies "every login ID is unique for KPI attribution" with no extra schema work.
+`frontend/src/LoginPage.tsx`'s email field is `type="text"`, not `type="email"` — deliberately, so
+the browser's native email-format validation doesn't block an ID-style login before it ever reaches
+the backend (this was a real bug caught 2026-08-24, not a stylistic choice).
+
+**Deactivation.** Same warehouse-overlap + creatable-role check as editing (`assertEditAccess` in
+`users.service.ts`); nobody can deactivate themselves. No hard delete/Delete All for `User` —
+deactivate (`isActive`) is the only destructive-ish action, partly by convention and partly because
+`User` has many non-cascading relations (`receiptsCreated`, `putawaysCompleted`, etc.) a real delete
+would collide with. `JwtStrategy.validate()` re-checks `isActive` against the DB on every
+authenticated request (one extra `prisma.user.findUnique`, not just a token-signature/expiry check)
+— without this, deactivating someone didn't invalidate a JWT they already held, so they'd keep
+working for up to the 8h token lifetime (`auth.module.ts`'s `expiresIn`) regardless. Predates this
+module (the gap, not the fix) — found and closed 2026-08-24.
+
+**Self-editing your own account.** `assertEditAccess` always lets you reach your own record —
+the creatable-role/warehouse-overlap checks it otherwise runs exist to gate access to *other*
+people's accounts, not your own (a Manager couldn't self-edit at all before this, since no role's
+`CREATABLE_ROLES` entry includes itself except Admin's). Two things stay off-limits even on
+yourself: `update()` always rejects a `role` change on your own record (else Admin's own
+all-roles-includes-itself entry would let them accidentally demote themselves out of the company's
+only admin seat), and `email` (the login ID) is immutable after creation for everyone, self-edit or
+not — these IDs anchor per-person KPI history, so a rename attempt is rejected outright rather than
+silently ignored (a real bug this used to have: the edit form let you type a new login ID, and the
+backend just dropped it without telling you).
+
+**Editing someone whose `assignedWarehouses` spans more than the editor's own scope.** The schema
+allows a Supervisor/Operator to be shared across warehouses under different Managers (flexible
+cardinality, by design). `update()` must never re-validate — or silently drop — the portion of
+their assignment the editor can't see: it fetches the target's current `assignedWarehouses`,
+splits off whatever falls outside the editor's own `ownWarehouseIds()`, and unions that back in
+untouched after validating only the editor's own-scope portion of the submitted list. Without this,
+a Manager editing even just a subordinate's `name` would either get a confusing 403 (the invisible
+warehouse id fails their own scope check) or, worse, silently strip that other Manager's assignment
+— caught and fixed 2026-08-24. `frontend/src/UsersPage.tsx`'s edit form only pre-fills warehouse ids
+that are actually in the current viewer's own picker options, for the same reason, plus shows a
+"+N warehouse(s) outside your access" note so it's not invisible that more exists.
+
+**Bulk import** (`POST /users/import`, `UsersService.bulkImport`) — same shape as the Warehouse/SKU/
+Customer import controllers (xlsx → per-row validation → success/error results), added for
+onboarding a large batch (100+) of Operators at once, where the manual one-by-one form doesn't
+scale. Gated the same as manual create (`CAN_MANAGE_USERS`, not `MASTER_DATA_WRITE_ROLES` — a
+Supervisor bulk-importing Operators is exactly as legitimate as adding one by hand), and reuses
+`validate()`/`resolveWarehouseIds()`/`CREATABLE_ROLES` per row (CLAUDE.md's "one function, two
+callers" convention) — a Manager's bulk import is exactly as scope-limited as their manual create.
+Warehouse assignment in the sheet is a single "Warehouse Code(s)" column, comma/semicolon-separated,
+resolved to ids via `resolveWarehouseCodesToIds()` then validated through the same
+`resolveWarehouseIds()` the manual path uses.
+
+**`functionTag`** (free-text field on `User`, e.g. "Inbound Sup", "Picking") is descriptive only —
+captures the Supervisor/Operator specialization from the client's role sheet for future KPI/
+task-routing reporting, but no permission check reads it. Real per-function permission narrowing
+(a dock-supervisor-style split where Inbound Sup and Outbound Sup have different system access) is
+explicitly deferred, same as it was before this field existed.
+
+**Login ledger.** `LoginEvent` (`userId`, `loggedInAt`) is an append-only table — one row per
+successful login, never updated or deleted, the same "never UPDATE, always INSERT" shape as
+`StockMovement`. `User.lastLoginAt` is the cached "last seen" convenience read off it, kept in sync
+in the same `$transaction` (`AuthService.recordLogin()`, called from both `login()` and
+`registerCompany()` — registration auto-logs the new Admin in too, so that counts). A failed login
+attempt never reaches `recordLogin()` — only a successful one. `UsersPage.tsx` shows "Days Active"
+(computed client-side from `createdAt`, no backend field for it) and a clickable "Last Login" that
+expands the row into the full history (`GET /users/:id/login-history`, `UsersService.
+getLoginHistory()`, capped to the most recent 100) — same visibility rule as `findAll` (self, or
+shares a warehouse for a scoped role, or Admin sees everyone), deliberately *not* the stricter
+`assertEditAccess` rule, since viewing history is a read, not an edit. First-level capture + a
+quick-look viewer only (2026-08-24) — the actual manpower-attendance report/rollup (days present, a
+daily attendance view) built on top of this data is still deliberately not built.
+
+**Deliberately deferred** (don't build without re-confirming): a configurable per-company
+permission matrix (toggle-based, replacing the hardcoded `CREATABLE_ROLES`/`MASTER_DATA_*_ROLES`
+constants above — raised and consciously postponed 2026-08-24, revisit once it's clear which rules
+actually need to vary by customer); network/IP-restricted logins for ID-based (Supervisor/Operator)
+accounts; zone-level task assignment (depends on Locations/Bins, not built); `SUPER_ADMIN` account
+creation (still no controlled way to create one); the actual manpower-attendance report/rollup
+built on top of `LoginEvent` (raw data capture + a quick-look history viewer exist, the report
+itself doesn't); tracking *who created* a given user account (a `createdById` audit field) —
+considered alongside the login ledger, explicitly not wanted for now.
+
+Verified end-to-end (creation hierarchy allow/deny, warehouse-scoped visibility, cross-scope edit
+denial, self-deactivation block, login-format rules) via a throwaway-company test script,
+37/37 checks passing, 2026-08-24. A second throwaway-data pass (self-edit access, self-role-change
+block, login-ID immutability, multi-warehouse-subordinate edit preservation, bulk import allow/deny
+including the cross-role and duplicate-in-file cases) added 19/19 more the same day after a
+self-review caught the four gaps above. A third pass confirmed the `JwtStrategy` deactivation fix
+(3/3 — same token rejected on the very next request, not up to 8h later; re-login also blocked) and
+a fourth confirmed the login ledger (6/6 — registration and login both record a `LoginEvent` and
+update `lastLoginAt`, a failed login records neither, `GET /users` exposes both fields) — see git
+history for the session if the detail is needed.
 
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
@@ -247,7 +367,13 @@ Delete All. SKU Master (full CRUD incl. deactivate/reactivate/delete, `category`
 primary, bulk Excel import/export with per-row errors, live summary analytics, Delete All).
 Customer Master (full CRUD incl. multi ship-to per customer with per-ship-to GSTIN and a
 Local/Upcountry delivery-zone tag for dispatch planning, bulk Excel import using a
-repeated-Bill-To-ID-per-row grouping pattern, Delete All). See "Platform-managed reference data"
+repeated-Bill-To-ID-per-row grouping pattern, Delete All). **User Master** (`users/` module +
+`UsersPage.tsx`, 2026-08-24) — a hierarchical creation/edit model (not flat Admin-only), full
+role/warehouse-scoping enforcement across every master-data controller, bulk Excel import for
+onboarding large Operator batches, self-service edit of your own name/password (role and login ID
+frozen), no Delete All (deactivate only), an append-only login ledger (`LoginEvent`) surfaced as
+"Days Active"/"Last Login" on the list (first-level capture for a future attendance report — not
+built yet); see "Role & Access model" above for the full behavior. See "Platform-managed reference data"
 above for `ProductCategory`/`CategoryPackSpec`, the repository pattern behind several of these.
 
 All three master-data pages (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`) now have
@@ -257,14 +383,17 @@ master lists at real scale, manual entry is a secondary affordance. Apply the sa
 pattern to any new master-data page's manual-create form.
 
 Of the five Master Data entities named in the module build order above (warehouses/locations/
-SKUs/customers/users), two are still genuinely pending: **Locations/Bins** (schema exists, no
+SKUs/customers/users), one is still genuinely pending: **Locations/Bins** (schema exists, no
 service/controller/frontend — real bin generation needs its own design pass first: numbering
-scheme, aisle/rack/level structure, how pallet counts get carved out by function/zone) and
-**Users** (no page/invite flow exists beyond the one `COMPANY_ADMIN` created at company
-registration — see `SUPER_ADMIN`/role items below).
+scheme, aisle/rack/level structure, how pallet counts get carved out by function/zone). Users is
+now built — see immediately above and "Role & Access model" further up.
 
-Also explicitly deferred (don't assume these exist): `SUPER_ADMIN` account creation, role/
-`@Roles()` enforcement, per-warehouse access enforcement, company-admin user invite flow,
+Also explicitly deferred (don't assume these exist): `SUPER_ADMIN` account creation, a
+configurable per-company permission matrix (role/warehouse access rules are enforced but currently
+hardcoded, not client-editable — see "Role & Access model"), network/IP-restricted logins,
+zone-level task assignment, a company-admin *invite-link* flow (today's flow is direct
+password-setting by the creating Admin/Manager/Supervisor, not an emailed invite — no
+email-sending infrastructure exists in this project),
 `SkuRelationship` (kits/combos — schema exists, no logic), `CategoryPackSpec` has no real rows yet
 (seeded empty, same as `ProductCategory` was at first), Inventory Control Policy master (min/max,
 reorder point, FIFO/FEFO/LIFO), Opening Balance load, dispatch-proximity distance calculation
