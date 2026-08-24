@@ -25,6 +25,9 @@ type Location = {
   isActive: boolean;
 };
 
+type RowResult = { code?: string; status: 'success' | 'error'; errors?: string[] };
+type BatchSummary = { totalRequested?: number; totalRows?: number; successCount: number; failCount: number; results: RowResult[] };
+
 // Zone Type = what a bin is FOR. Same 14-value list as LocationZoneType in
 // schema.prisma — see CLAUDE.md's Locations/Bins design-pass notes.
 const ZONE_TYPE_OPTIONS = [
@@ -109,13 +112,33 @@ function positionSummary(l: Location): string {
   return l.aisle || '—';
 }
 
+function BatchResultList({ summary, totalLabel }: { summary: BatchSummary; totalLabel: string }) {
+  const total = summary.totalRequested ?? summary.totalRows ?? summary.results.length;
+  return (
+    <div style={{ marginTop: 16 }}>
+      <p>
+        <strong>{summary.successCount}</strong> succeeded, <strong>{summary.failCount}</strong> failed, out of {total} {totalLabel}.
+      </p>
+      <ul style={{ maxHeight: 220, overflowY: 'auto' }}>
+        {summary.results.map((r, i) => (
+          <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
+            {r.code || '(row)'}: {r.status === 'success' ? 'Created' : r.errors?.join('; ')}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function LocationsPage() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
+
   const [showForm, setShowForm] = useState(false);
   const [formError, setFormError] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const [warehouseId, setWarehouseId] = useState('');
   const [zoneType, setZoneType] = useState('');
@@ -131,6 +154,39 @@ function LocationsPage() {
   const [depth, setDepth] = useState('');
   const [width, setWidth] = useState('');
   const [height, setHeight] = useState('');
+
+  // --- Range generator state ---
+  const [showGenerator, setShowGenerator] = useState(false);
+  const [genError, setGenError] = useState('');
+  const [genResult, setGenResult] = useState<BatchSummary | null>(null);
+  const [genGenerating, setGenGenerating] = useState(false);
+  const [genWarehouseId, setGenWarehouseId] = useState('');
+  const [genZoneType, setGenZoneType] = useState('');
+  const [genStorageType, setGenStorageType] = useState('');
+  const [genCategory, setGenCategory] = useState('');
+  const [genZone, setGenZone] = useState('');
+  const [genAisle, setGenAisle] = useState('');
+  const [genRackRange, setGenRackRange] = useState('');
+  const [genLevelRange, setGenLevelRange] = useState('');
+  const [genBinRange, setGenBinRange] = useState('');
+  const [genDepthRange, setGenDepthRange] = useState('');
+  const [genBlockRange, setGenBlockRange] = useState('');
+  const [genStackRange, setGenStackRange] = useState('');
+  const [genDepth, setGenDepth] = useState('');
+  const [genWidth, setGenWidth] = useState('');
+  const [genHeight, setGenHeight] = useState('');
+
+  // --- Excel import state ---
+  const [showImport, setShowImport] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<BatchSummary | null>(null);
+
+  // --- Filter/search state ---
+  const [filterWarehouseId, setFilterWarehouseId] = useState('');
+  const [filterZoneType, setFilterZoneType] = useState('');
+  const [filterStorageType, setFilterStorageType] = useState('');
+  const [searchText, setSearchText] = useState('');
 
   const loadLocations = () => {
     fetch('http://localhost:3000/locations', { headers: authHeaders() })
@@ -164,6 +220,7 @@ function LocationsPage() {
   }, []);
 
   const resetForm = () => {
+    setEditingId(null);
     setWarehouseId('');
     setZoneType('');
     setStorageType('');
@@ -180,28 +237,53 @@ function LocationsPage() {
     setHeight('');
   };
 
+  const startEdit = (l: Location) => {
+    setEditingId(l.id);
+    setWarehouseId(l.warehouseId);
+    setZoneType(l.zoneType);
+    setStorageType(l.storageType);
+    setCategory(l.category?.name || '');
+    setZone(l.zone || '');
+    setAisle(l.aisle || '');
+    setRack(l.rack || '');
+    setLevel(l.level || '');
+    setBin(l.bin || '');
+    setBlock(l.block || '');
+    setStack(l.stack || '');
+    // Prisma serializes an unset optional int as JSON `null`, not an absent
+    // key — a `!== undefined` check alone lets `null` through, which then
+    // stringifies to the literal text "null" and fails backend validation.
+    setDepth(l.depth != null ? String(l.depth) : '');
+    setWidth(l.width != null ? String(l.width) : '');
+    setHeight(l.height != null ? String(l.height) : '');
+    setFormError('');
+    setShowForm(true);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
-    const res = await fetch('http://localhost:3000/locations', {
-      method: 'POST',
+    const payload = {
+      warehouseId,
+      zoneType,
+      storageType,
+      category: category || undefined,
+      zone: zone || undefined,
+      aisle,
+      rack: rack || undefined,
+      level: level || undefined,
+      bin: bin || undefined,
+      block: block || undefined,
+      stack: stack || undefined,
+      depth: depth || undefined,
+      width: width || undefined,
+      height: height || undefined,
+    };
+    const url = editingId ? `http://localhost:3000/locations/${editingId}` : 'http://localhost:3000/locations';
+    const res = await fetch(url, {
+      method: editingId ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({
-        warehouseId,
-        zoneType,
-        storageType,
-        category: category || undefined,
-        zone: zone || undefined,
-        aisle,
-        rack: rack || undefined,
-        level: level || undefined,
-        bin: bin || undefined,
-        block: block || undefined,
-        stack: stack || undefined,
-        depth: depth || undefined,
-        width: width || undefined,
-        height: height || undefined,
-      }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -228,28 +310,237 @@ function LocationsPage() {
     loadLocations();
   };
 
+  const resetGenerator = () => {
+    setGenWarehouseId('');
+    setGenZoneType('');
+    setGenStorageType('');
+    setGenCategory('');
+    setGenZone('');
+    setGenAisle('');
+    setGenRackRange('');
+    setGenLevelRange('');
+    setGenBinRange('');
+    setGenDepthRange('');
+    setGenBlockRange('');
+    setGenStackRange('');
+    setGenDepth('');
+    setGenWidth('');
+    setGenHeight('');
+  };
+
+  const handleGenerate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setGenError('');
+    setGenResult(null);
+    setGenGenerating(true);
+    const payload = {
+      warehouseId: genWarehouseId,
+      zoneType: genZoneType,
+      storageType: genStorageType,
+      category: genCategory || undefined,
+      zone: genZone || undefined,
+      aisle: genAisle,
+      rackRange: genRackRange || undefined,
+      levelRange: genLevelRange || undefined,
+      binRange: genBinRange || undefined,
+      depthRange: genDepthRange || undefined,
+      blockRange: genBlockRange || undefined,
+      stackRange: genStackRange || undefined,
+      depth: genDepth || undefined,
+      width: genWidth || undefined,
+      height: genHeight || undefined,
+    };
+    const res = await fetch('http://localhost:3000/locations/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    setGenGenerating(false);
+    if (!res.ok) {
+      setGenError(Array.isArray(data.message) ? data.message.join(' | ') : data.message);
+      return;
+    }
+    setGenResult(data);
+    resetGenerator();
+    loadLocations();
+  };
+
+  const handleImport = async () => {
+    if (!importFile) return;
+    setImporting(true);
+    setImportResult(null);
+    const formData = new FormData();
+    formData.append('file', importFile);
+    const res = await fetch('http://localhost:3000/locations/import', { method: 'POST', headers: authHeaders(), body: formData });
+    const data = await res.json();
+    setImportResult(data);
+    setImporting(false);
+    setImportFile(null);
+    loadLocations();
+  };
+
   const isRack = RACK_STORAGE_TYPES.includes(storageType);
   const isGround = storageType === 'GROUND_FLOOR';
   const isStillage = storageType === 'STILLAGE';
 
+  const genIsRack = RACK_STORAGE_TYPES.includes(genStorageType);
+  const genIsGround = genStorageType === 'GROUND_FLOOR';
+  const genIsStillage = genStorageType === 'STILLAGE';
+
+  const searchLower = searchText.trim().toLowerCase();
+  const filteredLocations = locations.filter((l) => {
+    if (filterWarehouseId && l.warehouseId !== filterWarehouseId) return false;
+    if (filterZoneType && l.zoneType !== filterZoneType) return false;
+    if (filterStorageType && l.storageType !== filterStorageType) return false;
+    if (searchLower) {
+      const haystack = [l.code, l.aisle, l.rack, l.level, l.bin, l.block, l.stack, l.zone].filter(Boolean).join(' ').toLowerCase();
+      if (!haystack.includes(searchLower)) return false;
+    }
+    return true;
+  });
+
   return (
-    <div style={{ maxWidth: 1100, margin: '40px auto', fontFamily: 'sans-serif' }}>
+    <div style={{ maxWidth: 1200, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Locations / Bins</h1>
 
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
-        <button onClick={handleDeleteAll} style={{ color: 'crimson' }}>Delete All</button>
+        <button type="button" onClick={() => setShowImport(!showImport)}>
+          {showImport ? '▾ Hide Excel import' : '▸ Import from Excel'}
+        </button>
+        <button onClick={handleDeleteAll} style={{ marginLeft: 8, color: 'crimson' }}>Delete All</button>
         {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
+
+        {showImport && (
+          <div style={{ marginTop: 16 }}>
+            <p style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
+              One row per Location, on a sheet named exactly <code>Location Import</code>. Columns: <code>Warehouse Code*</code>,{' '}
+              <code>Zone Type*</code>, <code>Storage Type*</code>, <code>Category</code>, <code>Zone</code>, <code>Aisle*</code>,{' '}
+              <code>Rack</code>, <code>Level</code>, <code>Bin</code>, <code>Block</code>, <code>Stack</code>, <code>Depth</code>,{' '}
+              <code>Width</code>, <code>Height</code> — only fill the columns relevant to a row's Storage Type (Rack/Level for
+              rack storage; Block+Depth+Width for Ground/Floor; Stack+Height for Stillage), the rest can be left blank.
+            </p>
+            <input type="file" accept=".xlsx" onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)} />
+            <button onClick={handleImport} disabled={!importFile || importing} style={{ marginLeft: 8 }}>
+              {importing ? 'Importing...' : 'Import'}
+            </button>
+            {importResult && <BatchResultList summary={importResult} totalLabel="rows" />}
+          </div>
+        )}
       </div>
 
       <div style={{ marginBottom: 24 }}>
-        <button type="button" onClick={() => setShowForm(!showForm)}>
+        <button type="button" onClick={() => setShowGenerator(!showGenerator)}>
+          {showGenerator ? '▾ Hide range generator' : '▸ Generate a range of Locations'}
+        </button>
+        <button type="button" onClick={() => { resetForm(); setShowForm(!showForm); }} style={{ marginLeft: 8 }}>
           {showForm ? '▾ Hide manual entry' : '▸ Add Location manually'}
         </button>
       </div>
 
+      {showGenerator && (
+        <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+          <h3 style={{ marginTop: 0 }}>Generate a range of Locations</h3>
+          <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>
+            * required. A range field accepts <code>01-20</code> (zero-padding preserved) or a single fixed value repeated for
+            every generated location. Depth/Width/Height for Ground/Floor and Stillage stay fixed across the whole batch — only
+            the Block/Stack identifier varies.
+          </p>
+          <form onSubmit={handleGenerate}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              <select value={genWarehouseId} onChange={(e) => setGenWarehouseId(e.target.value)} required style={{ width: 180 }}>
+                <option value="">Warehouse *</option>
+                {warehouses.map((w) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
+              </select>
+              <select
+                value={genZoneType}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setGenZoneType(next);
+                  const allowed = ZONE_STORAGE_COMPAT[next] || ALL_STORAGE_TYPES;
+                  if (genStorageType && !allowed.includes(genStorageType)) setGenStorageType('');
+                }}
+                required
+                style={{ width: 190 }}
+              >
+                <option value="">Zone Type *</option>
+                {ZONE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <select value={genStorageType} onChange={(e) => setGenStorageType(e.target.value)} required style={{ width: 200 }}>
+                <option value="">Storage Type *</option>
+                {STORAGE_TYPE_OPTIONS.filter((o) => (ZONE_STORAGE_COMPAT[genZoneType] || ALL_STORAGE_TYPES).includes(o.value)).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <select value={genCategory} onChange={(e) => setGenCategory(e.target.value)} style={{ width: 160 }}>
+                <option value="">Category (none)</option>
+                {categories.filter((c) => c.name !== 'Uncategorized').map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+              <input placeholder="Zone label (e.g. Zone 1)" value={genZone} onChange={(e) => setGenZone(e.target.value)} style={{ width: 150 }} />
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+              <input placeholder="Aisle *" value={genAisle} onChange={(e) => setGenAisle(e.target.value)} required style={{ width: 100 }} />
+
+              {genIsRack && (
+                <>
+                  <input placeholder="Rack Range * (e.g. 01-20)" value={genRackRange} onChange={(e) => setGenRackRange(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Level Range * (e.g. 01-04)" value={genLevelRange} onChange={(e) => setGenLevelRange(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Bin Range (default 1)" value={genBinRange} onChange={(e) => setGenBinRange(e.target.value)} style={{ width: 170 }} />
+                  <input placeholder="Depth Range (multi-deep lanes)" value={genDepthRange} onChange={(e) => setGenDepthRange(e.target.value)} style={{ width: 220 }} />
+                </>
+              )}
+
+              {genIsGround && (
+                <>
+                  <input placeholder="Block Range * (e.g. 01-10)" value={genBlockRange} onChange={(e) => setGenBlockRange(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Depth (pallets deep) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Width (stacks wide) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Height (layers, default 1)" value={genHeight} onChange={(e) => setGenHeight(e.target.value)} style={{ width: 190 }} />
+                </>
+              )}
+
+              {genIsStillage && (
+                <>
+                  <input placeholder="Stack Range * (e.g. 01-05)" value={genStackRange} onChange={(e) => setGenStackRange(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Height (stillages stacked) *" value={genHeight} onChange={(e) => setGenHeight(e.target.value)} required style={{ width: 210 }} />
+                  <input placeholder="Depth (columns deep, default 1)" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} style={{ width: 210 }} />
+                  <input placeholder="Width (columns wide, default 1)" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} style={{ width: 210 }} />
+                </>
+              )}
+            </div>
+
+            {genIsRack && (
+              <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
+                e.g. Aisle <strong>A01</strong>, Rack Range <strong>01-20</strong>, Level Range <strong>01-04</strong> → creates 80
+                locations (<code>A01-R01-L01-B1</code> … <code>A01-R20-L04-B1</code>) in one go.
+              </p>
+            )}
+            {genIsGround && (
+              <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
+                e.g. Aisle <strong>GA1</strong>, Block Range <strong>01-10</strong>, Depth <strong>4</strong>, Width <strong>4</strong> →
+                creates 10 blocks (<code>GF-GA1-BLK01</code> … <code>GF-GA1-BLK10</code>), each capacity 16.
+              </p>
+            )}
+            {genIsStillage && (
+              <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
+                e.g. Aisle <strong>SA1</strong>, Stack Range <strong>01-05</strong>, Height <strong>3</strong> → creates 5 stacks
+                (<code>ST-SA1-01</code> … <code>ST-SA1-05</code>), each capacity 3.
+              </p>
+            )}
+
+            {genError && <p style={{ color: 'crimson' }}>{genError}</p>}
+            <div>
+              <button type="submit" disabled={genGenerating}>{genGenerating ? 'Generating...' : 'Generate'}</button>
+            </div>
+          </form>
+          {genResult && <BatchResultList summary={genResult} totalLabel="locations requested" />}
+        </div>
+      )}
+
       {showForm && (
         <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
-          <h3 style={{ marginTop: 0 }}>Add Location</h3>
+          <h3 style={{ marginTop: 0 }}>{editingId ? 'Edit Location' : 'Add Location'}</h3>
           <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>* required</p>
           <form onSubmit={handleSubmit}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -341,11 +632,38 @@ function LocationsPage() {
 
             {formError && <p style={{ color: 'crimson' }}>{formError}</p>}
             <div>
-              <button type="submit">Add Location</button>
+              <button type="submit">{editingId ? 'Save Changes' : 'Add Location'}</button>
+              {editingId && (
+                <button type="button" onClick={resetForm} style={{ marginLeft: 8 }}>Cancel</button>
+              )}
             </div>
           </form>
         </div>
       )}
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+        <select value={filterWarehouseId} onChange={(e) => setFilterWarehouseId(e.target.value)} style={{ width: 180 }}>
+          <option value="">All Warehouses</option>
+          {warehouses.map((w) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
+        </select>
+        <select value={filterZoneType} onChange={(e) => setFilterZoneType(e.target.value)} style={{ width: 190 }}>
+          <option value="">All Zone Types</option>
+          {ZONE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <select value={filterStorageType} onChange={(e) => setFilterStorageType(e.target.value)} style={{ width: 200 }}>
+          <option value="">All Storage Types</option>
+          {STORAGE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <input
+          placeholder="Search code / aisle / rack / block / stack..."
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          style={{ width: 260 }}
+        />
+        <span style={{ fontSize: 13, color: '#666' }}>
+          Showing {filteredLocations.length} of {locations.length}
+        </span>
+      </div>
 
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
         <thead>
@@ -362,7 +680,7 @@ function LocationsPage() {
           </tr>
         </thead>
         <tbody>
-          {locations.map((l) => (
+          {filteredLocations.map((l) => (
             <tr key={l.id} style={{ borderBottom: '1px solid #eee' }}>
               <td style={{ padding: 8, fontWeight: 'bold' }}>{l.code}</td>
               <td style={{ padding: 8 }}>{l.warehouse.code}</td>
@@ -373,7 +691,8 @@ function LocationsPage() {
               <td style={{ padding: 8 }}>{l.capacity ?? '—'}</td>
               <td style={{ padding: 8 }}>{l.isActive ? 'Active' : 'Inactive'}</td>
               <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
-                <button onClick={() => handleDeactivate(l.id, l.isActive)}>
+                <button onClick={() => startEdit(l)}>Edit</button>
+                <button onClick={() => handleDeactivate(l.id, l.isActive)} style={{ marginLeft: 6 }}>
                   {l.isActive ? 'Deactivate' : 'Reactivate'}
                 </button>
               </td>
@@ -382,7 +701,7 @@ function LocationsPage() {
         </tbody>
       </table>
 
-      {locations.length === 0 && <p style={{ marginTop: 16 }}>No locations found.</p>}
+      {filteredLocations.length === 0 && <p style={{ marginTop: 16 }}>No locations found{locations.length > 0 ? ' matching this filter' : ''}.</p>}
     </div>
   );
 }
