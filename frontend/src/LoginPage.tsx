@@ -66,7 +66,11 @@ function LoginPage({ onLoginSuccess }: Props) {
             <input placeholder="Your Name" value={adminName} onChange={(e) => setAdminName(e.target.value)} required style={inputStyle} />
           </>
         )}
-        <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required style={inputStyle} />
+        {/* Plain text, not type="email" — Supervisor/Operator accounts log in
+            with a bare ID (e.g. "AAA"), not a real email address, and the
+            browser's native email validation would block submission entirely
+            for those roles if this were type="email". */}
+        <input type="text" placeholder={mode === 'login' ? 'Email / Login ID' : 'Email'} value={email} onChange={(e) => setEmail(e.target.value)} required style={inputStyle} />
         <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required style={inputStyle} />
 
         {error && <p style={{ color: 'crimson' }}>{error}</p>}

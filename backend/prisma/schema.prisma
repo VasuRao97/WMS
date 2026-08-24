@@ -44,11 +44,23 @@ model User {
   passwordHash       String
   name               String
   role               Role
+  // Free-text specialization label for Supervisor/Operator (e.g. "Inbound Sup",
+  // "Shift Sup", "Picking") — descriptive only for now, for future KPI/task-routing
+  // reporting. Not read by any permission check; the real access rules run purely
+  // off `role` + `assignedWarehouses`.
+  functionTag        String?
   isActive           Boolean     @default(true)
   createdAt          DateTime    @default(now())
+  // Fast "last seen" lookup — a cached/derived convenience, same relationship
+  // to `LoginEvent` below as on-hand stock has to `StockMovement`: the ledger
+  // (LoginEvent, append-only, one row per login, forever) is the source of
+  // truth; this field is just the latest value read off it, updated
+  // alongside every LoginEvent insert so the two never drift.
+  lastLoginAt        DateTime?
   companyId          String?
   company            Company?    @relation(fields: [companyId], references: [id])
   assignedWarehouses Warehouse[]
+  loginEvents        LoginEvent[]
 
   receiptsCreated   InboundReceipt[] @relation("ReceiptCreatedBy")
   putawaysCompleted PutawayTask[]    @relation("PutawayCompletedBy")
@@ -56,6 +68,21 @@ model User {
   picksCompleted    PickTask[]       @relation("PickedBy")
   dispatches        Dispatch[]       @relation("DispatchedBy")
   movements         StockMovement[]  @relation("MovementCreatedBy")
+}
+
+// Append-only login ledger — one row per successful login, never updated or
+// deleted, mirroring StockMovement's "never UPDATE, always INSERT" pattern.
+// First-level capture only (2026-08-24): records the raw data a future
+// manpower-attendance report would read (who logged in, when) — the report/
+// rollup itself (days present, daily attendance view) is deliberately not
+// built yet, this just makes sure the history exists to build it from later.
+model LoginEvent {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  loggedInAt DateTime @default(now())
+
+  @@index([userId, loggedInAt])
 }
 
 model Warehouse {
