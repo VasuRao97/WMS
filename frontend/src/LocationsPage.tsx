@@ -1,0 +1,390 @@
+import { useEffect, useState } from 'react';
+
+type ProductCategory = { id: string; name: string };
+type Warehouse = { id: string; code: string; name: string };
+
+type Location = {
+  id: string;
+  warehouseId: string;
+  warehouse: { id: string; code: string; name: string };
+  code: string;
+  zone?: string;
+  zoneType: string;
+  storageType: string;
+  category?: { id: string; name: string };
+  aisle?: string;
+  rack?: string;
+  level?: string;
+  bin?: string;
+  block?: string;
+  stack?: string;
+  depth?: number;
+  width?: number;
+  height?: number;
+  capacity?: number;
+  isActive: boolean;
+};
+
+// Zone Type = what a bin is FOR. Same 14-value list as LocationZoneType in
+// schema.prisma — see CLAUDE.md's Locations/Bins design-pass notes.
+const ZONE_TYPE_OPTIONS = [
+  { value: 'UNLOADING_STAGING', label: 'Unloading Staging' },
+  { value: 'LOADING_STAGING', label: 'Loading Staging' },
+  { value: 'ACTUAL_STORAGE', label: 'Actual Storage' },
+  { value: 'FORWARD_PICK', label: 'Forward Pick Zone' },
+  { value: 'PICK_FACE', label: 'Pick Face' },
+  { value: 'PACKING_KITTING', label: 'Packing/Kitting' },
+  { value: 'CROSS_DOCK', label: 'Cross-Dock' },
+  { value: 'SLOB', label: 'SLOB' },
+  { value: 'RETURNS', label: 'Returns' },
+  { value: 'RE_PUTAWAY', label: 'Re-Putaway' },
+  { value: 'QC_HOLD', label: 'QC Hold' },
+  { value: 'TEMP_CONTROLLED_STORAGE', label: 'Temp-Controlled Storage' },
+  { value: 'HAZMAT', label: 'Hazmat' },
+  { value: 'DAMAGE_SCRAP', label: 'Damage & Scrap' },
+];
+
+// Storage Type = how a bin is physically built. No "Mix" here on purpose —
+// that value only ever means "warehouse hasn't broken this down yet" at the
+// WarehouseStorageType (capacity-planning) level; a real bin is always
+// concretely one of these five.
+const STORAGE_TYPE_OPTIONS = [
+  { value: 'SPR', label: 'SPR (Selective Racking)' },
+  { value: 'DRIVE_IN', label: 'Drive-in Racking' },
+  { value: 'ASRS', label: 'ASRS' },
+  { value: 'GROUND_FLOOR', label: 'Ground/Floor (block-stacked)' },
+  { value: 'STILLAGE', label: 'Stillage (stacked cages)' },
+];
+const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+const ALL_STORAGE_TYPES = STORAGE_TYPE_OPTIONS.map((o) => o.value);
+
+// UI-only narrowing of which Storage Types make practical sense for a given
+// Zone Type — e.g. a staging bay is realistically always floor space, never
+// racked. NOT enforced by the backend (LocationsService accepts any valid
+// zoneType+storageType pair) — this is a data-entry convenience only, so an
+// unusual real-world setup this list doesn't anticipate is never blocked via
+// direct API use, only hidden as a dropdown option here. Deliberately left
+// backend-unenforced (2026-08-24 design pass — see CLAUDE.md) since a UI
+// narrowing that turns out wrong is a one-line fix; a hard backend rule that
+// turns out wrong blocks a real warehouse's real layout.
+const ZONE_STORAGE_COMPAT: Record<string, string[]> = {
+  UNLOADING_STAGING: ['GROUND_FLOOR'],
+  LOADING_STAGING: ['GROUND_FLOOR'],
+  CROSS_DOCK: ['GROUND_FLOOR'],
+  PACKING_KITTING: ['GROUND_FLOOR'],
+  RETURNS: ['GROUND_FLOOR'],
+  RE_PUTAWAY: ['GROUND_FLOOR'],
+  QC_HOLD: ['GROUND_FLOOR'],
+  DAMAGE_SCRAP: ['GROUND_FLOOR'],
+  PICK_FACE: RACK_STORAGE_TYPES,
+  ACTUAL_STORAGE: ALL_STORAGE_TYPES,
+  FORWARD_PICK: ALL_STORAGE_TYPES,
+  SLOB: ALL_STORAGE_TYPES,
+  TEMP_CONTROLLED_STORAGE: ALL_STORAGE_TYPES,
+  HAZMAT: ALL_STORAGE_TYPES,
+};
+
+function labelFor(options: { value: string; label: string }[], value?: string) {
+  return options.find((o) => o.value === value)?.label || value || '—';
+}
+
+function authHeaders() {
+  const token = localStorage.getItem('token');
+  return { Authorization: `Bearer ${token}` };
+}
+
+// One line describing the bin's physical position, shape depends on
+// storageType — mirrors LocationsService's buildCode logic on the backend.
+function positionSummary(l: Location): string {
+  if (RACK_STORAGE_TYPES.includes(l.storageType)) {
+    const parts = [l.aisle, l.rack && `Rack ${l.rack}`, l.level && `Level ${l.level}`, l.bin && `Bin ${l.bin}`, l.depth ? `Depth ${l.depth}` : null];
+    return parts.filter(Boolean).join(', ');
+  }
+  if (l.storageType === 'GROUND_FLOOR') {
+    return [l.aisle, l.block && `Block ${l.block}`, `${l.depth ?? 1}×${l.width ?? 1}×${l.height ?? 1}`].filter(Boolean).join(', ');
+  }
+  if (l.storageType === 'STILLAGE') {
+    return [l.aisle, l.stack && `Stack ${l.stack}`, `${l.depth ?? 1}×${l.width ?? 1}×${l.height ?? 1}`].filter(Boolean).join(', ');
+  }
+  return l.aisle || '—';
+}
+
+function LocationsPage() {
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
+  const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  const [warehouseId, setWarehouseId] = useState('');
+  const [zoneType, setZoneType] = useState('');
+  const [storageType, setStorageType] = useState('');
+  const [category, setCategory] = useState('');
+  const [zone, setZone] = useState('');
+  const [aisle, setAisle] = useState('');
+  const [rack, setRack] = useState('');
+  const [level, setLevel] = useState('');
+  const [bin, setBin] = useState('');
+  const [block, setBlock] = useState('');
+  const [stack, setStack] = useState('');
+  const [depth, setDepth] = useState('');
+  const [width, setWidth] = useState('');
+  const [height, setHeight] = useState('');
+
+  const loadLocations = () => {
+    fetch('http://localhost:3000/locations', { headers: authHeaders() })
+      .then((res) => {
+        if (res.status === 401) {
+          localStorage.clear();
+          window.location.reload();
+          return [];
+        }
+        return res.json();
+      })
+      .then((data) => setLocations(Array.isArray(data) ? data : []));
+  };
+
+  const loadWarehouses = () => {
+    fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? [] : res.json()))
+      .then((data) => setWarehouses(Array.isArray(data) ? data : []));
+  };
+
+  const loadCategories = () => {
+    fetch('http://localhost:3000/product-categories', { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? [] : res.json()))
+      .then((data) => setCategories(Array.isArray(data) ? data : []));
+  };
+
+  useEffect(() => {
+    loadLocations();
+    loadWarehouses();
+    loadCategories();
+  }, []);
+
+  const resetForm = () => {
+    setWarehouseId('');
+    setZoneType('');
+    setStorageType('');
+    setCategory('');
+    setZone('');
+    setAisle('');
+    setRack('');
+    setLevel('');
+    setBin('');
+    setBlock('');
+    setStack('');
+    setDepth('');
+    setWidth('');
+    setHeight('');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError('');
+    const res = await fetch('http://localhost:3000/locations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        warehouseId,
+        zoneType,
+        storageType,
+        category: category || undefined,
+        zone: zone || undefined,
+        aisle,
+        rack: rack || undefined,
+        level: level || undefined,
+        bin: bin || undefined,
+        block: block || undefined,
+        stack: stack || undefined,
+        depth: depth || undefined,
+        width: width || undefined,
+        height: height || undefined,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setFormError(Array.isArray(data.message) ? data.message.join(' | ') : data.message);
+      return;
+    }
+    resetForm();
+    loadLocations();
+  };
+
+  const handleDeactivate = async (id: string, isActive: boolean) => {
+    const action = isActive ? 'deactivate' : 'reactivate';
+    await fetch(`http://localhost:3000/locations/${id}/${action}`, { method: 'PATCH', headers: authHeaders() });
+    loadLocations();
+  };
+
+  const handleDeleteAll = async () => {
+    if (!confirm('Permanently delete ALL locations that have no linked data (stock movements, putaway tasks, etc.)? This cannot be undone.')) return;
+    const res = await fetch('http://localhost:3000/locations/all', { method: 'DELETE', headers: authHeaders() });
+    const data = await res.json();
+    setDeleteAllResult(
+      `Deleted ${data.deletedCount} location(s). ${data.blockedCount} blocked (have linked data)${data.blockedCodes.length ? ': ' + data.blockedCodes.join(', ') : ''}.`,
+    );
+    loadLocations();
+  };
+
+  const isRack = RACK_STORAGE_TYPES.includes(storageType);
+  const isGround = storageType === 'GROUND_FLOOR';
+  const isStillage = storageType === 'STILLAGE';
+
+  return (
+    <div style={{ maxWidth: 1100, margin: '40px auto', fontFamily: 'sans-serif' }}>
+      <h1>Locations / Bins</h1>
+
+      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+        <button onClick={handleDeleteAll} style={{ color: 'crimson' }}>Delete All</button>
+        {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
+      </div>
+
+      <div style={{ marginBottom: 24 }}>
+        <button type="button" onClick={() => setShowForm(!showForm)}>
+          {showForm ? '▾ Hide manual entry' : '▸ Add Location manually'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+          <h3 style={{ marginTop: 0 }}>Add Location</h3>
+          <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>* required</p>
+          <form onSubmit={handleSubmit}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required style={{ width: 180 }}>
+                <option value="">Warehouse *</option>
+                {warehouses.map((w) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
+              </select>
+              <select
+                value={zoneType}
+                onChange={(e) => {
+                  const nextZoneType = e.target.value;
+                  setZoneType(nextZoneType);
+                  // Narrow Storage Type's options to what's realistic for this
+                  // Zone Type — clear a now-incompatible selection rather than
+                  // leave a stale choice the dropdown no longer offers.
+                  const allowed = ZONE_STORAGE_COMPAT[nextZoneType] || ALL_STORAGE_TYPES;
+                  if (storageType && !allowed.includes(storageType)) setStorageType('');
+                }}
+                required
+                style={{ width: 190 }}
+              >
+                <option value="">Zone Type *</option>
+                {ZONE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <select value={storageType} onChange={(e) => setStorageType(e.target.value)} required style={{ width: 200 }}>
+                <option value="">Storage Type *</option>
+                {STORAGE_TYPE_OPTIONS.filter((o) => (ZONE_STORAGE_COMPAT[zoneType] || ALL_STORAGE_TYPES).includes(o.value)).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 160 }}>
+                <option value="">Category (none)</option>
+                {categories.filter((c) => c.name !== 'Uncategorized').map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+              <input placeholder="Zone label (e.g. Zone 1)" value={zone} onChange={(e) => setZone(e.target.value)} style={{ width: 150 }} />
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+              <input placeholder="Aisle *" value={aisle} onChange={(e) => setAisle(e.target.value)} required style={{ width: 100 }} />
+
+              {isRack && (
+                <>
+                  <input placeholder="Rack *" value={rack} onChange={(e) => setRack(e.target.value)} required style={{ width: 100 }} />
+                  <input placeholder="Level *" value={level} onChange={(e) => setLevel(e.target.value)} required style={{ width: 100 }} />
+                  <input placeholder="Bin (default 1)" value={bin} onChange={(e) => setBin(e.target.value)} style={{ width: 130 }} />
+                  <input placeholder="Depth (multi-deep lane position)" value={depth} onChange={(e) => setDepth(e.target.value)} style={{ width: 220 }} />
+                </>
+              )}
+
+              {isGround && (
+                <>
+                  <input placeholder="Block *" value={block} onChange={(e) => setBlock(e.target.value)} required style={{ width: 100 }} />
+                  <input placeholder="Depth (pallets deep) *" value={depth} onChange={(e) => setDepth(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Width (stacks wide) *" value={width} onChange={(e) => setWidth(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="Height (layers, default 1)" value={height} onChange={(e) => setHeight(e.target.value)} style={{ width: 190 }} />
+                </>
+              )}
+
+              {isStillage && (
+                <>
+                  <input placeholder="Stack *" value={stack} onChange={(e) => setStack(e.target.value)} required style={{ width: 100 }} />
+                  <input placeholder="Height (stillages stacked) *" value={height} onChange={(e) => setHeight(e.target.value)} required style={{ width: 210 }} />
+                  <input placeholder="Depth (columns deep, default 1)" value={depth} onChange={(e) => setDepth(e.target.value)} style={{ width: 210 }} />
+                  <input placeholder="Width (columns wide, default 1)" value={width} onChange={(e) => setWidth(e.target.value)} style={{ width: 210 }} />
+                </>
+              )}
+            </div>
+
+            {isRack && (
+              <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: '#666' }}>
+                e.g. Aisle <strong>A01</strong>, Rack <strong>05</strong>, Level <strong>02</strong>, Bin <strong>01</strong> → code{' '}
+                <code>A01-R05-L02-B01</code>. Only fill Depth for multi-deep Drive-in lanes (e.g. Depth <strong>2</strong> = 2nd pallet
+                back in that lane) — leave it blank for single-deep SPR/ASRS.
+              </p>
+            )}
+            {isGround && (
+              <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: '#666' }}>
+                e.g. Aisle <strong>A01</strong>, Block <strong>07</strong>, Depth <strong>4</strong>, Width <strong>4</strong> (a
+                4-pallets-deep × 4-stacks-wide floor block, 16 positions) → code <code>GF-A01-BLK07</code>, Capacity <strong>16</strong>.
+              </p>
+            )}
+            {isStillage && (
+              <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: '#666' }}>
+                e.g. Aisle <strong>S01</strong>, Stack <strong>04</strong>, Height <strong>3</strong> (3 stillages stacked one on
+                another) → code <code>ST-S01-04</code>, Capacity <strong>3</strong>. Depth/Width only matter if several stillage
+                columns sit side by side as one location.
+              </p>
+            )}
+
+            {formError && <p style={{ color: 'crimson' }}>{formError}</p>}
+            <div>
+              <button type="submit">Add Location</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
+        <thead>
+          <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
+            <th style={{ padding: 8 }}>Code</th>
+            <th style={{ padding: 8 }}>Warehouse</th>
+            <th style={{ padding: 8 }}>Zone Type</th>
+            <th style={{ padding: 8 }}>Storage Type</th>
+            <th style={{ padding: 8 }}>Category</th>
+            <th style={{ padding: 8 }}>Position</th>
+            <th style={{ padding: 8 }}>Capacity</th>
+            <th style={{ padding: 8 }}>Status</th>
+            <th style={{ padding: 8 }}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {locations.map((l) => (
+            <tr key={l.id} style={{ borderBottom: '1px solid #eee' }}>
+              <td style={{ padding: 8, fontWeight: 'bold' }}>{l.code}</td>
+              <td style={{ padding: 8 }}>{l.warehouse.code}</td>
+              <td style={{ padding: 8 }}>{labelFor(ZONE_TYPE_OPTIONS, l.zoneType)}</td>
+              <td style={{ padding: 8 }}>{labelFor(STORAGE_TYPE_OPTIONS, l.storageType)}</td>
+              <td style={{ padding: 8 }}>{l.category?.name || '—'}</td>
+              <td style={{ padding: 8 }}>{positionSummary(l)}</td>
+              <td style={{ padding: 8 }}>{l.capacity ?? '—'}</td>
+              <td style={{ padding: 8 }}>{l.isActive ? 'Active' : 'Inactive'}</td>
+              <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
+                <button onClick={() => handleDeactivate(l.id, l.isActive)}>
+                  {l.isActive ? 'Deactivate' : 'Reactivate'}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {locations.length === 0 && <p style={{ marginTop: 16 }}>No locations found.</p>}
+    </div>
+  );
+}
+
+export default LocationsPage;
