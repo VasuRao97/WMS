@@ -303,6 +303,29 @@ call (`MAX_GENERATE_BATCH`) so a mistyped huge range fails fast with a clear mes
 results (success/error, same shape as bulk import below) so a partially-conflicting batch still
 creates everything that didn't collide, rather than all-or-nothing.
 
+**Rack Depth auto-expands from a bare number** (follow-up fix, 2026-08-24) — a real gap caught in
+practice: typing "2" meaning "this Drive-in lane is 2 pallets deep" only created the *back* slot
+(`depth=2`), never the front one, because a bare range value has always meant "repeat this one
+fixed value," not "every position up to it." Now, only for the Depth field, a bare number N gets
+rewritten to `1-N` before `expandRange()` runs, so "2" correctly creates both `depth=1` and
+`depth=2`. An explicit range (`3-5`) still means exactly those positions unchanged — that's the
+rare deliberate case of adding specific positions to a lane that's already partly built. This bare-
+vs-range distinction is Depth-specific — Rack/Level/Bin/Block/Stack ranges still mean "repeat this
+fixed value" for a bare input, which is exactly correct there (a bare "05" for Rack means "just
+rack 05," not "racks 1 through 5").
+
+**"Second range" fields generate both flanks of one aisle in a single call** (follow-up feature,
+2026-08-24) — real warehouses put racking or floor blocks on *both* sides of one aisle, and both
+sides always share the same Depth (confirmed, not left open). `rackRange2` / `blockRange2` are
+optional companions to the primary `rackRange` / `blockRange`: give one and the generator builds
+both sides under the *same* Aisle, same Depth/Width/Height, in one call — e.g. Rack Range 01-10 +
+Second Rack Range 11-20 → 20 rows, one Aisle. No schema change and no new "side" field was needed:
+a rack/block number already disambiguates the two sides, since real warehouses number both flanks
+of an aisle continuously rather than reusing numbers — the generator just loops the same
+row-building logic once per range instead of once total. Omitting the second range behaves exactly
+as before (fully backward compatible). Stillage was deliberately left out of this — a stillage
+stack isn't a two-flank aisle structure the way rack rows and floor blocks are.
+
 **Excel bulk import** (`POST /locations/import`, `LocationsService.bulkImport()`) — same
 xlsx → per-row validation → success/error results shape as Warehouse/SKU/Customer/User, reading a
 sheet named exactly `Location Import` (read by name, not position — see the established
@@ -339,7 +362,12 @@ blocked as all-duplicate, the `MAX_GENERATE_BATCH` cap, generator role/warehouse
 import success/duplicate-in-file/bad-warehouse-code/`MIX`-rejected/wrong-sheet-name paths) plus a
 manual browser pass (generator creating 10 real rows through the actual UI, the edit-form bug
 above caught and confirmed fixed live, search and Storage Type filtering both narrowing the visible
-list correctly).
+list correctly). The bare-depth-auto-expand and second-range fixes above were verified in their own
+follow-up pass (14/14: bare "2"/"5" expanding to the right position sets, an explicit range like
+"3-5" staying exact, zero-padded bare values, both-sides generation for Rack and Ground, and
+confirming an omitted second range still behaves exactly as before) plus a live browser check (Rack
+Range 01-03 + Second Rack Range 04-06 + bare Depth "2" → 12 real rows, Racks 01-06 each with both
+Depth 1 and Depth 2, confirmed through the actual UI).
 
 **Zone Type → Storage Type narrowing is UI-only, not backend-enforced** (`ZONE_STORAGE_COMPAT` in
 `LocationsPage.tsx`, 2026-08-24) — e.g. a Staging/Cross-Dock/QC Hold/etc. bin's Storage Type
