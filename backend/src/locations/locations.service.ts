@@ -244,18 +244,40 @@ export class LocationsService {
       throw new BadRequestException([`Storage Type must be one of: ${Object.values(STORAGE_TYPE_LABELS).join(', ')}.`]);
     }
 
+    // A bare number in Depth (e.g. "5", no dash) means "this lane is 5 pallets
+    // deep" — expand to every position 1..5, not just a single fixed depth=5
+    // row. Real gap caught 2026-08-24: entering "2" for a 2-deep drive-in lane
+    // silently created only the back slot, never the front one. An explicit
+    // range ("3-5") still means exactly those positions (e.g. retrofitting
+    // one missing position into an already-partly-built lane).
+    const depthRangeInput = /^\d+$/.test(String(data.depthRange || '').trim()) ? `1-${String(data.depthRange).trim()}` : data.depthRange;
+
+    // "Second range" fields let one generate() call build both flanks of a
+    // single aisle in one go — e.g. Rack Range 01-10 (one side) + Second Rack
+    // Range 11-20 (the other side), same Aisle, same Depth for both, since a
+    // rack/block number already disambiguates the two sides (real warehouses
+    // number both flanks of an aisle continuously, never reusing a number) —
+    // no "side" field needed on Location itself. Omit the second range and
+    // behavior is identical to a single-sided generation (unchanged).
     let rows: Record<string, any>[];
     if (RACK_STORAGE_TYPES.includes(storageType)) {
-      const racks = expandRange(data.rackRange);
+      const rackRanges = [data.rackRange, data.rackRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
       const levels = expandRange(data.levelRange);
       const bins = expandRange(data.binRange);
-      const depths = expandRange(data.depthRange);
+      const depths = expandRange(depthRangeInput);
       rows = [];
-      for (const rack of racks) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth });
+      for (const rackRangeStr of rackRanges.length ? rackRanges : [undefined]) {
+        for (const rack of expandRange(rackRangeStr)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth });
+      }
     } else if (storageType === 'GROUND_FLOOR') {
-      rows = expandRange(data.blockRange).map((block) => ({ block, depth: data.depth, width: data.width, height: data.height }));
+      const blockRanges = [data.blockRange, data.blockRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
+      rows = [];
+      for (const blockRangeStr of blockRanges.length ? blockRanges : [undefined]) {
+        for (const block of expandRange(blockRangeStr)) rows.push({ block, depth: data.depth, width: data.width, height: data.height });
+      }
     } else {
-      // STILLAGE
+      // STILLAGE — no "second side" concept; a stillage stack isn't a
+      // two-flank structure the way an aisle's rack rows or floor blocks are.
       rows = expandRange(data.stackRange).map((stack) => ({ stack, height: data.height, depth: data.depth, width: data.width }));
     }
 

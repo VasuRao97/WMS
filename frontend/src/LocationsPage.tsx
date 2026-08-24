@@ -167,10 +167,12 @@ function LocationsPage() {
   const [genZone, setGenZone] = useState('');
   const [genAisle, setGenAisle] = useState('');
   const [genRackRange, setGenRackRange] = useState('');
+  const [genRackRange2, setGenRackRange2] = useState('');
   const [genLevelRange, setGenLevelRange] = useState('');
   const [genBinRange, setGenBinRange] = useState('');
   const [genDepthRange, setGenDepthRange] = useState('');
   const [genBlockRange, setGenBlockRange] = useState('');
+  const [genBlockRange2, setGenBlockRange2] = useState('');
   const [genStackRange, setGenStackRange] = useState('');
   const [genDepth, setGenDepth] = useState('');
   const [genWidth, setGenWidth] = useState('');
@@ -318,10 +320,12 @@ function LocationsPage() {
     setGenZone('');
     setGenAisle('');
     setGenRackRange('');
+    setGenRackRange2('');
     setGenLevelRange('');
     setGenBinRange('');
     setGenDepthRange('');
     setGenBlockRange('');
+    setGenBlockRange2('');
     setGenStackRange('');
     setGenDepth('');
     setGenWidth('');
@@ -341,10 +345,12 @@ function LocationsPage() {
       zone: genZone || undefined,
       aisle: genAisle,
       rackRange: genRackRange || undefined,
+      rackRange2: genRackRange2 || undefined,
       levelRange: genLevelRange || undefined,
       binRange: genBinRange || undefined,
       depthRange: genDepthRange || undefined,
       blockRange: genBlockRange || undefined,
+      blockRange2: genBlockRange2 || undefined,
       stackRange: genStackRange || undefined,
       depth: genDepth || undefined,
       width: genWidth || undefined,
@@ -485,15 +491,17 @@ function LocationsPage() {
               {genIsRack && (
                 <>
                   <input placeholder="Rack Range * (e.g. 01-20)" value={genRackRange} onChange={(e) => setGenRackRange(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="+ Second Rack Range (other side of aisle)" value={genRackRange2} onChange={(e) => setGenRackRange2(e.target.value)} style={{ width: 250 }} />
                   <input placeholder="Level Range * (e.g. 01-04)" value={genLevelRange} onChange={(e) => setGenLevelRange(e.target.value)} required style={{ width: 170 }} />
                   <input placeholder="Bin Range (default 1)" value={genBinRange} onChange={(e) => setGenBinRange(e.target.value)} style={{ width: 170 }} />
-                  <input placeholder="Depth Range (multi-deep lanes)" value={genDepthRange} onChange={(e) => setGenDepthRange(e.target.value)} style={{ width: 220 }} />
+                  <input placeholder="Depth = lane depth (e.g. 2 → positions 1-2)" value={genDepthRange} onChange={(e) => setGenDepthRange(e.target.value)} style={{ width: 260 }} />
                 </>
               )}
 
               {genIsGround && (
                 <>
                   <input placeholder="Block Range * (e.g. 01-10)" value={genBlockRange} onChange={(e) => setGenBlockRange(e.target.value)} required style={{ width: 170 }} />
+                  <input placeholder="+ Second Block Range (other side of aisle)" value={genBlockRange2} onChange={(e) => setGenBlockRange2(e.target.value)} style={{ width: 260 }} />
                   <input placeholder="Depth (pallets deep) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 170 }} />
                   <input placeholder="Width (stacks wide) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 170 }} />
                   <input placeholder="Height (layers, default 1)" value={genHeight} onChange={(e) => setGenHeight(e.target.value)} style={{ width: 190 }} />
@@ -513,13 +521,20 @@ function LocationsPage() {
             {genIsRack && (
               <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
                 e.g. Aisle <strong>A01</strong>, Rack Range <strong>01-20</strong>, Level Range <strong>01-04</strong> → creates 80
-                locations (<code>A01-R01-L01-B1</code> … <code>A01-R20-L04-B1</code>) in one go.
+                locations (<code>A01-R01-L01-B1</code> … <code>A01-R20-L04-B1</code>) in one go. Fill{' '}
+                <strong>Second Rack Range</strong> too (e.g. <strong>21-40</strong>) to generate the racking on the *other* side of
+                this same aisle in the same call — same Aisle, same Depth, just a non-overlapping set of rack numbers. Depth means
+                the lane's full depth: entering <strong>2</strong> creates *both* the front and back pallet position for a 2-deep
+                Drive-in lane (not just the back one) — use an explicit range like <strong>3-5</strong> only to add specific
+                positions to a lane that's already partly built.
               </p>
             )}
             {genIsGround && (
               <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
                 e.g. Aisle <strong>GA1</strong>, Block Range <strong>01-10</strong>, Depth <strong>4</strong>, Width <strong>4</strong> →
-                creates 10 blocks (<code>GF-GA1-BLK01</code> … <code>GF-GA1-BLK10</code>), each capacity 16.
+                creates 10 blocks (<code>GF-GA1-BLK01</code> … <code>GF-GA1-BLK10</code>), each capacity 16. Fill{' '}
+                <strong>Second Block Range</strong> too (e.g. <strong>11-20</strong>) to generate the blocks on the other side of
+                this same aisle in the same call, same Depth/Width/Height for both sides.
               </p>
             )}
             {genIsStillage && (
