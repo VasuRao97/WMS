@@ -37,6 +37,33 @@ const STORAGE_TYPE_LABELS: Record<string, string> = {
 const STORAGE_TYPE_VALUES = Object.keys(STORAGE_TYPE_LABELS);
 const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
 
+// Generation batches are capped so a mistyped range (e.g. "1-99999") fails
+// fast with a clear message instead of hanging the request or the DB.
+const MAX_GENERATE_BATCH = 2000;
+
+// Expands one range-generator input into the list of values a field should
+// take across the batch — "1-20" (or "01-20", padding preserved from
+// whichever side has more digits) -> ['01', '02', ..., '20']; a bare value
+// with no dash ("07") -> ['07'], a single fixed value repeated for every
+// generated row; blank/undefined -> [undefined], meaning "don't set this
+// field, let buildLocationFields's own default/optional handling apply."
+function expandRange(input: any): (string | undefined)[] {
+  if (input === undefined || input === null || String(input).trim() === '') return [undefined];
+  const str = String(input).trim();
+  const m = str.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (!m) return [str];
+  const [, startStr, endStr] = m;
+  const start = parseInt(startStr, 10);
+  const end = parseInt(endStr, 10);
+  const width = Math.max(startStr.length, endStr.length);
+  const step = start <= end ? 1 : -1;
+  const result: string[] = [];
+  for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
+    result.push(String(i).padStart(width, '0'));
+  }
+  return result;
+}
+
 @Injectable()
 export class LocationsService {
   constructor(private prisma: PrismaService) {}
@@ -159,36 +186,208 @@ export class LocationsService {
     }
   }
 
+  // Shared by create()/generate()/bulkImport() — validates one row's data and
+  // returns everything needed to insert it (or the errors blocking it). Never
+  // throws; callers decide single-record (throw) vs batch (collect) handling.
+  // Same "one function, many callers" shape as SkusService.validateSkuData.
+  private async prepareRow(data: any, user: any): Promise<{ errors: string[]; warehouseId?: string; zoneType?: string; storageType?: string; categoryId?: string; fields?: Record<string, any>; code?: string }> {
+    const errors: string[] = [];
+    const { zoneType, storageType, fields } = this.buildLocationFields(data, errors);
+    const categoryId = await this.resolveCategory(data.category, errors);
+    const warehouseId = data.warehouseId;
+    if (!warehouseId) errors.push('Warehouse is required.');
+    else await this.assertWarehouseAccess(warehouseId, user, errors);
+    if (errors.length > 0) return { errors };
+    return { errors, warehouseId, zoneType, storageType, categoryId, fields, code: this.buildCode(storageType, fields) };
+  }
+
   async create(data: any, user: any) {
     if (!user.companyId) {
       throw new ForbiddenException('Super admin accounts cannot create locations directly — log in as a company admin instead.');
     }
-    const errors: string[] = [];
-    const { zoneType, storageType, fields } = this.buildLocationFields(data, errors);
-    const categoryId = await this.resolveCategory(data.category, errors);
-    if (!data.warehouseId) errors.push('Warehouse is required.');
-    else await this.assertWarehouseAccess(data.warehouseId, user, errors);
-    if (errors.length > 0) throw new BadRequestException(errors);
+    const prepared = await this.prepareRow(data, user);
+    if (prepared.errors.length > 0) throw new BadRequestException(prepared.errors);
 
-    const code = this.buildCode(storageType, fields);
-    const existing = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: data.warehouseId, code } } });
+    const existing = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: prepared.warehouseId!, code: prepared.code! } } });
     if (existing) {
-      throw new BadRequestException(`A location with code "${code}" already exists in this warehouse — check for a duplicate aisle/rack/level/bin (or block/stack).`);
+      throw new BadRequestException(`A location with code "${prepared.code}" already exists in this warehouse — check for a duplicate aisle/rack/level/bin (or block/stack).`);
     }
 
     const created = await this.prisma.location.create({
       data: {
-        warehouse: { connect: { id: data.warehouseId } },
-        code,
+        warehouse: { connect: { id: prepared.warehouseId } },
+        code: prepared.code!,
         zone: data.zone ? String(data.zone).trim() : undefined,
-        zoneType: zoneType as any,
-        storageType,
-        category: categoryId ? { connect: { id: categoryId } } : undefined,
-        ...fields,
+        zoneType: prepared.zoneType as any,
+        storageType: prepared.storageType!,
+        category: prepared.categoryId ? { connect: { id: prepared.categoryId } } : undefined,
+        ...prepared.fields,
       },
       include: { warehouse: { select: { id: true, code: true, name: true } }, category: { select: { id: true, name: true } } },
     });
     return this.attachCapacity(created);
+  }
+
+  // Range generator — expands a Rack range (rack x level x bin x depth), a
+  // Ground Block range, or a Stillage Stack range into many individual
+  // Location rows in one call, reusing prepareRow's per-row validation and
+  // the same duplicate-detection create() uses. See CLAUDE.md's Locations/
+  // Bins notes for the design (why depth/width/height stay FIXED per batch —
+  // one footprint applies to every generated Ground/Stillage row — while
+  // only the identifier field(s) vary across the range).
+  async generate(data: any, user: any) {
+    if (!user.companyId) {
+      throw new ForbiddenException('Super admin accounts cannot create locations directly — log in as a company admin instead.');
+    }
+    const storageType = data.storageType ? normalizeCode(data.storageType) : '';
+    if (!STORAGE_TYPE_VALUES.includes(storageType)) {
+      throw new BadRequestException([`Storage Type must be one of: ${Object.values(STORAGE_TYPE_LABELS).join(', ')}.`]);
+    }
+
+    let rows: Record<string, any>[];
+    if (RACK_STORAGE_TYPES.includes(storageType)) {
+      const racks = expandRange(data.rackRange);
+      const levels = expandRange(data.levelRange);
+      const bins = expandRange(data.binRange);
+      const depths = expandRange(data.depthRange);
+      rows = [];
+      for (const rack of racks) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth });
+    } else if (storageType === 'GROUND_FLOOR') {
+      rows = expandRange(data.blockRange).map((block) => ({ block, depth: data.depth, width: data.width, height: data.height }));
+    } else {
+      // STILLAGE
+      rows = expandRange(data.stackRange).map((stack) => ({ stack, height: data.height, depth: data.depth, width: data.width }));
+    }
+
+    if (rows.length === 0) throw new BadRequestException(['The given range(s) produced no rows to generate.']);
+    if (rows.length > MAX_GENERATE_BATCH) {
+      throw new BadRequestException([`This range would generate ${rows.length} locations in one batch — narrow it down (max ${MAX_GENERATE_BATCH} per generation).`]);
+    }
+
+    const results: { code?: string; status: 'success' | 'error'; errors?: string[] }[] = [];
+    const codesSeenInBatch = new Set<string>();
+    for (const row of rows) {
+      const rowData = { ...data, ...row };
+      const prepared = await this.prepareRow(rowData, user);
+      if (prepared.errors.length > 0) {
+        results.push({ status: 'error', errors: prepared.errors });
+        continue;
+      }
+      if (codesSeenInBatch.has(prepared.code!)) {
+        results.push({ code: prepared.code, status: 'error', errors: ['Duplicate within this generation batch.'] });
+        continue;
+      }
+      const existing = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: prepared.warehouseId!, code: prepared.code! } } });
+      if (existing) {
+        results.push({ code: prepared.code, status: 'error', errors: ['A location with this code already exists.'] });
+        continue;
+      }
+      try {
+        await this.prisma.location.create({
+          data: {
+            warehouse: { connect: { id: prepared.warehouseId } },
+            code: prepared.code!,
+            zone: data.zone ? String(data.zone).trim() : undefined,
+            zoneType: prepared.zoneType as any,
+            storageType: prepared.storageType!,
+            category: prepared.categoryId ? { connect: { id: prepared.categoryId } } : undefined,
+            ...prepared.fields,
+          },
+        });
+        results.push({ code: prepared.code, status: 'success' });
+        codesSeenInBatch.add(prepared.code!);
+      } catch (err: any) {
+        results.push({ code: prepared.code, status: 'error', errors: [err.message || 'Unknown error'] });
+      }
+    }
+
+    return {
+      totalRequested: rows.length,
+      successCount: results.filter((r) => r.status === 'success').length,
+      failCount: results.filter((r) => r.status === 'error').length,
+      results,
+    };
+  }
+
+  private async resolveWarehouseCodeToId(code: any, user: any, errors: string[]): Promise<string | undefined> {
+    const codeStr = code ? String(code).trim().toUpperCase() : '';
+    if (!codeStr) {
+      errors.push('Warehouse Code is required.');
+      return undefined;
+    }
+    const warehouse = await this.prisma.warehouse.findUnique({ where: { companyId_code: { companyId: user.companyId, code: codeStr } } });
+    if (!warehouse) {
+      errors.push(`Warehouse Code "${codeStr}" not found.`);
+      return undefined;
+    }
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouse.id)) {
+        errors.push(`You do not have access to Warehouse "${codeStr}".`);
+        return undefined;
+      }
+    }
+    return warehouse.id;
+  }
+
+  // Excel bulk import — one row per Location, same xlsx -> per-row validation
+  // -> success/error results shape as Warehouse/SKU/Customer/User. Unlike
+  // those, this template's rows aren't grouped by a repeated key — each row
+  // is already exactly one Location, so no grouping pass is needed first.
+  async bulkImport(rows: any[], user: any) {
+    if (!user.companyId) {
+      throw new ForbiddenException('Super admin accounts cannot import locations directly — log in as a company admin instead.');
+    }
+    const results: { code?: string; status: 'success' | 'error'; errors?: string[] }[] = [];
+    const codesSeenInFile = new Map<string, string>(); // warehouseId::code -> row label, for within-file dupes
+
+    for (const row of rows) {
+      const errors: string[] = [];
+      const warehouseId = await this.resolveWarehouseCodeToId(row.warehouseCode, user, errors);
+      const prepared = warehouseId ? await this.prepareRow({ ...row, warehouseId }, user) : { errors };
+      if (warehouseId) prepared.errors = [...errors, ...prepared.errors];
+
+      if (prepared.errors.length > 0 || !prepared.code) {
+        results.push({ status: 'error', errors: prepared.errors.length ? prepared.errors : ['Could not process this row.'] });
+        continue;
+      }
+
+      const batchKey = `${prepared.warehouseId}::${prepared.code}`;
+      if (codesSeenInFile.has(batchKey)) {
+        results.push({ code: prepared.code, status: 'error', errors: ['Duplicate within this file (same Warehouse + resulting code).'] });
+        continue;
+      }
+      const existing = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: prepared.warehouseId!, code: prepared.code } } });
+      if (existing) {
+        results.push({ code: prepared.code, status: 'error', errors: ['A location with this code already exists in this warehouse.'] });
+        continue;
+      }
+
+      try {
+        await this.prisma.location.create({
+          data: {
+            warehouse: { connect: { id: prepared.warehouseId } },
+            code: prepared.code!,
+            zone: row.zone ? String(row.zone).trim() : undefined,
+            zoneType: prepared.zoneType as any,
+            storageType: prepared.storageType!,
+            category: prepared.categoryId ? { connect: { id: prepared.categoryId } } : undefined,
+            ...prepared.fields,
+          },
+        });
+        results.push({ code: prepared.code, status: 'success' });
+        codesSeenInFile.set(batchKey, prepared.code);
+      } catch (err: any) {
+        results.push({ code: prepared.code, status: 'error', errors: [err.message || 'Unknown error'] });
+      }
+    }
+
+    return {
+      totalRows: rows.length,
+      successCount: results.filter((r) => r.status === 'success').length,
+      failCount: results.filter((r) => r.status === 'error').length,
+      results,
+    };
   }
 
   async findAll(user: any) {
@@ -223,30 +422,23 @@ export class LocationsService {
   async update(id: string, data: any, user: any) {
     const existingLocation = await this.assertAccess(id, user);
 
-    const errors: string[] = [];
-    const { zoneType, storageType, fields } = this.buildLocationFields(data, errors);
-    const categoryId = await this.resolveCategory(data.category, errors);
-    const warehouseId = data.warehouseId || existingLocation.warehouseId;
-    if (data.warehouseId && data.warehouseId !== existingLocation.warehouseId) {
-      await this.assertWarehouseAccess(data.warehouseId, user, errors);
-    }
-    if (errors.length > 0) throw new BadRequestException(errors);
+    const prepared = await this.prepareRow({ ...data, warehouseId: data.warehouseId || existingLocation.warehouseId }, user);
+    if (prepared.errors.length > 0) throw new BadRequestException(prepared.errors);
 
-    const code = this.buildCode(storageType, fields);
-    const duplicate = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId, code } } });
+    const duplicate = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: prepared.warehouseId!, code: prepared.code! } } });
     if (duplicate && duplicate.id !== id) {
-      throw new BadRequestException(`A location with code "${code}" already exists in this warehouse — check for a duplicate aisle/rack/level/bin (or block/stack).`);
+      throw new BadRequestException(`A location with code "${prepared.code}" already exists in this warehouse — check for a duplicate aisle/rack/level/bin (or block/stack).`);
     }
 
     const updated = await this.prisma.location.update({
       where: { id },
       data: {
-        warehouse: { connect: { id: warehouseId } },
-        code,
+        warehouse: { connect: { id: prepared.warehouseId } },
+        code: prepared.code!,
         zone: data.zone ? String(data.zone).trim() : null,
-        zoneType: zoneType as any,
-        storageType,
-        category: categoryId ? { connect: { id: categoryId } } : { disconnect: true },
+        zoneType: prepared.zoneType as any,
+        storageType: prepared.storageType!,
+        category: prepared.categoryId ? { connect: { id: prepared.categoryId } } : { disconnect: true },
         // Clear every identifier/dimension field first so switching Storage
         // Type on an existing row doesn't leave stale fields from the old
         // group behind (e.g. a "block" value surviving a switch to rack).
@@ -259,7 +451,7 @@ export class LocationsService {
         depth: null,
         width: null,
         height: null,
-        ...fields,
+        ...prepared.fields,
       },
       include: { warehouse: { select: { id: true, code: true, name: true } }, category: { select: { id: true, name: true } } },
     });

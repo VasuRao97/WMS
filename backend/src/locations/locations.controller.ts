@@ -1,10 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import * as XLSX from 'xlsx';
 import { LocationsService } from './locations.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { MASTER_DATA_READ_ROLES, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
+import { stripHeaderAsterisks, toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 @Controller('locations')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -15,6 +18,56 @@ export class LocationsController {
   @Roles(...MASTER_DATA_WRITE_ROLES)
   create(@Body() body: any, @CurrentUser() user: any) {
     return this.locationsService.create(body, user);
+  }
+
+  // Range generator — one Rack range (rack x level x bin x depth), Ground
+  // Block range, or Stillage Stack range in one call. See
+  // LocationsService.generate() and CLAUDE.md's Locations/Bins notes.
+  @Post('generate')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
+  generate(@Body() body: any, @CurrentUser() user: any) {
+    return this.locationsService.generate(body, user);
+  }
+
+  @Post('import')
+  @Roles(...MASTER_DATA_WRITE_ROLES)
+  @UseInterceptors(FileInterceptor('file'))
+  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    } catch {
+      return { totalRows: 0, successCount: 0, failCount: 0, results: [{ status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+    }
+    // Read by sheet NAME, not position — see CLAUDE.md's note on Warehouse's
+    // import controller for why (a reordered sheet silently reading the
+    // wrong tab bit this project once already).
+    const sheet = workbook.Sheets['Location Import'];
+    if (!sheet) {
+      return { totalRows: 0, successCount: 0, failCount: 0, results: [{ status: 'error', errors: ['No "Location Import" sheet found in this file.'] }] };
+    }
+    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+
+    const rows = rawRows
+      .filter((r) => r['Warehouse Code'] || r['Aisle']) // skip fully-blank trailing rows
+      .map((r) => ({
+        warehouseCode: r['Warehouse Code'] ? String(r['Warehouse Code']).trim() : '',
+        zoneType: r['Zone Type'] ? String(r['Zone Type']).trim() : '',
+        storageType: r['Storage Type'] ? String(r['Storage Type']).trim() : '',
+        category: r['Category'] ? String(r['Category']).trim() : undefined,
+        zone: r['Zone'] ? String(r['Zone']).trim() : undefined,
+        aisle: r['Aisle'] ? String(r['Aisle']).trim() : '',
+        rack: r['Rack'] ? String(r['Rack']).trim() : undefined,
+        level: r['Level'] ? String(r['Level']).trim() : undefined,
+        bin: r['Bin'] ? String(r['Bin']).trim() : undefined,
+        block: r['Block'] ? String(r['Block']).trim() : undefined,
+        stack: r['Stack'] ? String(r['Stack']).trim() : undefined,
+        depth: toNumberOrUndefined(r['Depth']),
+        width: toNumberOrUndefined(r['Width']),
+        height: toNumberOrUndefined(r['Height']),
+      }));
+
+    return this.locationsService.bulkImport(rows, user);
   }
 
   @Get()
