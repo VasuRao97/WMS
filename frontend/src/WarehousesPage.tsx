@@ -312,17 +312,18 @@ function WarehousesPage() {
       {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Add Warehouse</h3>
+        <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>* required</p>
         <form onSubmit={handleSubmit}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
             <select value={nodeType} onChange={(e) => setNodeType(e.target.value)} required style={{ width: 150 }}>
-              <option value="">Type of Node</option>
+              <option value="">Type of Node *</option>
               {NODE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <input placeholder="Location Code (e.g. TN01)" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 150 }} />
-            <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required style={{ width: 180 }} />
-            <input placeholder="City" value={city} onChange={(e) => setCity(e.target.value)} required style={{ width: 130 }} />
-            <input placeholder="Address" value={address} onChange={(e) => setAddress(e.target.value)} required style={{ width: 200 }} />
-            <input placeholder="Pincode" value={pincode} onChange={(e) => setPincode(e.target.value)} required style={{ width: 100 }} />
+            <input placeholder="Location Code (e.g. TN01) *" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 160 }} />
+            <input placeholder="Name *" value={name} onChange={(e) => setName(e.target.value)} required style={{ width: 180 }} />
+            <input placeholder="City *" value={city} onChange={(e) => setCity(e.target.value)} required style={{ width: 130 }} />
+            <input placeholder="Address *" value={address} onChange={(e) => setAddress(e.target.value)} required style={{ width: 200 }} />
+            <input placeholder="Pincode *" value={pincode} onChange={(e) => setPincode(e.target.value)} required style={{ width: 100 }} />
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
             <input placeholder="Latitude" value={latitude} onChange={(e) => setLatitude(e.target.value)} style={{ width: 110 }} />
@@ -343,6 +344,7 @@ function WarehousesPage() {
           <p style={{ marginTop: -4, marginBottom: 8, fontSize: 13, color: '#666' }}>
             One row per Storage Type + Category combination — the same Category can appear against more than one Storage Type
             (e.g. Car Tyres split across SPR and Ground/Floor), each with its own Pallet count and dimensions.
+            <br />* Pallet Positions is required once you pick a Storage Type on a row.
           </p>
           {storageTypes.map((s, i) => (
             <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
@@ -354,7 +356,7 @@ function WarehousesPage() {
                 <option value="">Category (Uncategorized)</option>
                 {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
               </select>
-              <input placeholder="Pallet Positions" value={s.palletPositions} onChange={(e) => updateStorageType(i, 'palletPositions', e.target.value)} style={{ width: 130 }} />
+              <input placeholder="Pallet Positions *" value={s.palletPositions} onChange={(e) => updateStorageType(i, 'palletPositions', e.target.value)} style={{ width: 130 }} />
               <input placeholder="Dim L (m)" value={s.lengthM} onChange={(e) => updateStorageType(i, 'lengthM', e.target.value)} style={{ width: 90 }} />
               <input placeholder="Dim W (m)" value={s.widthM} onChange={(e) => updateStorageType(i, 'widthM', e.target.value)} style={{ width: 90 }} />
               <input placeholder="Dim H (m)" value={s.heightM} onChange={(e) => updateStorageType(i, 'heightM', e.target.value)} style={{ width: 90 }} />

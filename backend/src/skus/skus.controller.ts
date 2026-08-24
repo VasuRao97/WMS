@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import { SkusService } from './skus.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { toBool, toNumberOrUndefined } from '../common/xlsx-parse.util';
+import { stripHeaderAsterisks, toBool, toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 @Controller('skus')
 @UseGuards(JwtAuthGuard)
@@ -72,7 +72,9 @@ export class SkusController {
     }
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    // Template header cells mark required columns with a trailing " *"
+    // (e.g. "SKU Code *") — strip it before any r['Column Name'] lookup.
+    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
 
     const rows = rawRows.map((r) => {
       const storageUnits: any[] = [];

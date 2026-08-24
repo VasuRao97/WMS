@@ -219,10 +219,11 @@ const handleImport = async () => {
       {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Add Customer</h3>
+        <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>* required</p>
         <form onSubmit={handleSubmit}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-            <input placeholder="Bill To ID" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 120 }} />
-            <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required style={{ width: 200 }} />
+            <input placeholder="Bill To ID *" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 120 }} />
+            <input placeholder="Name *" value={name} onChange={(e) => setName(e.target.value)} required style={{ width: 200 }} />
             <input placeholder="Category" value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 140 }} />
             <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: 180 }} />
             <input placeholder="PAN" value={pan} onChange={(e) => setPan(e.target.value)} style={{ width: 120 }} />
@@ -234,13 +235,16 @@ const handleImport = async () => {
             <input placeholder="Billing GST Number" value={gstNumber} onChange={(e) => setGstNumber(e.target.value)} style={{ width: 180 }} />
           </div>
 
-          <h4>Ship-to Locations</h4>
+          <h4 style={{ marginBottom: 4 }}>Ship-to Locations</h4>
+          <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: '#888' }}>
+            * Address, Pincode, and State are required only if you add a Ship-to Location row.
+          </p>
           {shipTos.map((s, i) => (
             <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <input placeholder="Ship To ID" value={s.shipToCode} onChange={(e) => updateShipTo(i, 'shipToCode', e.target.value)} style={{ width: 110 }} />
-              <input placeholder="Address" value={s.address} onChange={(e) => updateShipTo(i, 'address', e.target.value)} style={{ width: 180 }} />
-              <input placeholder="Pincode" value={s.pincode} onChange={(e) => updateShipTo(i, 'pincode', e.target.value)} style={{ width: 90 }} />
-              <input placeholder="State" value={s.state} onChange={(e) => updateShipTo(i, 'state', e.target.value)} style={{ width: 120 }} />
+              <input placeholder="Address *" value={s.address} onChange={(e) => updateShipTo(i, 'address', e.target.value)} style={{ width: 180 }} />
+              <input placeholder="Pincode *" value={s.pincode} onChange={(e) => updateShipTo(i, 'pincode', e.target.value)} style={{ width: 90 }} />
+              <input placeholder="State *" value={s.state} onChange={(e) => updateShipTo(i, 'state', e.target.value)} style={{ width: 120 }} />
               <input placeholder="GST Number" value={s.gstNumber} onChange={(e) => updateShipTo(i, 'gstNumber', e.target.value)} style={{ width: 160 }} />
               <input placeholder="Warehouse Code (e.g. MH01)" value={s.warehouseCode} onChange={(e) => updateShipTo(i, 'warehouseCode', e.target.value)} style={{ width: 160 }} />
               <select value={s.deliveryZone} onChange={(e) => updateShipTo(i, 'deliveryZone', e.target.value)} style={{ width: 120 }}>

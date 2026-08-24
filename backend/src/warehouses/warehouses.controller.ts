@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { WarehousesService } from './warehouses.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { toNumberOrUndefined } from '../common/xlsx-parse.util';
+import { stripHeaderAsterisks, toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 @Controller('warehouses')
 @UseGuards(JwtAuthGuard)
@@ -57,7 +57,9 @@ export class WarehousesController {
     if (!sheet) {
       return { totalWarehouses: 0, successCount: 0, failCount: 0, results: [{ code: '(file)', status: 'error', errors: ['No "Warehouse Import" sheet found in this file.'] }] };
     }
-    const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    // Template header cells mark required columns with a trailing " *"
+    // (e.g. "Location Code *") — strip it before any r['Column Name'] lookup.
+    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
 
     const grouped = new Map<string, any>();
 

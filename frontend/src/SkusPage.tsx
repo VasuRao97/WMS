@@ -348,10 +348,11 @@ function SkusPage() {
       {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Add SKU</h3>
+        <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>* required</p>
         <form onSubmit={handleSubmit}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-            <input placeholder="SKU Code" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 140 }} />
-            <input placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} required style={{ width: 220 }} />
+            <input placeholder="SKU Code *" value={code} onChange={(e) => setCode(e.target.value)} required style={{ width: 140 }} />
+            <input placeholder="Description *" value={description} onChange={(e) => setDescription(e.target.value)} required style={{ width: 220 }} />
             <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: 140 }}>
               <option value="">Category (Uncategorized)</option>
               {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
@@ -360,10 +361,10 @@ function SkusPage() {
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
             <select value={baseUom} onChange={(e) => setBaseUom(e.target.value)} required style={{ width: 140 }}>
-              <option value="">Base UOM</option>
+              <option value="">Base UOM *</option>
               {BASE_UOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
             </select>
-            <input placeholder="HSN Code" value={hsnCode} onChange={(e) => setHsnCode(e.target.value)} required style={{ width: 120 }} />
+            <input placeholder="HSN Code *" value={hsnCode} onChange={(e) => setHsnCode(e.target.value)} required style={{ width: 120 }} />
             <select value={storageCondition} onChange={(e) => setStorageCondition(e.target.value)} style={{ width: 140 }}>
               {STORAGE_CONDITION_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
             </select>
@@ -380,13 +381,13 @@ function SkusPage() {
               <input type="checkbox" checked={shelfLifeTracked} onChange={(e) => setShelfLifeTracked(e.target.checked)} /> Shelf-Life Tracked
             </label>
             {shelfLifeTracked && (
-              <input placeholder="Shelf Life Days" value={shelfLifeDays} onChange={(e) => setShelfLifeDays(e.target.value)} style={{ width: 130 }} />
+              <input placeholder="Shelf Life Days *" value={shelfLifeDays} onChange={(e) => setShelfLifeDays(e.target.value)} style={{ width: 130 }} />
             )}
             <label style={{ fontSize: 14 }}>
               <input type="checkbox" checked={hasUniqueBarcode} onChange={(e) => setHasUniqueBarcode(e.target.checked)} /> Has Unique Barcode
             </label>
           </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
             <select value={weightUom} onChange={(e) => setWeightUom(e.target.value)} style={{ width: 110 }}>
               <option value="">Weight UOM</option>
               {WEIGHT_UOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -396,16 +397,18 @@ function SkusPage() {
             <input placeholder="Standard Cost" value={standardCost} onChange={(e) => setStandardCost(e.target.value)} style={{ width: 120 }} />
             <input placeholder="MOQ" value={moq} onChange={(e) => setMoq(e.target.value)} style={{ width: 100 }} />
           </div>
+          <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: '#888' }}>* Weight UOM is required if Gross Weight is given.</p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12, alignItems: 'center' }}>
             <label style={{ fontSize: 14 }}>
               <input type="checkbox" checked={isHazmat} onChange={(e) => setIsHazmat(e.target.checked)} /> Hazmat
             </label>
             {isHazmat && (
-              <input placeholder="Hazmat Class" value={hazmatClass} onChange={(e) => setHazmatClass(e.target.value)} style={{ width: 140 }} />
+              <input placeholder="Hazmat Class *" value={hazmatClass} onChange={(e) => setHazmatClass(e.target.value)} style={{ width: 140 }} />
             )}
           </div>
 
-          <h4 style={{ marginBottom: 8 }}>Storage Units</h4>
+          <h4 style={{ marginBottom: 4 }}>Storage Units</h4>
+          <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: '#888' }}>* At least one Storage Unit is required.</p>
           <div style={{ marginBottom: 8 }}>
             <label style={{ fontSize: 14 }}>
               Primary Storage Unit (must match one of the unit types below — used later for putaway/picking sizing):
@@ -418,10 +421,10 @@ function SkusPage() {
           {storageUnits.map((u, i) => (
             <div key={i} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8, alignItems: 'center' }}>
               <select value={u.unitType} onChange={(e) => updateStorageUnit(i, 'unitType', e.target.value)} style={{ width: 130 }}>
-                <option value="">Unit Type</option>
+                <option value="">Unit Type *</option>
                 {STORAGE_UNIT_TYPE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
-              <input placeholder="Qty in Base UOM" value={u.qtyInBaseUom} onChange={(e) => updateStorageUnit(i, 'qtyInBaseUom', e.target.value)} style={{ width: 130 }} />
+              <input placeholder="Qty in Base UOM *" value={u.qtyInBaseUom} onChange={(e) => updateStorageUnit(i, 'qtyInBaseUom', e.target.value)} style={{ width: 130 }} />
               <label style={{ fontSize: 13 }}>
                 <input type="checkbox" checked={u.isPreferred} onChange={(e) => updateStorageUnit(i, 'isPreferred', e.target.checked)} /> Preferred
               </label>

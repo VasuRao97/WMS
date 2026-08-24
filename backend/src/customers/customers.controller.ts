@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { CustomersService } from './customers.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { toBool } from '../common/xlsx-parse.util';
+import { stripHeaderAsterisks, toBool } from '../common/xlsx-parse.util';
 
 @Controller('customers')
 @UseGuards(JwtAuthGuard)
@@ -52,7 +52,10 @@ export class CustomersController {
     }
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    // No-op today (this template has no " *" suffixes yet) — kept consistent
+    // with the Warehouse/SKU import controllers in case this template gets
+    // the same required-field markers later.
+    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
 
     const grouped = new Map<string, any>();
 
