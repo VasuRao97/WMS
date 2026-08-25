@@ -750,6 +750,50 @@ that's naturally shared across many records of a classification rather than genu
 thing (a warehouse's own bin/pallet-position size for that storage type × category, for space
 planning), not to be confused with `CategoryPackSpec`'s per-item packaging dimensions.
 
+### Warehouse ↔ Location cross-check: Storage Type Mapping (2026-08-25)
+`WarehousesService.getMappingSummary()` (`GET /warehouses/mapping-summary`) + a "Storage Type
+Mapping — Planned vs. Generated" table on `WarehousesPage.tsx` — cross-checks each `WarehouseStorageType`
+row's planned `palletPositions` against how many pallet positions actually exist among that
+warehouse's generated `Location`s, so nothing gets missed during bulk generation. Rack `Location`s
+count as 1 pallet position each (individually addressable, same assumption `attachCapacity()` already
+makes); Ground/Stillage use their derived `depth×width×height` capacity.
+
+**Deliberately one-directional** — this answers "did we forget to generate something planned for,"
+not "does every generated Location have a matching planned row." A Location whose (storageType,
+categoryId) doesn't match any planned row at all is simply invisible to this summary, not flagged as
+"extra" — that's a different, not-yet-asked-for feature.
+
+**Three matching decisions, confirmed rather than assumed:**
+- A Location with no Category set still counts — matched into the "Uncategorized" bucket the same way
+  a blank Category always resolves elsewhere in this codebase, not tracked separately as unverifiable.
+- Deactivated Locations still count — the physical bin exists either way, active or not.
+- A warehouse-level `Mix` row (not yet broken down by real storage type) is skipped entirely, from
+  both the per-row listing and the totals — there's nothing concrete to compare it against, and a
+  warehouse that hasn't broken its `Mix` value down yet simply doesn't get this cross-check for that
+  row ("their loss" — a deliberate stance, not an oversight; `Mix` can't coexist with real Storage
+  Type entries on the same warehouse anyway, per existing validation).
+
+**Table shape** mirrors the existing "Customers per Warehouse" rollup below it on the same page — one
+row per (Warehouse, Storage Type, Category), a bold Total row per warehouse, the Mapped number colored
+green when it meets/exceeds Planned and crimson (bold) when it falls short. A warehouse with zero
+non-Mix planned rows doesn't appear in the table at all.
+
+Verified via a throwaway-company test script (7/7): a warehouse with SPR planned 10/mapped 6
+(under-mapped, confirmed crimson) and Ground/Floor planned 8/mapped 8 (exactly met, confirmed green),
+totals summing correctly (18 planned/14 mapped); a separate Mix-only warehouse confirmed to produce
+zero rows. Then re-verified live in the browser: the table renders with the exact expected numbers and
+colors (crimson `6`, green `8`, crimson `14` total).
+
+### Locations/Bins Plan View: Storage Type colour-coding (2026-08-25)
+Each Plan View box is now filled/bordered by its `storageType` — one of five fixed colours (`SPR`
+blue, `Drive-in` purple, `ASRS` teal, `Ground/Floor` orange, `Stillage` pink), light pastel fills so
+the existing black text stays legible. A legend below the summary paragraph lists only the Storage
+Types actually present in the warehouse being viewed, not all five always. An inactive box keeps its
+existing grey-fill/dashed-border treatment regardless of storage type — that signal stays distinct
+from colour-by-type, not blended into it. Verified live: a warehouse with SPR (blue) and Ground/Floor
+(orange) locations rendered exactly those two fill/stroke colour pairs and both legend entries, no
+others.
+
 ### Every master-data entity gets a "Delete All" — build it in from day one
 Warehouses, SKUs, and Customers all have a `DELETE /<resource>/all` endpoint (`removeAll` in the
 service) plus a "Delete All" button in the list-page UI, wired up from the start rather than
