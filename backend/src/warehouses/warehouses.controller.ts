@@ -66,10 +66,18 @@ export class WarehousesController {
     return this.warehousesService.reactivate(id, user);
   }
 
+  // Route order matters — @Delete('all') must be declared before
+  // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')
   @Roles('COMPANY_ADMIN')
   removeAll(@CurrentUser() user: any) {
     return this.warehousesService.removeAll(user);
+  }
+
+  @Delete(':id')
+  @Roles('COMPANY_ADMIN')
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.warehousesService.remove(id, user);
   }
 
   @Post('import')

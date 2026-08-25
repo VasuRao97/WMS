@@ -652,4 +652,38 @@ export class LocationsService {
     }
     return { deletedCount: deletable.length, blockedCount: blocked.length, blockedCodes: blocked };
   }
+
+  // Single-record delete — "Delete All" alone wasn't enough once real data
+  // built up (only one or two rows need removing, not the whole list); same
+  // blocking-check shape as removeAll's per-row check, just for one id.
+  // Confirmed 2026-08-25.
+  async remove(id: string, user: any) {
+    await this.assertAccess(id, user);
+    const location = await this.prisma.location.findUnique({
+      where: { id },
+      select: {
+        code: true,
+        _count: {
+          select: {
+            stockMovements: true,
+            putawayFrom: true,
+            putawayTo: true,
+            receiptLinesStaged: true,
+            allocations: true,
+            returns: true,
+          },
+        },
+      },
+    });
+    if (!location) throw new NotFoundException('Location not found.');
+    const c = location._count;
+    const totalLinked = c.stockMovements + c.putawayFrom + c.putawayTo + c.receiptLinesStaged + c.allocations + c.returns;
+    if (totalLinked > 0) {
+      throw new BadRequestException(
+        `Cannot permanently delete "${location.code}" — it has ${totalLinked} linked transaction record(s). Deactivate it instead.`,
+      );
+    }
+    await this.prisma.location.delete({ where: { id } });
+    return { deleted: true, code: location.code };
+  }
 }

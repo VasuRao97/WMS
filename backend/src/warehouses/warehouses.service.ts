@@ -306,6 +306,44 @@ export class WarehousesService {
     return { deletedCount: deletable.length, blockedCount: blocked.length, blockedCodes: blocked };
   }
 
+  // Single-record delete — "Delete All" alone wasn't enough once real data
+  // built up (only one or two rows need removing, not the whole list); same
+  // blocking-check shape as removeAll's per-row check, just for one id.
+  // Confirmed 2026-08-25.
+  async remove(id: string, user: any) {
+    await this.assertAccess(id, user);
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { id },
+      select: {
+        code: true,
+        _count: {
+          select: {
+            assignedUsers: true,
+            shipToAssignments: true,
+            locations: true,
+            inboundReceipts: true,
+            outboundOrders: true,
+            stockMovements: true,
+          },
+        },
+      },
+    });
+    if (!warehouse) throw new NotFoundException('Warehouse not found.');
+    const c = warehouse._count;
+    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements;
+    if (totalLinked > 0) {
+      throw new BadRequestException(
+        `Cannot permanently delete "${warehouse.code}" — it has ${totalLinked} linked record(s) (users, ship-tos, locations, or transactions). Deactivate it instead.`,
+      );
+    }
+    await this.prisma.$transaction([
+      this.prisma.warehouseStorageType.deleteMany({ where: { warehouseId: id } }),
+      this.prisma.warehouseDispatchFlow.deleteMany({ where: { warehouseId: id } }),
+      this.prisma.warehouse.delete({ where: { id } }),
+    ]);
+    return { deleted: true, code: warehouse.code };
+  }
+
   async getCustomerSummary(user: any) {
     const where: any = { ...companyFilter(user) };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {

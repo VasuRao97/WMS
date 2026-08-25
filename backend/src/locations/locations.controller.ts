@@ -118,4 +118,10 @@ export class LocationsController {
   removeAll(@CurrentUser() user: any) {
     return this.locationsService.removeAll(user);
   }
+
+  @Delete(':id')
+  @Roles('COMPANY_ADMIN')
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.locationsService.remove(id, user);
+  }
 }
