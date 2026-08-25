@@ -10,6 +10,7 @@ export type Location = {
   warehouse: { id: string; code: string; name: string };
   code: string;
   zone?: string;
+  section?: string;
   zoneType: string;
   storageType: string;
   category?: { id: string; name: string };
@@ -19,7 +20,7 @@ export type Location = {
   bin?: string;
   block?: string;
   stack?: string;
-  side?: string;
+  flankNumber?: number;
   depth?: number;
   width?: number;
   height?: number;
@@ -147,6 +148,7 @@ function LocationsPage() {
   const [storageType, setStorageType] = useState('');
   const [category, setCategory] = useState('');
   const [zone, setZone] = useState('');
+  const [section, setSection] = useState('');
   const [aisle, setAisle] = useState('');
   const [rack, setRack] = useState('');
   const [level, setLevel] = useState('');
@@ -167,6 +169,7 @@ function LocationsPage() {
   const [genStorageType, setGenStorageType] = useState('');
   const [genCategory, setGenCategory] = useState('');
   const [genZone, setGenZone] = useState('');
+  const [genSection, setGenSection] = useState('');
   const [genAisle, setGenAisle] = useState('');
   const [genRackRange, setGenRackRange] = useState('');
   const [genRackRange2, setGenRackRange2] = useState('');
@@ -236,6 +239,7 @@ function LocationsPage() {
     setStorageType('');
     setCategory('');
     setZone('');
+    setSection('');
     setAisle('');
     setRack('');
     setLevel('');
@@ -245,6 +249,10 @@ function LocationsPage() {
     setDepth('');
     setWidth('');
     setHeight('');
+    // The form only ever opens via startEdit() now (no blank "Add" entry
+    // point) — so resetting it should also close it, not leave an empty
+    // form stuck open with nothing to fill it back in.
+    setShowForm(false);
   };
 
   const startEdit = (l: Location) => {
@@ -254,6 +262,7 @@ function LocationsPage() {
     setStorageType(l.storageType);
     setCategory(l.category?.name || '');
     setZone(l.zone || '');
+    setSection(l.section || '');
     setAisle(l.aisle || '');
     setRack(l.rack || '');
     setLevel(l.level || '');
@@ -270,15 +279,22 @@ function LocationsPage() {
     setShowForm(true);
   };
 
+  // Edit-only now — there is no manual "create a brand-new Location" path
+  // (removed 2026-08-25: the range generator already covers single-location
+  // creation, and having two ways to create the same thing was confusing
+  // rather than useful). This form only ever opens via startEdit(), so
+  // editingId is always set by the time this fires.
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
+    if (!editingId) return;
     const payload = {
       warehouseId,
       zoneType,
       storageType,
       category: category || undefined,
       zone: zone || undefined,
+      section: section || undefined,
       aisle,
       rack: rack || undefined,
       level: level || undefined,
@@ -289,9 +305,8 @@ function LocationsPage() {
       width: width || undefined,
       height: height || undefined,
     };
-    const url = editingId ? `http://localhost:3000/locations/${editingId}` : 'http://localhost:3000/locations';
-    const res = await fetch(url, {
-      method: editingId ? 'PATCH' : 'POST',
+    const res = await fetch(`http://localhost:3000/locations/${editingId}`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
     });
@@ -333,6 +348,7 @@ function LocationsPage() {
     setGenStorageType('');
     setGenCategory('');
     setGenZone('');
+    setGenSection('');
     setGenAisle('');
     setGenRackRange('');
     setGenRackRange2('');
@@ -360,6 +376,7 @@ function LocationsPage() {
       storageType: genStorageType,
       category: genCategory || undefined,
       zone: genZone || undefined,
+      section: genSection || undefined,
       aisle: genAisle,
       rackRange: genRackRange || undefined,
       // "Mirror" checkbox: reuse the primary Rack Range's own numbers for the
@@ -434,7 +451,7 @@ function LocationsPage() {
     if (filterZoneType && l.zoneType !== filterZoneType) return false;
     if (filterStorageType && l.storageType !== filterStorageType) return false;
     if (searchLower) {
-      const haystack = [l.code, l.aisle, l.rack, l.level, l.bin, l.block, l.stack, l.zone].filter(Boolean).join(' ').toLowerCase();
+      const haystack = [l.code, l.aisle, l.rack, l.level, l.bin, l.block, l.stack, l.zone, l.section].filter(Boolean).join(' ').toLowerCase();
       if (!haystack.includes(searchLower)) return false;
     }
     return true;
@@ -455,10 +472,11 @@ function LocationsPage() {
           <div style={{ marginTop: 16 }}>
             <p style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
               One row per Location, on a sheet named exactly <code>Location Import</code>. Columns: <code>Warehouse Code*</code>,{' '}
-              <code>Zone Type*</code>, <code>Storage Type*</code>, <code>Category</code>, <code>Zone</code>, <code>Aisle*</code>,{' '}
-              <code>Rack</code>, <code>Level</code>, <code>Bin</code>, <code>Block</code>, <code>Stack</code>, <code>Depth</code>,{' '}
-              <code>Width</code>, <code>Height</code> — only fill the columns relevant to a row's Storage Type (Rack/Level for
-              rack storage; Block+Depth+Width for Ground/Floor; Stack+Height for Stillage), the rest can be left blank.
+              <code>Zone Type*</code>, <code>Storage Type*</code>, <code>Category</code>, <code>Zone</code>, <code>Section</code>,{' '}
+              <code>Aisle*</code>, <code>Rack</code>, <code>Level</code>, <code>Bin</code>, <code>Block</code>, <code>Stack</code>,{' '}
+              <code>Depth</code>, <code>Width</code>, <code>Height</code> — only fill the columns relevant to a row's Storage
+              Type (Rack/Level for rack storage; Block+Depth+Width for Ground/Floor; Stack+Height for Stillage), the rest can
+              be left blank. <code>Section</code> is one-per-Aisle — leave it blank for a row whose Aisle already has one set.
             </p>
             <input type="file" accept=".xlsx" onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)} />
             <button onClick={handleImport} disabled={!importFile || importing} style={{ marginLeft: 8 }}>
@@ -474,9 +492,6 @@ function LocationsPage() {
         <button type="button" onClick={() => setShowGenerator(!showGenerator)}>
           {showGenerator ? '▾ Hide range generator' : '▸ Generate a range of Locations'}
         </button>
-        <button type="button" onClick={() => { resetForm(); setShowForm(!showForm); }} style={{ marginLeft: 8 }}>
-          {showForm ? '▾ Hide manual entry' : '▸ Add Location manually'}
-        </button>
       </div>
 
       {showGenerator && (
@@ -485,7 +500,9 @@ function LocationsPage() {
           <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>
             * required. A range field accepts <code>01-20</code> (zero-padding preserved) or a single fixed value repeated for
             every generated location. Depth/Width/Height for Ground/Floor and Stillage stay fixed across the whole batch — only
-            the Block/Stack identifier varies.
+            the Block/Stack identifier varies. <strong>Section</strong> is one-per-Aisle always — leave it blank on a later
+            batch for an Aisle that already has one and it's reused automatically; typing a different Section for that same
+            Aisle is blocked.
           </p>
           <form onSubmit={handleGenerate}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -518,6 +535,12 @@ function LocationsPage() {
                 {categories.filter((c) => c.name !== 'Uncategorized').map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
               </select>
               <input placeholder="Zone label (e.g. Zone 1)" value={genZone} onChange={(e) => setGenZone(e.target.value)} style={{ width: 150 }} />
+              <input
+                placeholder="Section (e.g. A) — one per Aisle"
+                value={genSection}
+                onChange={(e) => setGenSection(e.target.value)}
+                style={{ width: 170 }}
+              />
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
@@ -610,7 +633,7 @@ function LocationsPage() {
 
       {showForm && (
         <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
-          <h3 style={{ marginTop: 0 }}>{editingId ? 'Edit Location' : 'Add Location'}</h3>
+          <h3 style={{ marginTop: 0 }}>Edit Location</h3>
           <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>* required</p>
           <form onSubmit={handleSubmit}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -646,6 +669,12 @@ function LocationsPage() {
                 {categories.filter((c) => c.name !== 'Uncategorized').map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
               </select>
               <input placeholder="Zone label (e.g. Zone 1)" value={zone} onChange={(e) => setZone(e.target.value)} style={{ width: 150 }} />
+              <input
+                placeholder="Section (e.g. A) — one per Aisle"
+                value={section}
+                onChange={(e) => setSection(e.target.value)}
+                style={{ width: 170 }}
+              />
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
@@ -702,10 +731,8 @@ function LocationsPage() {
 
             {formError && <p style={{ color: 'crimson' }}>{formError}</p>}
             <div>
-              <button type="submit">{editingId ? 'Save Changes' : 'Add Location'}</button>
-              {editingId && (
-                <button type="button" onClick={resetForm} style={{ marginLeft: 8 }}>Cancel</button>
-              )}
+              <button type="submit">Save Changes</button>
+              <button type="button" onClick={resetForm} style={{ marginLeft: 8 }}>Cancel</button>
             </div>
           </form>
         </div>
@@ -747,7 +774,7 @@ function LocationsPage() {
               {STORAGE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             <input
-              placeholder="Search code / aisle / rack / block / stack..."
+              placeholder="Search code / aisle / section / rack / block / stack..."
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
               style={{ width: 260 }}
@@ -765,6 +792,7 @@ function LocationsPage() {
                 <th style={{ padding: 8 }}>Zone Type</th>
                 <th style={{ padding: 8 }}>Storage Type</th>
                 <th style={{ padding: 8 }}>Category</th>
+                <th style={{ padding: 8 }}>Section</th>
                 <th style={{ padding: 8 }}>Position</th>
                 <th style={{ padding: 8 }}>Capacity</th>
                 <th style={{ padding: 8 }}>Status</th>
@@ -779,6 +807,7 @@ function LocationsPage() {
                   <td style={{ padding: 8 }}>{labelFor(ZONE_TYPE_OPTIONS, l.zoneType)}</td>
                   <td style={{ padding: 8 }}>{labelFor(STORAGE_TYPE_OPTIONS, l.storageType)}</td>
                   <td style={{ padding: 8 }}>{l.category?.name || '—'}</td>
+                  <td style={{ padding: 8 }}>{l.section || '—'}</td>
                   <td style={{ padding: 8 }}>{positionSummary(l)}</td>
                   <td style={{ padding: 8 }}>{l.capacity ?? '—'}</td>
                   <td style={{ padding: 8 }}>{l.isActive ? 'Active' : 'Inactive'}</td>
