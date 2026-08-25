@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
+import LocationsPlanView from './LocationsPlanView';
 
-type ProductCategory = { id: string; name: string };
-type Warehouse = { id: string; code: string; name: string };
+export type ProductCategory = { id: string; name: string };
+export type Warehouse = { id: string; code: string; name: string };
 
-type Location = {
+export type Location = {
   id: string;
   warehouseId: string;
   warehouse: { id: string; code: string; name: string };
@@ -18,6 +19,7 @@ type Location = {
   bin?: string;
   block?: string;
   stack?: string;
+  side?: string;
   depth?: number;
   width?: number;
   height?: number;
@@ -30,7 +32,7 @@ type BatchSummary = { totalRequested?: number; totalRows?: number; successCount:
 
 // Zone Type = what a bin is FOR. Same 14-value list as LocationZoneType in
 // schema.prisma — see CLAUDE.md's Locations/Bins design-pass notes.
-const ZONE_TYPE_OPTIONS = [
+export const ZONE_TYPE_OPTIONS = [
   { value: 'UNLOADING_STAGING', label: 'Unloading Staging' },
   { value: 'LOADING_STAGING', label: 'Loading Staging' },
   { value: 'ACTUAL_STORAGE', label: 'Actual Storage' },
@@ -51,14 +53,14 @@ const ZONE_TYPE_OPTIONS = [
 // that value only ever means "warehouse hasn't broken this down yet" at the
 // WarehouseStorageType (capacity-planning) level; a real bin is always
 // concretely one of these five.
-const STORAGE_TYPE_OPTIONS = [
+export const STORAGE_TYPE_OPTIONS = [
   { value: 'SPR', label: 'SPR (Selective Racking)' },
   { value: 'DRIVE_IN', label: 'Drive-in Racking' },
   { value: 'ASRS', label: 'ASRS' },
   { value: 'GROUND_FLOOR', label: 'Ground/Floor (block-stacked)' },
   { value: 'STILLAGE', label: 'Stillage (stacked cages)' },
 ];
-const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+export const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
 const ALL_STORAGE_TYPES = STORAGE_TYPE_OPTIONS.map((o) => o.value);
 
 // UI-only narrowing of which Storage Types make practical sense for a given
@@ -87,7 +89,7 @@ const ZONE_STORAGE_COMPAT: Record<string, string[]> = {
   HAZMAT: ALL_STORAGE_TYPES,
 };
 
-function labelFor(options: { value: string; label: string }[], value?: string) {
+export function labelFor(options: { value: string; label: string }[], value?: string) {
   return options.find((o) => o.value === value)?.label || value || '—';
 }
 
@@ -168,11 +170,13 @@ function LocationsPage() {
   const [genAisle, setGenAisle] = useState('');
   const [genRackRange, setGenRackRange] = useState('');
   const [genRackRange2, setGenRackRange2] = useState('');
+  const [genMirrorRack, setGenMirrorRack] = useState(false);
   const [genLevelRange, setGenLevelRange] = useState('');
   const [genBinRange, setGenBinRange] = useState('');
   const [genDepthRange, setGenDepthRange] = useState('');
   const [genBlockRange, setGenBlockRange] = useState('');
   const [genBlockRange2, setGenBlockRange2] = useState('');
+  const [genMirrorBlock, setGenMirrorBlock] = useState(false);
   const [genStackRange, setGenStackRange] = useState('');
   const [genDepth, setGenDepth] = useState('');
   const [genWidth, setGenWidth] = useState('');
@@ -189,6 +193,10 @@ function LocationsPage() {
   const [filterZoneType, setFilterZoneType] = useState('');
   const [filterStorageType, setFilterStorageType] = useState('');
   const [searchText, setSearchText] = useState('');
+
+  // --- View mode: Table vs. Plan (top-down structural floor plan) ---
+  const [viewMode, setViewMode] = useState<'table' | 'plan'>('table');
+  const [planWarehouseId, setPlanWarehouseId] = useState('');
 
   const loadLocations = () => {
     fetch('http://localhost:3000/locations', { headers: authHeaders() })
@@ -328,11 +336,13 @@ function LocationsPage() {
     setGenAisle('');
     setGenRackRange('');
     setGenRackRange2('');
+    setGenMirrorRack(false);
     setGenLevelRange('');
     setGenBinRange('');
     setGenDepthRange('');
     setGenBlockRange('');
     setGenBlockRange2('');
+    setGenMirrorBlock(false);
     setGenStackRange('');
     setGenDepth('');
     setGenWidth('');
@@ -352,12 +362,16 @@ function LocationsPage() {
       zone: genZone || undefined,
       aisle: genAisle,
       rackRange: genRackRange || undefined,
-      rackRange2: genRackRange2 || undefined,
+      // "Mirror" checkbox: reuse the primary Rack Range's own numbers for the
+      // second flank instead of whatever's typed in the Second Rack Range box
+      // — the backend tags these rows side:'B' and appends a letter to their
+      // code so they stay unique despite reusing the same rack numbers.
+      rackRange2: genMirrorRack ? genRackRange || undefined : genRackRange2 || undefined,
       levelRange: genLevelRange || undefined,
       binRange: genBinRange || undefined,
       depthRange: genDepthRange || undefined,
       blockRange: genBlockRange || undefined,
-      blockRange2: genBlockRange2 || undefined,
+      blockRange2: genMirrorBlock ? genBlockRange || undefined : genBlockRange2 || undefined,
       stackRange: genStackRange || undefined,
       depth: genDepth || undefined,
       width: genWidth || undefined,
@@ -512,7 +526,17 @@ function LocationsPage() {
               {genIsRack && (
                 <>
                   <input placeholder="Rack Range * (e.g. 01-20)" value={genRackRange} onChange={(e) => setGenRackRange(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="+ Second Rack Range (other side of aisle)" value={genRackRange2} onChange={(e) => setGenRackRange2(e.target.value)} style={{ width: 250 }} />
+                  <input
+                    placeholder="+ Second Rack Range (other side of aisle)"
+                    value={genRackRange2}
+                    onChange={(e) => setGenRackRange2(e.target.value)}
+                    disabled={genMirrorRack}
+                    style={{ width: 250 }}
+                  />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                    <input type="checkbox" checked={genMirrorRack} onChange={(e) => setGenMirrorRack(e.target.checked)} />
+                    Mirror same numbers on other side
+                  </label>
                   <input placeholder="Level Range * (e.g. 01-04)" value={genLevelRange} onChange={(e) => setGenLevelRange(e.target.value)} required style={{ width: 170 }} />
                   <input placeholder="Bin Range (default 1)" value={genBinRange} onChange={(e) => setGenBinRange(e.target.value)} style={{ width: 170 }} />
                   <input placeholder="Depth = lane depth (e.g. 2 → positions 1-2)" value={genDepthRange} onChange={(e) => setGenDepthRange(e.target.value)} style={{ width: 260 }} />
@@ -522,7 +546,17 @@ function LocationsPage() {
               {genIsGround && (
                 <>
                   <input placeholder="Block Range * (e.g. 01-10)" value={genBlockRange} onChange={(e) => setGenBlockRange(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="+ Second Block Range (other side of aisle)" value={genBlockRange2} onChange={(e) => setGenBlockRange2(e.target.value)} style={{ width: 260 }} />
+                  <input
+                    placeholder="+ Second Block Range (other side of aisle)"
+                    value={genBlockRange2}
+                    onChange={(e) => setGenBlockRange2(e.target.value)}
+                    disabled={genMirrorBlock}
+                    style={{ width: 260 }}
+                  />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                    <input type="checkbox" checked={genMirrorBlock} onChange={(e) => setGenMirrorBlock(e.target.checked)} />
+                    Mirror same numbers on other side
+                  </label>
                   <input placeholder="Depth (pallets deep) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 170 }} />
                   <input placeholder="Width (stacks wide) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 170 }} />
                   <input placeholder="Height (layers, default 1)" value={genHeight} onChange={(e) => setGenHeight(e.target.value)} style={{ width: 190 }} />
@@ -677,67 +711,110 @@ function LocationsPage() {
         </div>
       )}
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12, alignItems: 'center' }}>
-        <select value={filterWarehouseId} onChange={(e) => setFilterWarehouseId(e.target.value)} style={{ width: 180 }}>
-          <option value="">All Warehouses</option>
-          {warehouses.map((w) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
-        </select>
-        <select value={filterZoneType} onChange={(e) => setFilterZoneType(e.target.value)} style={{ width: 190 }}>
-          <option value="">All Zone Types</option>
-          {ZONE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-        <select value={filterStorageType} onChange={(e) => setFilterStorageType(e.target.value)} style={{ width: 200 }}>
-          <option value="">All Storage Types</option>
-          {STORAGE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-        <input
-          placeholder="Search code / aisle / rack / block / stack..."
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          style={{ width: 260 }}
-        />
-        <span style={{ fontSize: 13, color: '#666' }}>
-          Showing {filteredLocations.length} of {locations.length}
-        </span>
+      <div style={{ marginBottom: 12 }}>
+        <button
+          type="button"
+          onClick={() => setViewMode('table')}
+          style={{ fontWeight: viewMode === 'table' ? 'bold' : 'normal' }}
+        >
+          Table View
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode('plan');
+            if (!planWarehouseId && filterWarehouseId) setPlanWarehouseId(filterWarehouseId);
+          }}
+          style={{ marginLeft: 8, fontWeight: viewMode === 'plan' ? 'bold' : 'normal' }}
+        >
+          Plan View
+        </button>
       </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
-        <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
-            <th style={{ padding: 8 }}>Code</th>
-            <th style={{ padding: 8 }}>Warehouse</th>
-            <th style={{ padding: 8 }}>Zone Type</th>
-            <th style={{ padding: 8 }}>Storage Type</th>
-            <th style={{ padding: 8 }}>Category</th>
-            <th style={{ padding: 8 }}>Position</th>
-            <th style={{ padding: 8 }}>Capacity</th>
-            <th style={{ padding: 8 }}>Status</th>
-            <th style={{ padding: 8 }}>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filteredLocations.map((l) => (
-            <tr key={l.id} style={{ borderBottom: '1px solid #eee' }}>
-              <td style={{ padding: 8, fontWeight: 'bold' }}>{l.code}</td>
-              <td style={{ padding: 8 }}>{l.warehouse.code}</td>
-              <td style={{ padding: 8 }}>{labelFor(ZONE_TYPE_OPTIONS, l.zoneType)}</td>
-              <td style={{ padding: 8 }}>{labelFor(STORAGE_TYPE_OPTIONS, l.storageType)}</td>
-              <td style={{ padding: 8 }}>{l.category?.name || '—'}</td>
-              <td style={{ padding: 8 }}>{positionSummary(l)}</td>
-              <td style={{ padding: 8 }}>{l.capacity ?? '—'}</td>
-              <td style={{ padding: 8 }}>{l.isActive ? 'Active' : 'Inactive'}</td>
-              <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
-                <button onClick={() => startEdit(l)}>Edit</button>
-                <button onClick={() => handleDeactivate(l.id, l.isActive)} style={{ marginLeft: 6 }}>
-                  {l.isActive ? 'Deactivate' : 'Reactivate'}
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {viewMode === 'table' && (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+            <select value={filterWarehouseId} onChange={(e) => setFilterWarehouseId(e.target.value)} style={{ width: 180 }}>
+              <option value="">All Warehouses</option>
+              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
+            </select>
+            <select value={filterZoneType} onChange={(e) => setFilterZoneType(e.target.value)} style={{ width: 190 }}>
+              <option value="">All Zone Types</option>
+              {ZONE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <select value={filterStorageType} onChange={(e) => setFilterStorageType(e.target.value)} style={{ width: 200 }}>
+              <option value="">All Storage Types</option>
+              {STORAGE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <input
+              placeholder="Search code / aisle / rack / block / stack..."
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              style={{ width: 260 }}
+            />
+            <span style={{ fontSize: 13, color: '#666' }}>
+              Showing {filteredLocations.length} of {locations.length}
+            </span>
+          </div>
 
-      {filteredLocations.length === 0 && <p style={{ marginTop: 16 }}>No locations found{locations.length > 0 ? ' matching this filter' : ''}.</p>}
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
+                <th style={{ padding: 8 }}>Code</th>
+                <th style={{ padding: 8 }}>Warehouse</th>
+                <th style={{ padding: 8 }}>Zone Type</th>
+                <th style={{ padding: 8 }}>Storage Type</th>
+                <th style={{ padding: 8 }}>Category</th>
+                <th style={{ padding: 8 }}>Position</th>
+                <th style={{ padding: 8 }}>Capacity</th>
+                <th style={{ padding: 8 }}>Status</th>
+                <th style={{ padding: 8 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredLocations.map((l) => (
+                <tr key={l.id} style={{ borderBottom: '1px solid #eee' }}>
+                  <td style={{ padding: 8, fontWeight: 'bold' }}>{l.code}</td>
+                  <td style={{ padding: 8 }}>{l.warehouse.code}</td>
+                  <td style={{ padding: 8 }}>{labelFor(ZONE_TYPE_OPTIONS, l.zoneType)}</td>
+                  <td style={{ padding: 8 }}>{labelFor(STORAGE_TYPE_OPTIONS, l.storageType)}</td>
+                  <td style={{ padding: 8 }}>{l.category?.name || '—'}</td>
+                  <td style={{ padding: 8 }}>{positionSummary(l)}</td>
+                  <td style={{ padding: 8 }}>{l.capacity ?? '—'}</td>
+                  <td style={{ padding: 8 }}>{l.isActive ? 'Active' : 'Inactive'}</td>
+                  <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
+                    <button onClick={() => startEdit(l)}>Edit</button>
+                    <button onClick={() => handleDeactivate(l.id, l.isActive)} style={{ marginLeft: 6 }}>
+                      {l.isActive ? 'Deactivate' : 'Reactivate'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {filteredLocations.length === 0 && <p style={{ marginTop: 16 }}>No locations found{locations.length > 0 ? ' matching this filter' : ''}.</p>}
+        </>
+      )}
+
+      {viewMode === 'plan' && (
+        <div style={{ marginBottom: 32 }}>
+          <div style={{ marginBottom: 8 }}>
+            <select value={planWarehouseId} onChange={(e) => setPlanWarehouseId(e.target.value)} style={{ width: 220 }}>
+              <option value="">Select a Warehouse to view its plan...</option>
+              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
+            </select>
+          </div>
+          {planWarehouseId ? (
+            <LocationsPlanView
+              locations={locations.filter((l) => l.warehouseId === planWarehouseId)}
+              warehouseLabel={labelFor(warehouses.map((w) => ({ value: w.id, label: `${w.code} — ${w.name}` })), planWarehouseId)}
+            />
+          ) : (
+            <p style={{ marginTop: 16, color: '#666' }}>Pick a warehouse above to render its layout.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
