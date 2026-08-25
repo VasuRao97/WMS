@@ -781,6 +781,71 @@ Nothing else remains an open *decision* for this topic as of 2026-08-25 — ever
 is build work (logic + frontend) explicitly saved for a future session, not something still waiting
 on the client.
 
+### Yard Management — real logic built and verified (2026-08-26)
+Follow-up session, backend logic only (no frontend yet). Merged to `main` after the schema-only pass
+above. A real process note first: this pass started with the client explicitly asking not to be
+re-asked about things already flagged as placeholder/deferred (Dock Scheduling in particular) —
+"use dummy APIs... dock selection and scheduling will be done, DON'T WORRY." The calibration from
+`[[wms-align-before-coding]]` (discuss real workflow decisions before building) still applies to
+*new* decisions; it doesn't mean re-litigating something already agreed to be a placeholder. Four
+real decisions got made this pass, then built end-to-end:
+
+1. **`Warehouse.yardCapacity` is now fully wired** — manual create form (`WarehousesPage.tsx`),
+   Excel import/export (both `templates/` and `frontend/public/templates/` copies of
+   `Warehouse_Master_Import_Template.xlsx` got a new "Parking Slots" column + Legend & Rules entry),
+   and `WarehousesService.create()`/`bulkImport()` both call a new `generateYardSlots()` that creates
+   `Y1..YN` `YardSlot` rows right away. Only settable at creation (no Warehouse Edit yet, same
+   limitation as everywhere else this has come up).
+2. **The yard-slot lifecycle is real, working logic**, not schema-only anymore:
+   `GateEntriesService.create()` auto-assigns the next `AVAILABLE` slot (any slot — which one
+   genuinely doesn't matter, confirmed) via `assignYardSlot()`. A warehouse with **zero** slots (no
+   `yardCapacity` set) is a clean no-op — no warning, no block, Gate In/Out proceeds exactly as
+   normal; Yard Management simply doesn't apply to it (confirmed explicitly). A warehouse **with**
+   slots that's completely full always returns `yardFullWarning: true` on the response; whether that
+   also **blocks** the Gate In depends on the new `Company.blockGateInWhenYardFull` toggle (default
+   off) — both modes were explicitly wanted, warning always shows regardless of which mode.
+3. **`dockedInAt`/`dockedInById` is a deliberately lightweight stand-in for real Dock Scheduling** —
+   just marks "this vehicle left the yard" and frees its slot (`GateEntriesService.dockIn()`, `PATCH
+   /gate-entries/:id/dock-in`). No dock door selection, no appointment logic — that's a real future
+   feature, this is intentionally a dummy trigger per the client's own framing. **`gateOut()` also has
+   a safety-net slot release** for a vehicle that never got marked docked-in (loaded/unloaded straight
+   from the yard, or the step just got skipped) — otherwise that slot would leak as permanently
+   occupied forever.
+4. **Elapsed yard time is never stored, anywhere** — confirmed with the client directly (they asked
+   which was more efficient) — it's `dockedInAt - gateInAt` for a finished stay or `NOW - gateInAt`
+   for an ongoing one, computed at read time in `YardService.parked()` from timestamps that already
+   exist. No new column, no separate table, no drift risk.
+5. **`destinationCity`** — a deliberately simple single-city text field, reintroduced after the
+   original multi-point/Customer-Ship-to "Destination" was scrapped as overkill. No FK, no multi-drop
+   modeling.
+
+**New `YardService`/`YardController`** (`GET /yard/summary`, `GET /yard/parked`) — a read-only
+reporting layer over data `GateEntriesService` already owns, not a third place that mutates
+`YardSlot`/`VehicleGateEntry`. `summary()` returns per-warehouse total/occupied/available plus a
+`yardConfigured` flag (false for a zero-slot warehouse, so the frontend can show a clean "not
+configured" state instead of empty stat boxes). `parked()` is the "working table" — currently-parked
+vehicles with slot code, vehicle number, destination city, transporter, gate-in time, and computed
+`elapsedHours`.
+
+Verified via a throwaway-company end-to-end test script, 30/30 checks passing: warehouse creation
+with `yardCapacity` generating the right slot count (and zero slots for a warehouse with none set),
+negative `yardCapacity` rejected, two vehicles gating in and correctly consuming both slots, the
+summary reflecting occupied/available accurately (including the zero-slot warehouse's
+`yardConfigured: false`), a third vehicle gating in successfully with `yardFullWarning: true` and no
+slot while the block toggle was off, a fourth vehicle correctly BLOCKED once the toggle was flipped
+on, the parked list showing both waiting vehicles with a computed `elapsedHours`, Dock In correctly
+freeing a slot and the summary updating live, and Gate Out's safety net correctly freeing a slot for
+a vehicle that skipped Dock In entirely. Cleaned up afterward (two throwaway companies, since an
+early test-script bug — a missing required `name` field on Warehouse create, not a real bug —
+produced an extra one; both were found and removed, confirmed against a stray-looking "WH1" warehouse
+match that turned out to belong to genuine pre-existing throwaway companies from earlier sessions,
+left untouched).
+
+**Still not built**: Vehicle/Driver registration (no CRUD endpoints or UI at all yet — this pass's
+test script created them directly via Prisma, bypassing the missing API, purely for test setup), any
+frontend for Yard Management or Gate In/Out, blacklist enforcement at Gate In, Gate Pass Number
+generation, and Dock Scheduling itself.
+
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
 record could plausibly have more than one of (barcodes, storage units, customer ship-to
