@@ -33,6 +33,12 @@ export class WarehousesController {
     return this.warehousesService.getCustomerSummary(user);
   }
 
+  @Get('mapping-summary')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  getMappingSummary(@CurrentUser() user: any) {
+    return this.warehousesService.getMappingSummary(user);
+  }
+
   @Get('export')
   @Roles(...MASTER_DATA_READ_ROLES)
   async export(@Res() res: Response, @CurrentUser() user: any) {

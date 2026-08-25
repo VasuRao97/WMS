@@ -8,6 +8,13 @@ import { toNumberOrUndefined } from '../common/xlsx-parse.util';
 const NODE_TYPE_VALUES = ['FACTORY', 'DISTRIBUTOR', 'REGIONAL_DC', 'NATIONAL_DC', 'CNF', 'CROSS_DOCK'];
 const STORAGE_TYPE_VALUES = ['GROUND_FLOOR', 'SPR', 'DRIVE_IN', 'MIX', 'ASRS'];
 const DISPATCH_FLOW_VALUES = ['FULL_PALLET', 'CASE_PICK', 'BROKEN_CASE'];
+// Which Location.storageType values are individually-addressable rack bins
+// (1 pallet position each) vs. footprint-based (Ground/Stillage, derived
+// depth×width×height capacity) — used only by getMappingSummary() below.
+// Duplicated from LocationsService's own RACK_STORAGE_TYPES rather than
+// shared via common/ — matches this file's existing STORAGE_TYPE_VALUES,
+// which already keeps its own independent copy rather than importing one.
+const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
 
 const NODE_TYPE_LABELS: Record<string, string> = {
   FACTORY: 'Factory',
@@ -318,6 +325,67 @@ export class WarehousesService {
       localCount: w.shipToAssignments.filter((s) => s.deliveryZone === 'LOCAL').length,
       upcountryCount: w.shipToAssignments.filter((s) => s.deliveryZone === 'UPCOUNTRY').length,
     }));
+  }
+
+  // Cross-checks each Storage Type breakdown row's planned Pallet Positions
+  // against how many pallet positions actually exist among generated
+  // Locations — "did we forget to generate something" QA (2026-08-25
+  // design pass), not the reverse: a Location whose (storageType,
+  // categoryId) doesn't match any planned row at all isn't flagged as
+  // "extra", it's just invisible to this summary. Rack Locations count as 1
+  // pallet position each (individually addressable); Ground/Stillage use
+  // their derived depth×width×height capacity, same as attachCapacity().
+  // Confirmed decisions: a Location with no Category set still counts,
+  // matched into the "Uncategorized" bucket like everywhere else that
+  // resolves a blank category; deactivated Locations still count (the
+  // physical bin exists either way, active or not); a warehouse-level
+  // "Mix" row is skipped entirely — it isn't broken down by real storage
+  // type yet, so there's nothing concrete to compare it against.
+  async getMappingSummary(user: any) {
+    const where: any = { ...companyFilter(user) };
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
+    }
+    const warehouses = await this.prisma.warehouse.findMany({
+      where,
+      include: { storageTypes: { include: { category: true } } },
+      orderBy: { code: 'asc' },
+    });
+    if (warehouses.length === 0) return [];
+
+    const uncategorized = await this.prisma.productCategory.findFirst({ where: { name: { equals: 'Uncategorized', mode: 'insensitive' } } });
+    const locations = await this.prisma.location.findMany({
+      where: { warehouseId: { in: warehouses.map((w) => w.id) } },
+      select: { warehouseId: true, storageType: true, categoryId: true, depth: true, width: true, height: true },
+    });
+
+    const mappedMap = new Map<string, number>(); // `${warehouseId}::${storageType}::${categoryId}` -> pallet positions
+    for (const loc of locations) {
+      const categoryId = loc.categoryId || uncategorized?.id;
+      if (!categoryId) continue; // no Category anywhere to attribute this to — shouldn't happen once seeded, skip defensively
+      const key = `${loc.warehouseId}::${loc.storageType}::${categoryId}`;
+      const positions = RACK_STORAGE_TYPES.includes(loc.storageType) ? 1 : (loc.depth || 1) * (loc.width || 1) * (loc.height || 1);
+      mappedMap.set(key, (mappedMap.get(key) || 0) + positions);
+    }
+
+    return warehouses.map((w) => {
+      const rows = w.storageTypes
+        .filter((s) => s.storageType !== 'MIX')
+        .map((s) => ({
+          storageType: s.storageType,
+          category: s.category.name,
+          planned: Number(s.palletPositions),
+          mapped: mappedMap.get(`${w.id}::${s.storageType}::${s.categoryId}`) || 0,
+        }));
+      return {
+        warehouseId: w.id,
+        code: w.code,
+        name: w.name,
+        rows,
+        totalPlanned: rows.reduce((sum, r) => sum + r.planned, 0),
+        totalMapped: rows.reduce((sum, r) => sum + r.mapped, 0),
+      };
+    });
   }
 
   // One row per (Warehouse, Storage Type) pair — mirrors the import's own
