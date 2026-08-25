@@ -841,10 +841,47 @@ produced an extra one; both were found and removed, confirmed against a stray-lo
 match that turned out to belong to genuine pre-existing throwaway companies from earlier sessions,
 left untouched).
 
-**Still not built**: Vehicle/Driver registration (no CRUD endpoints or UI at all yet — this pass's
-test script created them directly via Prisma, bypassing the missing API, purely for test setup), any
-frontend for Yard Management or Gate In/Out, blacklist enforcement at Gate In, Gate Pass Number
-generation, and Dock Scheduling itself.
+**Still not built**: any frontend for Yard Management or Gate In/Out, blacklist enforcement at Gate
+In, Gate Pass Number generation, and Dock Scheduling itself.
+
+### Vehicle/Driver registration — full CRUD + frontend (2026-08-26)
+Follow-up to the pass above, filling the gap it flagged. New top-level `VehiclesModule`/
+`DriversModule` (`backend/src/vehicles/`, `backend/src/drivers/` — sibling modules to `warehouses/`
+etc., not nested under `yard-gate/`, since these are genuinely master data like Customer, just with
+Yard & Gate's operational role gating rather than `MASTER_DATA_*` roles) give both entities the full
+standard shape: create/list/update/deactivate/reactivate/`Delete All`/single delete, following
+`DockDoorsService`'s exact pattern. Also added `VehicleTypesModule` (`GET /vehicle-types`, read-only,
+same shape as `ProductCategoriesController`) — needed so the frontend has something to populate the
+Vehicle Type dropdown from; `VehicleType` itself was seeded weeks ago but never had a list endpoint.
+
+**Role gating**: `GATE_YARD_OPERATE_ROLES` (Operator included) can register/edit — this is closer to
+Gate Entry's own access shape than to Warehouse/Customer's `MASTER_DATA_WRITE_ROLES`, since the same
+gate/security staff who log a vehicle in are exactly who'd register a new one showing up for the
+first time. Delete stays `COMPANY_ADMIN`-only per the established convention. Both are company-scoped
+only (`companyFilter`, no `ownWarehouseIds` restriction) — a vehicle isn't tied to one warehouse.
+
+**Validation notes**: `Vehicle.vehicleNumber` is uppercased and checked unique per company (a real
+natural key); blacklisting either entity requires a `blacklistReason` (enforced by the API returning
+400, not just a UI nicety). `Driver` has no uniqueness check on phone/license, matching the schema
+comment's reasoning (neither is reliable enough to hard-enforce).
+
+**Frontend**: `VehiclesPage.tsx`/`DriversPage.tsx`, added as new "Vehicles"/"Drivers" tabs in
+`App.tsx` (visible to every logged-in role, not gated behind `CAN_MANAGE_USERS` — matches the backend
+role shape). Both follow the standing list-page template from
+`[[wms-frontend-styling-conventions]]` (centred table, centred stat-box row, flat unboxed button row,
+collapsible list with search) with one deliberate deviation: **no bulk Excel import/export for
+either** — scope was kept to manual register/edit for this pass; flagged as a possible follow-up, not
+forgotten. `VehiclesPage`'s form combines both entities' data sources — the Vehicle Type dropdown is
+populated from the new `GET /vehicle-types` endpoint, showing each option's segment and max tonnage
+inline so the picker is self-explanatory without a separate lookup.
+
+Verified two ways: a throwaway-company API test script (18/18 checks — create, vehicle-number
+uppercasing, duplicate rejection, missing-Vehicle-Type rejection, blacklist-without-reason rejection,
+update, deactivate/reactivate, delete blocked once a Gate Entry links to it, `Delete All` correctly
+reporting 1 blocked/0 deleted), and a live browser pass through the actual rendered UI (logged in via
+the API+localStorage token trick, not the login form) — registered one real Vehicle and one real
+Driver by actually filling and submitting the real forms, confirmed both stat boxes and table rows
+updated correctly. Both throwaway companies cleaned up afterward.
 
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
