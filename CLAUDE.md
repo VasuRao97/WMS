@@ -279,8 +279,7 @@ normalize to `DAMAGE_&_SCRAP` (ampersand survived, flanked by underscores) inste
 `DAMAGE_SCRAP`, failing validation. Caught and fixed during this module's build, 2026-08-24.
 
 **Deliberately deferred** (raised and consciously postponed during the design pass, don't build
-without re-confirming): visualization of a generated layout (the range generator below has no
-diagram/map view yet — parked for a dedicated follow-up conversation); Putaway/slotting logic that
+without re-confirming): Putaway/slotting logic that
 actually reads `maxSkusClass*`/bin position to decide placement (a smart-allocation value-add —
 e.g. reserving the least-accessible rack positions for slow-moving C-class SKUs — raised explicitly
 as a future feature, not scaffolded); removing `MIX` from `WarehouseStorageType` itself (only
@@ -319,12 +318,20 @@ rack 05," not "racks 1 through 5").
 sides always share the same Depth (confirmed, not left open). `rackRange2` / `blockRange2` are
 optional companions to the primary `rackRange` / `blockRange`: give one and the generator builds
 both sides under the *same* Aisle, same Depth/Width/Height, in one call — e.g. Rack Range 01-10 +
-Second Rack Range 11-20 → 20 rows, one Aisle. No schema change and no new "side" field was needed:
-a rack/block number already disambiguates the two sides, since real warehouses number both flanks
-of an aisle continuously rather than reusing numbers — the generator just loops the same
-row-building logic once per range instead of once total. Omitting the second range behaves exactly
-as before (fully backward compatible). Stillage was deliberately left out of this — a stillage
-stack isn't a two-flank aisle structure the way rack rows and floor blocks are.
+Second Rack Range 11-20 → 20 rows, one Aisle. Omitting the second range behaves exactly as before
+(fully backward compatible). Stillage was deliberately left out of this — a stillage stack isn't a
+two-flank aisle structure the way rack rows and floor blocks are.
+
+Each row from a second range is now also tagged `side: 'B'` on `Location` (a nullable field added
+2026-08-25, blank for the primary range) — originally this design note said no "side" field would
+ever be needed, reasoning that continuous non-overlapping numbers (01-10 + 11-20) already
+disambiguate the two flanks. That held for *storing* the data, but broke down for the Plan View
+visualizer, which had no way to tell "one real flank" apart from "two" without it — see "Locations/
+Bins: Plan View visualizer" below for the full story. `side` also enables a second, real-world-common
+convention the original design didn't anticipate: a **"Mirror same numbers on other side"** checkbox
+in the generator UI that reuses the *same* rack/block numbers on both flanks (e.g. 01-15 both sides)
+rather than requiring continuous non-overlapping ones — `buildCode()` appends the side letter to a
+secondary row's code (`R01B` vs `R01`) so this never collides despite reusing numbers.
 
 **Excel bulk import** (`POST /locations/import`, `LocationsService.bulkImport()`) — same
 xlsx → per-row validation → success/error results shape as Warehouse/SKU/Customer/User, reading a
@@ -387,6 +394,85 @@ allow+deny incl. Operator's zero visibility, update() clearing stale fields acro
 switch, deactivate/reactivate, Delete All both blocked-when-linked and success-when-clean paths),
 44/44 checks passing, plus a manual UI pass confirming the dynamic form fields switch correctly per
 Storage Type and a real Ground/Floor location round-trips through the browser. 2026-08-24.
+
+### Locations/Bins: Plan View visualizer (2026-08-25)
+`LocationsPlanView.tsx` + a Table View/Plan View toggle on `LocationsPage.tsx` — the last piece
+needed to call Master Data fully done: a top-down structural floor plan so a generated/imported
+layout can actually be looked at and confirmed against the real warehouse, not just spot-checked
+row by row. Built after its own design pass (separate from the original Locations/Bins numbering
+conversation) — see git history for the full back-and-forth; this section is the resulting shape.
+
+**Structural only, static, whole-warehouse.** Shows which bins *exist*, not what's in them (no
+occupancy — Inbound/Putaway don't exist yet, so there's no real stock-in-bin data to show anyway).
+Pure client-side render of whatever's already in `locations` state for the selected Warehouse — no
+new backend endpoint, no live/interactive click-to-inspect yet (both deliberately deferred, along
+with Zone Type color-coding — the component is structured so a color legend can be added later
+without a rewrite, but nothing renders in color today).
+
+**One vertical aisle strip per distinct `aisle` value**, aisles laid out left-to-right in ascending
+aisle-code order (natural/numeric-aware sort, so `"2" < "10"`). Racks/blocks/stacks flank both sides
+of each aisle:
+- **Side split comes from a real, persisted `Location.side` field — never guessed from the numbers.**
+  The very first version of this view inferred which flank a row belonged to by sorting an aisle's
+  rack/block numbers and cutting them at the midpoint (lower half → right, upper half → left). That
+  was wrong and caught immediately on real data (2026-08-25): a warehouse aisle generated with a
+  single `Rack Range = 01-15` and nothing in `Second Rack Range` is genuinely single-sided (e.g.
+  racking against a wall) — the midpoint guess still split it into two flanks and drew the same
+  aggregated content on both, inventing a second flank that didn't exist. Root cause: the database
+  had no record of which of the two range boxes a row actually came from, so the view had nothing
+  reliable to split on. Fixed by adding `side` (nullable string) to `Location`, set **only** by
+  `LocationsService.generate()` — blank for rows from the primary range, `'B'` for rows from a
+  Second Range (typed manually, or via the "Mirror same numbers on other side" checkbox added to the
+  generator UI at the same time). The Plan View now reads this directly: no `side: 'B'` row in an
+  aisle → one flank, full stop; some do → those are the real second flank (left), the rest (blank
+  `side`) are the primary/right flank. Existing rows generated before this field existed have no
+  `side` at all and correctly render single-flank — a real two-flank aisle generated pre-fix needs
+  regenerating (with the mirror checkbox) to show as two flanks again.
+- **The "mirror" checkbox reuses the SAME rack/block numbers on both flanks** (e.g. Rack Range
+  `01-15` on both sides, not `01-15` + `16-30`) — this is a distinct real-world convention from the
+  original "continuous numbering" one (`01-10` + `11-20`), and both are supported side by side.
+  Reusing the same number on both flanks would collide on the generated `code` (which never
+  included a side marker), so `buildCode()` now appends the row's `side` letter directly after the
+  rack/block segment **only when `side` is set** — primary-side codes are completely unchanged
+  (`A01-R01-L02-B1`), secondary-side codes get the letter (`A01-R01B-L02-B1`). A manually-typed
+  Second Range with genuinely different numbers still works exactly as before (no letter needed for
+  uniqueness, but one gets appended anyway now for consistency — one rule, not two).
+- **Rows pair by position, not by raw stored number** — the 1st position on the right flank (nearest
+  the corner) draws in the same row as the 1st position on the left flank, 2nd with 2nd, etc.,
+  regardless of what their underlying numbers are (even when both flanks reuse the very same
+  numbers, per the mirror case above — "1 opposite 1").
+- Every aisle shares the same bottom row line (row 0 = nearest the corner) as every other aisle in
+  the plan, so a taller aisle just extends further up rather than floating independently.
+
+**Every footprint cell is a fixed-size box** — Rack's Depth/Level range, Ground/Stillage's
+`depth×width×height` all render as *text inside* the cell rather than scaling the box wider for
+multi-deep storage (a deliberate v1 simplification — a Rack footprint sharing multiple Levels/Bins
+collapses to one box with an `L{min}-L{max}` line, since height/level is orthogonal to a top-down
+plan and out of scope until a level-toggle is built). A cell with any inactive location inside it
+gets a dashed border + greyed text rather than being hidden — a structural QA view shouldn't quietly
+drop a location just because it was deactivated.
+
+**Manual create and Excel import never set `side`** — there's no "second range" concept on either
+path, so a hand-typed or imported rack always renders single-flank, which is correct (it isn't
+implying a mirrored twin exists elsewhere). `update()` doesn't touch or clear `side` either — editing
+a generator-created row leaves its flank assignment intact.
+
+Verified in two passes. First pass (against the original, since-replaced midpoint-guess logic):
+throwaway company, one aisle each of both-flank SPR, both-flank Drive-in with the bare-depth
+auto-expand, both-flank Ground/Floor, single-flank Stillage (50 locations) — confirmed cell text and
+SVG geometry matched the (at-the-time) algorithm. That pass didn't catch the single-sided bug because
+every generated test aisle happened to use two ranges. Second pass, after the `side` fix (2026-08-25,
+16/16 checks): a throwaway-data script covering single-sided-only (15 racks, one `rackRange`, the
+actual bug scenario), a manually-typed continuation Second Range, and the mirror checkbox (same
+numbers both sides) — confirmed via the real API that `side`/code-suffix land correctly in the
+database for all three cases, plus confirmed manual create never sets `side`. Then re-verified live
+through the actual browser UI (not just the API): generated a mirrored aisle by actually checking the
+new "Mirror same numbers" checkbox in the real form, confirmed the Second Range input correctly
+disables while checked, confirmed the resulting Table View codes carry the `B` suffix, and confirmed
+the Plan View SVG draws exactly 15 single-flank cells for the wall-case aisle and exactly 5+5 cells at
+two distinct x-positions (a real left/right split) for the mirrored aisle. Cleaned up via Delete All
+afterward in both passes (no company-delete endpoint exists, so the empty throwaway companies/logins
+are left behind, same as prior sessions).
 
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
@@ -562,10 +648,12 @@ module + `LocationsPage.tsx`, 2026-08-24) — the fifth and last Master Data ent
 build), three field groups on one table depending on `storageType`, derived (never stored)
 capacity for ground/stillage bins, and role/warehouse scoping matching Warehouse/Customer. Also has
 a bulk range-generator (`POST /locations/generate` — expand a Rack/Ground/Stillage range into many
-rows in one call), Excel bulk import, an edit UI, and Warehouse/Zone Type/Storage Type/text
-filtering on the list — see "Locations/Bins zone & storage model" and "Locations/Bins: range
-generator, Excel import, edit UI, filtering" above for the full design and what's still deliberately
-deferred (layout visualization, Putaway/slotting logic). See "Platform-managed reference data"
+rows in one call), Excel bulk import, an edit UI, Warehouse/Zone Type/Storage Type/text filtering on
+the list, and a Table View/Plan View toggle rendering a static top-down structural floor plan of a
+selected warehouse's generated layout — see "Locations/Bins zone & storage model", "Locations/Bins:
+range generator, Excel import, edit UI, filtering", and "Locations/Bins: Plan View visualizer" above
+for the full design and what's still deliberately deferred (Plan View's click-to-inspect and Zone
+Type coloring, Putaway/slotting logic). See "Platform-managed reference data"
 above for `ProductCategory`/`CategoryPackSpec`, the repository pattern behind several of these.
 
 All three master-data pages (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`) now have
