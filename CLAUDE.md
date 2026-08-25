@@ -647,6 +647,140 @@ after the fix): seeded a mirrored aisle with 4 levels and a Category set — con
 callouts render above the correct columns, every box shows its full `R1-01`/`R2-02`-style label (not
 just the bare number), no "bins" text appears anywhere, and the Category name shows in every box.
 
+### Yard & Gate Management (2026-08-25)
+First slice of the next pipeline stage (Master Data → **Yard & Gate** → Inbound). Scope that ended
+up covered in this pass, confirmed with the client across several rounds of conversation: **Dock
+Door Management**, **Gate In/Out** (including E-Way Bill and inbound material confirmation), a
+lightweight **Yard Management** (real numbered parking slots), and **Gate Pass Number** sequencing —
+**Weight Bridge Integration was explicitly dropped** (2026-08-25) — most Indian warehouses don't
+have one; noted as a low-priority deferred topic, not a rejected one, revisit if it comes up later.
+The minimal `grossWeightKg`/`tareWeightKg` fields already on `VehicleGateEntry` were left in place
+(harmless, optional, already built) rather than ripped back out. **Dock Scheduling** (advance
+appointment booking) is the only piece with no schema at all yet — confirmed as a logic-and-schema
+task for a future session, not something needing further design conversation right now. This
+module started with a real process misstep worth remembering: an early pass jumped straight from a
+single scoping question to designing and building a full backend module (services, role rules,
+dock-assignment conflict logic) without actually discussing the real gate workflow first — caught
+and reverted in conversation, not left in place. See `[[wms-align-before-coding]]` in memory.
+E-Way Bill and inbound-material-confirmation enforcement at Gate Out (below) is real, working logic
+— built and verified in an earlier round of this same pass. **Yard Slot auto-assignment/release and
+Gate Pass Number generation are schema-only** — the `yardSlotId`/`gatePassNo` fields exist and sit
+unused by `GateEntriesService` for now; the client explicitly asked to finish all schema for this
+topic first and pick up that logic (plus Vehicle/Driver registration, blacklist checks, and any
+frontend) in a later pass. **No frontend exists yet for any of this.**
+
+**`VehicleType`** — platform-level reference data, same shape as `ProductCategory` (no `companyId`,
+not client-editable via any UI, since `SUPER_ADMIN` account creation still doesn't exist — seeded
+directly into the DB via `prisma/seed.ts`). 18 rows covering Indian mini-truck-through-40ft-container
+segments, built with the client through a real back-and-forth (a vehicle-type list, then corrected
+for a units-basis mixup — gross weight vs. payload aren't comparable — then split where two named
+vehicles turned out to have meaningfully different specs: Dost vs. Bada Dost, Eicher 14ft vs. 17ft).
+Two/three-wheelers and non-standard bodies (Low-Bed Trailer, Flatbed, Curtain-Sided, a generic
+Multi-Axle open truck) were deliberately dropped — no reliably sourced dimension was found for them.
+Dimensions are three separate numeric columns (`lengthFt`/`widthFt`/`heightFt`), not a combined
+label — same "one field per dimension" convention as `WarehouseStorageType`'s `lengthM/widthM/
+heightM` — specifically so a future feature can do real truck-load/volume math. `maxTonnage` is one
+number (a payload ceiling), not a min/max range, so it can be compared directly against a future
+weighbridge reading. **The `20 ft Open Body Truck`/`20 ft Closed Container` tonnage (7 Ton) is a
+placeholder pending the client's own fleet check** — flagged explicitly, don't treat it as final.
+
+**`DockDoor`** — dock door master data (warehouse, code, name, type IN/OUT/BOTH, a plain
+`status` field). **Deliberately NOT linked to `VehicleGateEntry`** — an earlier draft gave
+`VehicleGateEntry` an optional `dockDoorId` with the system auto-flipping the door's status to
+OCCUPIED/AVAILABLE as a side-effect of gate-in/out. Rejected by the client: Dock Door status is a
+manual, staff-driven action in India in practice, and real dock *selection* logic (which vehicle
+gets which door, and when) needs its own design pass later, not a side-effect of the gate log — the
+FK/column was removed from the schema entirely, not just the auto-flip behavior. `DockDoorsService`
+still has a manual `PATCH /:id/status` endpoint for staff to toggle it directly.
+
+**`Vehicle`** and **`Driver`** — company-scoped master data, "register once, reuse" (2026-08-25,
+during the document-check conversation): a recurring vehicle/driver shouldn't need its documents
+re-typed at every gate entry. **Registration is a separate, deliberate step — Gate In always picks
+an EXISTING Vehicle/Driver, never creates one inline** (an auto-create-on-unrecognized-number idea
+was explicitly rejected). `Vehicle` carries `vehicleTypeId` (fixed — a truck doesn't change class
+trip to trip) plus **optional actual measured `lengthFt`/`widthFt`/`heightFt`** that override
+`VehicleType`'s generic segment dimensions when known (falls back to the generic default when not
+measured) — a deliberate refinement so real per-truck data beats a generic segment average once
+available. `Vehicle` also carries `rcNumber`/`rcExpiry`, `insuranceNumber`/`insuranceExpiry`,
+`pucNumber`/`pucExpiry`, `fitnessNumber`/`fitnessExpiry`. `Driver` is separate from `Vehicle` (not
+folded into it) specifically because a Driving License belongs to the *person*, not the truck — the
+same vehicle can show up with a different driver trip to trip. No unique constraint on `Driver`'s
+`phone`/`licenseNumber` (neither is a reliable-enough natural key to hard-enforce yet — an operator
+searches/selects manually); `Vehicle.vehicleNumber` does get `@@unique([companyId, vehicleNumber])`,
+a genuinely reliable natural key. **No management UI exists yet for either** — that's next. Both also
+carry a simple **`isBlacklisted`/`blacklistReason`** pair (confirmed needed for both, 2026-08-25) —
+same plain flag-plus-reason shape as everywhere else in this codebase (no who/when audit trail),
+though **nothing currently checks this flag at Gate In** — that enforcement is still unbuilt.
+
+**`GateEntryDocumentCheck`** — child table (a gate entry can check several documents:
+License/Insurance/RC/PUC/Fitness), one row per document type per entry, `status` OK/FLAGGED/MISSING
+plus an optional note — same "more than one of, make it a child table" principle as
+`SkuBarcode`/`CustomerShipTo`. The document's actual number/expiry lives on `Vehicle`/`Driver`; this
+table only records the pass/fail judgment call made fresh at *this* visit.
+
+**`VehicleGateEntry`** — the confirmed real workflow (2026-08-25 conversation): vehicle arrives →
+driver informs security → security selects the registered Vehicle + Driver, logs the transporter
+(free text — can vary trip to trip even for the same vehicle/driver, so it's not on either master),
+and checks key documents → loading happens → for **Outbound Dispatch**, an E-Way Bill is generated
+and its number captured at Gate Out; for **Inbound Delivery**, Gate Out instead requires a manual
+"all material received/scanned" confirmation (a placeholder — Inbound/Receiving doesn't exist yet to
+drive this automatically) → only once that purpose-specific condition is met does `gateOut()` allow
+closing. The E-Way Bill requirement is gated by a new **`Company.requireEwayBillForOutboundGateOut`**
+boolean (default `false`) — not every client routes E-Way Bill data through this system, some handle
+it entirely in their own ERP, so it's an explicit per-company opt-in, not a hardcoded rule.
+**Destination was raised, then explicitly scrapped for this pass** — multi-point delivery (a single
+outbound trip serving several customer drop points) would need real modeling (a child table, not a
+single FK) that wasn't worth building without a confirmed real need; intra-company warehouse-to-
+warehouse transfer was the only single-point case, and even that was deprioritized alongside it.
+Revisit if/when it's actually needed. **`VEHICLE_ONLY` (a non-cargo-visit purpose) was proposed,
+then dropped** the same day — no concrete real use case for it, and the client wasn't sure what it
+would even mean in practice; `GateEntryPurpose` is `INBOUND_DELIVERY`/`OUTBOUND_DISPATCH`/`RETURNS`
+only. Dropping a Postgres enum value needs a swap-in-a-new-type migration (`ALTER TYPE ... DROP
+VALUE` isn't supported) — see the `20260825230000_yard_slots_gate_pass_and_blacklist` migration for
+the pattern if another enum value needs removing later.
+
+**Yard Management** — a deliberately lightweight slice, not the full parking-bay system originally
+sketched. `Warehouse.yardCapacity` (Int, only settable at creation — same limitation as the Warehouse
+Manager fields, until Warehouse Edit exists) is meant to drive generating that many real, numbered
+`YardSlot` rows (`Y1`, `Y2`...) — **the generation logic itself is not built yet**, only the schema.
+`VehicleGateEntry.yardSlotId` is meant to be auto-assigned from the free pool at Gate In (never
+picked manually) and released — **not at Gate Out**, but when the vehicle actually moves to a dock,
+per the client's explicit correction ("it will be linked when we develop that"). Since Dock
+Scheduling/assignment doesn't exist yet to drive that release, **the intended interim behavior is to
+release on Gate Out as a placeholder** — re-wire this the moment dock-in tracking exists; this is
+not yet implemented at all (schema-only, per the client's own request to finish schema before logic).
+`Company.blockGateInWhenYardFull` (default `false`) controls whether a full yard hard-blocks a new
+Gate In or just warns — **both modes are wanted, toggle per company; a "yard full" warning must
+always surface regardless of which mode is active** — none of this check is implemented yet either.
+
+**Gate Pass Number** — the human-facing sequential number a driver would be handed, tracked via
+`GatePassSequence` (one counter per warehouse **and** per direction — Inbound and Outbound never
+share a sequence; Returns counts as Inbound, confirmed) with a `periodKey` whose shape depends on
+`Company.gatePassResetPeriod` (`FINANCIAL_YEAR`/`QUARTER`/`MONTH`, configurable per company,
+default `FINANCIAL_YEAR`) — **`QUARTER` means financial-year quarters** (Apr–Jun/Jul–Sep/Oct–
+Dec/Jan–Mar), not calendar quarters, confirmed explicitly since it's easy to get backwards.
+`VehicleGateEntry.gatePassNo` is where the generated number would land. **None of the actual
+generation/incrementing logic is built yet** — schema only. A future "count of vehicles by
+VehicleType" analysis (raised in the same conversation) needs no new schema at all — it's already
+derivable from `VehicleGateEntry → Vehicle → VehicleType` once a reporting screen exists.
+
+Verified so far: all three migrations in this pass applied cleanly against the real dev DB (including
+a Postgres enum-value drop and a 24-row `Company` backfill via column defaults, both with no issue),
+Prisma client regenerated, `tsc --noEmit` and a full clean backend restart both came back with zero
+errors and a single listening process (`curl` → 200), and direct queries confirmed every new
+table/column (`Vehicle`, `Driver`, `GateEntryDocumentCheck`, `YardSlot`, `GatePassSequence`, the new
+`Company` toggles) is queryable with the expected defaults. **Not yet done**: no throwaway-company
+end-to-end test script, no live browser check (nothing exists in the frontend to check yet), no
+Vehicle/Driver registration UI, no yard-slot/gate-pass-number business logic, no blacklist
+enforcement at Gate In, and Dock Door's own workflow logic (beyond the plain manual status toggle) is
+still unbuilt, no schema at all yet for **Dock Scheduling** (the one piece with no design work done),
+and **Weight Bridge Integration is dropped/deferred** (low priority, not rejected outright — see
+above).
+
+Nothing else remains an open *decision* for this topic as of 2026-08-25 — every remaining item above
+is build work (logic + frontend) explicitly saved for a future session, not something still waiting
+on the client.
+
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
 record could plausibly have more than one of (barcodes, storage units, customer ship-to
