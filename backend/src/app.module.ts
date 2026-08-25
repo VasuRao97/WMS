@@ -10,9 +10,25 @@ import { ProductCategoriesModule } from './product-categories/product-categories
 import { UsersModule } from './users/users.module';
 import { LocationsModule } from './locations/locations.module';
 import { YardGateModule } from './yard-gate/yard-gate.module';
+import { VehiclesModule } from './vehicles/vehicles.module';
+import { DriversModule } from './drivers/drivers.module';
+import { VehicleTypesModule } from './vehicle-types/vehicle-types.module';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), WarehousesModule, SkusModule, AuthModule, CustomersModule, ProductCategoriesModule, UsersModule, LocationsModule, YardGateModule],
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    WarehousesModule,
+    SkusModule,
+    AuthModule,
+    CustomersModule,
+    ProductCategoriesModule,
+    UsersModule,
+    LocationsModule,
+    YardGateModule,
+    VehiclesModule,
+    DriversModule,
+    VehicleTypesModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
