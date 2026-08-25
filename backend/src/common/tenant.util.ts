@@ -18,6 +18,19 @@ export const MASTER_DATA_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WA
 export const MASTER_DATA_WRITE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
 export const WAREHOUSE_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
+// Yard & Gate is operational, not master data — OPERATOR needs full access
+// here (gate/security staff are exactly who logs a vehicle in/out day to
+// day), unlike MASTER_DATA_READ_ROLES which excludes them. Dock Door itself
+// stays master-data-gated for create/edit/delete (it's a physical asset
+// config, same tier as Warehouse/Location) but every operational role can
+// read the list (needed to pick a door while logging a gate entry) and log
+// Gate In/Out. WAREHOUSE_SCOPED_ROLES above only covers Manager/Supervisor —
+// Operator is scoped the same way (via their own assignedWarehouses) but
+// needs its own list since it can't create/edit master data.
+export const GATE_YARD_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const GATE_YARD_OPERATE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const GATE_YARD_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+
 /**
  * A MANAGER/SUPERVISOR's own assignedWarehouses ids, fetched fresh from the DB
  * (the JWT payload doesn't carry them, and they can change without a re-login).

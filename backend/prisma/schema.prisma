@@ -36,6 +36,35 @@ model Company {
   warehouses Warehouse[]
   skus       Sku[]
   customers  Customer[]
+  vehicles   Vehicle[]
+  drivers    Driver[]
+
+  // Outbound Gate Out can require an E-Way Bill number before it's allowed
+  // to close (see VehicleGateEntry.eWayBillNo) — but not every client routes
+  // E-Way Bill data through this system today (some handle it entirely in
+  // their own ERP), so this is a per-company opt-in, not a hardcoded rule.
+  // Defaults off; a company turns it on once ready. 2026-08-25 design
+  // conversation — see CLAUDE.md's Yard & Gate section.
+  requireEwayBillForOutboundGateOut Boolean @default(false)
+
+  // When the yard is at full capacity (no free YardSlot), should Gate In be
+  // hard-blocked, or just show a warning and let staff decide? Both modes
+  // are wanted, toggled per company — a "yard full" warning is always
+  // surfaced either way, this only controls whether it's also a hard stop.
+  // Defaults off (warn-only). 2026-08-25 design conversation.
+  blockGateInWhenYardFull Boolean @default(false)
+
+  // How often the Gate Pass Number sequence resets (see GatePassSequence) —
+  // configurable per company, not a fixed platform-wide rule. QUARTER means
+  // financial-year quarters (Apr-Jun/Jul-Sep/Oct-Dec/Jan-Mar), not calendar
+  // quarters — confirmed with the client 2026-08-25.
+  gatePassResetPeriod GatePassResetPeriod @default(FINANCIAL_YEAR)
+}
+
+enum GatePassResetPeriod {
+  FINANCIAL_YEAR
+  QUARTER
+  MONTH
 }
 
 model User {
@@ -62,12 +91,14 @@ model User {
   assignedWarehouses Warehouse[]
   loginEvents        LoginEvent[]
 
-  receiptsCreated   InboundReceipt[] @relation("ReceiptCreatedBy")
-  putawaysCompleted PutawayTask[]    @relation("PutawayCompletedBy")
-  ordersCreated     OutboundOrder[]  @relation("OrderCreatedBy")
-  picksCompleted    PickTask[]       @relation("PickedBy")
-  dispatches        Dispatch[]       @relation("DispatchedBy")
-  movements         StockMovement[]  @relation("MovementCreatedBy")
+  receiptsCreated   InboundReceipt[]   @relation("ReceiptCreatedBy")
+  putawaysCompleted PutawayTask[]      @relation("PutawayCompletedBy")
+  ordersCreated     OutboundOrder[]    @relation("OrderCreatedBy")
+  picksCompleted    PickTask[]         @relation("PickedBy")
+  dispatches        Dispatch[]         @relation("DispatchedBy")
+  movements         StockMovement[]    @relation("MovementCreatedBy")
+  gateEntriesIn     VehicleGateEntry[] @relation("GateInBy")
+  gateEntriesOut    VehicleGateEntry[] @relation("GateOutBy")
 }
 
 // Append-only login ledger — one row per successful login, never updated or
@@ -110,6 +141,13 @@ model Warehouse {
   noOfDocks   Int?
   areaSqFt    Decimal? // total facility footprint, not broken down by storage type
 
+  // Number of physical parking/yard slots at this facility (2026-08-25,
+  // Yard Management design conversation) — drives how many real `YardSlot`
+  // rows get generated for this warehouse (see that model's comment). Same
+  // "only settable at creation" limitation as Warehouse Manager
+  // (contactName/contactPhone) below, until Warehouse Edit exists.
+  yardCapacity Int?
+
   // This facility's own GST registration — distinct from any customer's
   // gstNumber. Each warehouse is typically its own GST registration in
   // Indian operations; needed on invoices/e-way bills generated from here.
@@ -135,6 +173,10 @@ model Warehouse {
   stockMovements    StockMovement[]
   storageTypes      WarehouseStorageType[]
   dispatchFlows     WarehouseDispatchFlow[]
+  dockDoors         DockDoor[]
+  gateEntries       VehicleGateEntry[]
+  yardSlots         YardSlot[]
+  gatePassSequences GatePassSequence[]
 
   @@unique([companyId, code])
 }
@@ -462,6 +504,337 @@ model StockMovement {
 
   @@index([skuId, locationId])
   @@index([warehouseId])
+}
+
+// ------------------------------------------------------------
+// YARD & GATE MANAGEMENT
+// ------------------------------------------------------------
+// Foundation pass (2026-08-25) — Dock Door master data + the vehicle Gate
+// In/Out log. This is deliberately the first slice of the roadmap's five-part
+// Yard & Gate stage: Yard (parking-bay holding while a vehicle waits for a
+// door) and Dock Scheduling (advance appointment booking) are consciously
+// deferred, not scaffolded — see CLAUDE.md's Yard & Gate section.
+//
+// DockDoor and VehicleGateEntry are deliberately NOT linked to each other —
+// an earlier draft gave VehicleGateEntry an optional dockDoorId with the
+// system auto-flipping the door's status on assignment/gate-out. Rejected
+// by the client (2026-08-25): Dock Door status is a manual, staff-driven
+// action in practice, and real dock *selection* logic (which vehicle gets
+// which door, and when) needs its own proper design pass later — not a
+// side-effect of the gate log. Don't reintroduce this link without
+// re-confirming the actual workflow first.
+
+// What a dock door can be used for. BOTH is the common case for a small
+// facility with no dedicated inbound/outbound doors.
+enum DockDoorType {
+  INBOUND
+  OUTBOUND
+  BOTH
+}
+
+enum DockDoorStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+}
+
+model DockDoor {
+  id          String         @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse      @relation(fields: [warehouseId], references: [id])
+  code        String // physical door number/label, e.g. "D01"
+  name        String?
+  dockType    DockDoorType   @default(BOTH)
+  status      DockDoorStatus @default(AVAILABLE)
+  isActive    Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+
+  @@unique([warehouseId, code])
+}
+
+// Platform-level reference data (like ProductCategory — no companyId, not
+// client-editable via any UI yet since SUPER_ADMIN account creation still
+// doesn't exist; seeded directly by us so every company's Gate In vehicle-
+// type dropdown draws from the same curated list). Dimensions are stored as
+// three separate numeric columns, not a combined text label, specifically
+// for future truck-load/volume analysis (2026-08-25 design conversation) —
+// same "one field per dimension" convention as WarehouseStorageType's
+// lengthM/widthM/heightM and CategoryPackSpec's lengthCm/widthCm/heightCm.
+// `maxTonnage` is the payload ceiling, in Tons — deliberately a single
+// number (not a min/max range) so it can be compared directly against a
+// weighbridge reading later. List curated with the client 2026-08-25 —
+// Indian mini-truck-through-40ft-container segments only; deliberately
+// excludes two/three-wheelers and non-standard bodies (Low-Bed Trailer,
+// Flatbed, Curtain-Sided, generic Multi-Axle open truck) where no reliable
+// sourced dimension was found — see CLAUDE.md for the full list-building
+// conversation and sourcing.
+model VehicleType {
+  id         String  @id @default(uuid())
+  name       String  @unique // e.g. "Tata Ace / Chhota Hathi", "32 ft MXL"
+  segment    String // Mini Truck | Pickup | MCV | HCV | Container
+  lengthFt   Decimal
+  widthFt    Decimal
+  heightFt   Decimal
+  maxTonnage Decimal
+
+  vehicles Vehicle[]
+}
+
+// Registered vehicle master — a tenant master (unlike VehicleType above),
+// scoped per company like Warehouse/SKU/Customer. Added 2026-08-25 once the
+// document-check conversation made clear a recurring vehicle (same truck
+// showing up again and again) shouldn't need its RC/Insurance/PUC/Fitness
+// re-typed at every single gate entry — register it once here instead.
+// Registration is a deliberate, separate step — Gate In always picks an
+// EXISTING Vehicle, it never creates one inline (confirmed with the client;
+// an earlier idea to auto-create on an unrecognized vehicle number was
+// rejected).
+model Vehicle {
+  id            String      @id @default(uuid())
+  companyId     String
+  company       Company     @relation(fields: [companyId], references: [id])
+  vehicleNumber String
+  vehicleTypeId String
+  vehicleType   VehicleType @relation(fields: [vehicleTypeId], references: [id])
+
+  // Actual measured dimensions of THIS specific vehicle, nullable — when
+  // known, these override VehicleType's generic segment dimensions for any
+  // load/volume calculation; when the registrar doesn't know them, callers
+  // fall back to VehicleType's own lengthFt/widthFt/heightFt instead. Not
+  // derived/computed — genuinely optional real-world data that may or may
+  // not have been measured for a given truck.
+  lengthFt Decimal?
+  widthFt  Decimal?
+  heightFt Decimal?
+
+  rcNumber        String?
+  rcExpiry        DateTime?
+  insuranceNumber String?
+  insuranceExpiry DateTime?
+  pucNumber       String?
+  pucExpiry       DateTime?
+  fitnessNumber   String?
+  fitnessExpiry   DateTime?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  // Security-relevant bar-from-entry flag, confirmed needed 2026-08-25 —
+  // same simple "flag + reason" shape as elsewhere in this codebase rather
+  // than a full audit trail (who/when isn't tracked, matching the existing
+  // isActive convention).
+  isBlacklisted   Boolean @default(false)
+  blacklistReason String?
+
+  gateEntries VehicleGateEntry[]
+
+  @@unique([companyId, vehicleNumber])
+}
+
+// Registered driver master, same "register once, reuse" reasoning and
+// company scoping as Vehicle above — added the same day once it became
+// clear a Driving License belongs to the PERSON, not the vehicle (the same
+// truck can show up with a different driver trip to trip), so it can't
+// live on the Vehicle record. No unique constraint on phone/licenseNumber
+// (deliberate, 2026-08-25) — unlike Vehicle's plate number, neither is a
+// reliable-enough natural key to hard-enforce uniqueness on yet; a gate
+// operator selects/searches an existing Driver manually rather than the
+// system matching on one of these fields automatically.
+model Driver {
+  id            String    @id @default(uuid())
+  companyId     String
+  company       Company   @relation(fields: [companyId], references: [id])
+  name          String
+  phone         String?
+  licenseNumber String?
+  licenseExpiry DateTime?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  // Same bar-from-entry flag as Vehicle.isBlacklisted, confirmed needed for
+  // both 2026-08-25.
+  isBlacklisted   Boolean @default(false)
+  blacklistReason String?
+
+  gateEntries VehicleGateEntry[]
+}
+
+// Why the vehicle is at the gate — captured at Gate In (not deferred to dock
+// assignment) so security can route it correctly from the moment it arrives.
+// A fourth value, VEHICLE_ONLY (a non-cargo visit), was considered and
+// dropped 2026-08-25 — no concrete real use case for it, easy to add back
+// later if one shows up.
+enum GateEntryPurpose {
+  INBOUND_DELIVERY
+  OUTBOUND_DISPATCH
+  RETURNS
+}
+
+// Real-world parking/holding spot while a vehicle waits — one row per
+// physical slot, generated from Warehouse.yardCapacity at warehouse
+// creation (2026-08-25 Yard Management design conversation). Deliberately
+// real, individually-addressable rows (not just a capacity counter) per the
+// client's explicit call — even though day-to-day usage is "grab whichever
+// slot's free," not manually picking one by code. `status` is auto-flipped
+// by gate-entry logic (occupy on Gate In, free again later) — unlike
+// DockDoor, where the equivalent auto-flip idea was explicitly REJECTED;
+// Yard is a deliberately different, confirmed case, not the same mistake
+// repeated.
+enum YardSlotStatus {
+  AVAILABLE
+  OCCUPIED
+}
+
+model YardSlot {
+  id          String         @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse      @relation(fields: [warehouseId], references: [id])
+  code        String // e.g. "Y1", "Y2"...
+  status      YardSlotStatus @default(AVAILABLE)
+  isActive    Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+
+  gateEntries VehicleGateEntry[]
+
+  @@unique([warehouseId, code])
+}
+
+// The real trigger for freeing a slot is meant to be "vehicle moved to a
+// dock," not Gate Out — but that requires the Dock Scheduling/assignment
+// link this pass deliberately doesn't build yet (see DockDoor's comment on
+// why Gate Entry <-> Dock Door stays unlinked for now). Until that exists,
+// GateEntriesService releases the slot at Gate Out instead, as an explicit,
+// documented placeholder — re-wire this to release on dock-in once that
+// link is built, per the client's own framing ("it will be linked when we
+// develop that").
+enum GatePassDirection {
+  INBOUND
+  OUTBOUND
+}
+
+// The human-facing sequential number handed to a driver (VehicleGateEntry.
+// gatePassNo), tracked separately per warehouse AND per direction (Inbound
+// vs Outbound never share a counter) — confirmed 2026-08-25. `periodKey`'s
+// shape depends on the company's own GatePassResetPeriod at the time it was
+// computed (a financial year like "2026-27", a financial-year quarter like
+// "2026-Q2", or a calendar month like "2026-08") — a fresh key naturally
+// starts a fresh sequence, so no separate "reset" operation is needed.
+model GatePassSequence {
+  id          String            @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse         @relation(fields: [warehouseId], references: [id])
+  direction   GatePassDirection
+  periodKey   String
+  lastNumber  Int               @default(0)
+
+  @@unique([warehouseId, direction, periodKey])
+}
+
+model VehicleGateEntry {
+  id              String           @id @default(uuid())
+  warehouseId     String
+  warehouse       Warehouse        @relation(fields: [warehouseId], references: [id])
+  vehicleId       String
+  vehicle         Vehicle          @relation(fields: [vehicleId], references: [id])
+  driverId        String
+  driver          Driver           @relation(fields: [driverId], references: [id])
+  // Transporter can genuinely vary trip to trip even for the same
+  // registered vehicle (a market/attached vehicle hired by different
+  // transport companies) — deliberately stays free text per entry, not
+  // moved onto the Vehicle master.
+  transporterName String?
+  purpose         GateEntryPurpose
+  // Free-text PO/ASN/order reference — there's no real Inbound/Outbound
+  // record to link to yet (those modules don't exist), same "landing spot
+  // for later" reasoning as Sku/Warehouse/Customer's erpCode fields.
+  referenceNo     String?
+
+  // Auto-assigned from the warehouse's free YardSlot pool at Gate In —
+  // never picked manually. Nullable because a slot may not exist to assign
+  // (yard full and Company.blockGateInWhenYardFull is off, so the entry
+  // still goes through with a "yard full" warning instead of a hard block).
+  yardSlotId String?
+  yardSlot   YardSlot? @relation(fields: [yardSlotId], references: [id])
+
+  // Sequential, human-facing gate pass number — generated once at Gate In
+  // via GatePassSequence, never changes after. Nullable only because it's
+  // system-generated after validation, not client-supplied.
+  gatePassNo String?
+
+  gateInAt   DateTime @default(now())
+  gateInById String
+  gateInBy   User     @relation("GateInBy", fields: [gateInById], references: [id])
+
+  gateOutAt   DateTime?
+  gateOutById String?
+  gateOutBy   User?     @relation("GateOutBy", fields: [gateOutById], references: [id])
+
+  // E-Way Bill — for an Outbound Dispatch, generated by us AFTER loading,
+  // right before the truck leaves, so it's captured here at Gate Out.
+  // (An Inbound Delivery's E-Way Bill was already generated by the sender
+  // before the truck ever arrived — that's an incoming document, not
+  // something Gate Out produces, and isn't modeled yet.) Whether Gate Out
+  // is actually BLOCKED without this depends on
+  // Company.requireEwayBillForOutboundGateOut — not every client routes
+  // E-Way Bill data through this system.
+  eWayBillNo          String?
+  eWayBillGeneratedAt DateTime?
+
+  // Inbound's Gate Out closing condition isn't an E-Way Bill at all — it's
+  // "all material has been received/scanned." Since Inbound/Receiving
+  // doesn't exist as a module yet, this is a plain manual tick for now
+  // (set true only alongside Gate Out itself — gateOutAt/gateOutById above
+  // already capture who/when, so no separate timestamp needed here), to be
+  // replaced by a real system-driven check once Inbound is built.
+  materialReceivedConfirmed Boolean @default(false)
+
+  // Weight Bridge — real manual entry (not just an integration hook like
+  // erpCode): an operator types the gross and tare readings in directly.
+  // Net weight is always derived (gross - tare) at read time, never stored
+  // — same "always derived" philosophy as Location capacity / on-hand stock.
+  grossWeightKg  Decimal?
+  grossWeighedAt DateTime?
+  tareWeightKg   Decimal?
+  tareWeighedAt  DateTime?
+
+  documentChecks GateEntryDocumentCheck[]
+
+  createdAt DateTime @default(now())
+
+  @@index([warehouseId, gateInAt])
+}
+
+// What's checked at the gate — License/Insurance/RC/PUC/Fitness — against
+// whatever's on file on the Vehicle/Driver master, one row per document type
+// per entry (a gate entry can have several documents checked, same "more
+// than one of, make it a child table" reasoning as SkuBarcode/
+// CustomerShipTo). The document's actual number/expiry lives on Vehicle/
+// Driver; this table only records the pass/fail judgment call made fresh at
+// THIS visit (an otherwise-valid document could still get FLAGGED for a
+// reason unrelated to its expiry, e.g. a torn/illegible copy).
+enum GateDocumentType {
+  LICENSE
+  INSURANCE
+  RC
+  PUC
+  FITNESS
+}
+
+enum GateDocumentStatus {
+  OK
+  FLAGGED
+  MISSING
+}
+
+model GateEntryDocumentCheck {
+  id           String              @id @default(uuid())
+  gateEntryId  String
+  gateEntry    VehicleGateEntry    @relation(fields: [gateEntryId], references: [id])
+  documentType GateDocumentType
+  status       GateDocumentStatus
+  note         String?
+
+  @@unique([gateEntryId, documentType])
 }
 
 // ------------------------------------------------------------

@@ -9,9 +9,10 @@ import { CustomersModule } from './customers/customers.module';
 import { ProductCategoriesModule } from './product-categories/product-categories.module';
 import { UsersModule } from './users/users.module';
 import { LocationsModule } from './locations/locations.module';
+import { YardGateModule } from './yard-gate/yard-gate.module';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), WarehousesModule, SkusModule, AuthModule, CustomersModule, ProductCategoriesModule, UsersModule, LocationsModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), WarehousesModule, SkusModule, AuthModule, CustomersModule, ProductCategoriesModule, UsersModule, LocationsModule, YardGateModule],
   controllers: [AppController],
   providers: [AppService],
 })
