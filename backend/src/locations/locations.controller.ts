@@ -1,5 +1,6 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import * as XLSX from 'xlsx';
 import { LocationsService } from './locations.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -74,6 +75,21 @@ export class LocationsController {
   @Roles(...MASTER_DATA_READ_ROLES)
   findAll(@CurrentUser() user: any) {
     return this.locationsService.findAll(user);
+  }
+
+  @Get('export')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  async export(@Res() res: Response, @CurrentUser() user: any) {
+    const rows = await this.locationsService.exportRows(user);
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Location Import');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': 'attachment; filename="Location_Master_Export.xlsx"',
+    });
+    res.send(buffer);
   }
 
   @Patch(':id')

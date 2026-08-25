@@ -393,6 +393,19 @@ function LocationsPage() {
     loadLocations();
   };
 
+  const handleExport = () => {
+    fetch('http://localhost:3000/locations/export', { headers: authHeaders() })
+      .then((res) => res.blob())
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'Location_Master_Export.xlsx';
+        a.click();
+        window.URL.revokeObjectURL(url);
+      });
+  };
+
   const isRack = RACK_STORAGE_TYPES.includes(storageType);
   const isGround = storageType === 'GROUND_FLOOR';
   const isStillage = storageType === 'STILLAGE';
@@ -437,6 +450,7 @@ function LocationsPage() {
             <button onClick={handleImport} disabled={!importFile || importing} style={{ marginLeft: 8 }}>
               {importing ? 'Importing...' : 'Import'}
             </button>
+            <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
             {importResult && <BatchResultList summary={importResult} totalLabel="rows" />}
           </div>
         )}

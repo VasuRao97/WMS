@@ -220,4 +220,50 @@ export class CustomersService {
       results,
     };
   }
+
+  // One row per (Customer, Ship-to) pair — mirrors the import's own
+  // repeated-Bill-To-ID grouping, so an exported file can be edited and
+  // re-imported unchanged. A customer with no ship-to locations still gets
+  // one row (blank ship-to columns) so it isn't dropped from the export.
+  async exportRows(user: any) {
+    const customers = await this.findAll(user);
+    const rows: any[] = [];
+    for (const c of customers) {
+      const base = {
+        'Bill To ID': c.code,
+        'Customer Name': c.name,
+        'Category': c.category || '',
+        'Email': c.email || '',
+        'Phone': c.phone || '',
+        'PAN': c.pan || '',
+        'Billing Address': c.billingAddress || '',
+        'Billing Pincode': c.pincode || '',
+        'Billing State': c.state || '',
+        'Billing GST Number': c.gstNumber || '',
+        'Active': c.isActive ? 'TRUE' : 'FALSE',
+      };
+      if (c.shipToLocations.length === 0) {
+        rows.push({
+          ...base,
+          'Ship To ID': '', 'Ship To Address': '', 'Ship To Pincode': '', 'Ship To State': '',
+          'Ship To GST Number': '', 'Ship To Warehouse Code': '', 'Ship To Local/Upcountry': '', 'Ship To Default': '',
+        });
+      } else {
+        for (const s of c.shipToLocations) {
+          rows.push({
+            ...base,
+            'Ship To ID': s.shipToCode || '',
+            'Ship To Address': s.address,
+            'Ship To Pincode': s.pincode,
+            'Ship To State': s.state,
+            'Ship To GST Number': s.gstNumber || '',
+            'Ship To Warehouse Code': (s as any).warehouse?.code || '',
+            'Ship To Local/Upcountry': s.deliveryZone || '',
+            'Ship To Default': s.isDefault ? 'TRUE' : 'FALSE',
+          });
+        }
+      }
+    }
+    return rows;
+  }
 }

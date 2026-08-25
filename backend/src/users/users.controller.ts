@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import * as XLSX from 'xlsx';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -32,6 +33,21 @@ export class UsersController {
   @Roles(...CAN_MANAGE_USERS)
   findAll(@CurrentUser() user: any) {
     return this.usersService.findAll(user);
+  }
+
+  @Get('export')
+  @Roles(...CAN_MANAGE_USERS)
+  async export(@Res() res: Response, @CurrentUser() user: any) {
+    const rows = await this.usersService.exportRows(user);
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'User Master');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': 'attachment; filename="User_Master_Export.xlsx"',
+    });
+    res.send(buffer);
   }
 
   @Patch(':id')

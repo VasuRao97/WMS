@@ -319,4 +319,62 @@ export class WarehousesService {
       upcountryCount: w.shipToAssignments.filter((s) => s.deliveryZone === 'UPCOUNTRY').length,
     }));
   }
+
+  // One row per (Warehouse, Storage Type) pair — mirrors the import's own
+  // repeated-Location-Code grouping, so an exported file can be edited and
+  // re-imported unchanged. A warehouse with no Storage Type rows still gets
+  // one row (blank Storage Type columns) so it isn't dropped from the export.
+  // Dispatch Flows have no natural per-row slot to repeat into, so they're
+  // joined as one comma-separated column instead, same value on every row for
+  // that warehouse.
+  async exportRows(user: any) {
+    const where: any = { ...companyFilter(user) };
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
+    }
+    const warehouses = await this.prisma.warehouse.findMany({
+      where,
+      include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
+      orderBy: { code: 'asc' },
+    });
+    const rows: any[] = [];
+    for (const w of warehouses) {
+      const dispatchFlows = w.dispatchFlows.map((f) => f.flowType).join(', ');
+      const base = {
+        'Location Code': w.code,
+        'Type of Node': w.nodeType || '',
+        'City Name': w.city || '',
+        'Address': w.address || '',
+        'Pincode': w.pincode || '',
+        'Latitude': w.latitude ?? '',
+        'Longitude': w.longitude ?? '',
+        '3PL Name': w.threePlName || '',
+        'No of Docks': w.noOfDocks ?? '',
+        'Area sq ft': w.areaSqFt ?? '',
+        'GSTIN': w.gstin || '',
+        'Working Days': w.workingDays || '',
+        'Working Hours': w.workingHours || '',
+        'Contact Name': w.contactName || '',
+        'Contact Phone': w.contactPhone || '',
+        'Active': w.isActive ? 'TRUE' : 'FALSE',
+        'Dispatch Flow': dispatchFlows,
+      };
+      if (w.storageTypes.length === 0) {
+        rows.push({ ...base, 'Storage Type': '', 'Category': '', 'Pallet Positions': '', 'Dim L (m)': '', 'Dim W (m)': '', 'Dim H (m)': '' });
+      } else {
+        for (const s of w.storageTypes) {
+          rows.push({
+            ...base,
+            'Storage Type': s.storageType,
+            'Category': s.category.name,
+            'Pallet Positions': s.palletPositions,
+            'Dim L (m)': s.lengthM ?? '',
+            'Dim W (m)': s.widthM ?? '',
+            'Dim H (m)': s.heightM ?? '',
+          });
+        }
+      }
+    }
+    return rows;
+  }
 }

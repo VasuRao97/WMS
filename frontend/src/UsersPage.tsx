@@ -212,6 +212,19 @@ function UsersPage() {
     loadUsers();
   };
 
+  const handleExport = () => {
+    fetch('http://localhost:3000/users/export', { headers: authHeaders() })
+      .then((res) => res.blob())
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'User_Master_Export.xlsx';
+        a.click();
+        window.URL.revokeObjectURL(url);
+      });
+  };
+
   const emailRequired = EMAIL_REQUIRED_ROLES.includes(form.role);
   const warehousesRequired = form.role && form.role !== 'COMPANY_ADMIN';
   const isSelfEdit = !!editingId && editingId === me?.id;
@@ -242,6 +255,7 @@ function UsersPage() {
             <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
               {importing ? 'Importing...' : 'Import'}
             </button>
+            <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
             {importResult && (
               <div style={{ marginTop: 16 }}>
                 <p>

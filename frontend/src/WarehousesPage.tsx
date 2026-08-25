@@ -260,6 +260,19 @@ function WarehousesPage() {
     refreshAll();
   };
 
+  const handleExport = () => {
+    fetch('http://localhost:3000/warehouses/export', { headers: authHeaders() })
+      .then((res) => res.blob())
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'Warehouse_Master_Export.xlsx';
+        a.click();
+        window.URL.revokeObjectURL(url);
+      });
+  };
+
   const handleDeactivate = async (id: string, isActive: boolean) => {
     const action = isActive ? 'deactivate' : 'reactivate';
     await fetch(`http://localhost:3000/warehouses/${id}/${action}`, { method: 'PATCH', headers: authHeaders() });
@@ -293,6 +306,7 @@ function WarehousesPage() {
         <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
           {importing ? 'Importing...' : 'Import'}
         </button>
+        <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
         <button onClick={handleDeleteAll} style={{ marginLeft: 8, color: 'crimson' }}>Delete All</button>
 
         {importResult && (

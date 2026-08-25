@@ -425,6 +425,32 @@ export class LocationsService {
     return locations.map((l) => this.attachCapacity(l));
   }
 
+  // One row per Location, columns matching the Excel import exactly — an
+  // exported file can be edited and re-imported unchanged. Code/Capacity are
+  // extra reference-only columns the importer doesn't read (harmless).
+  async exportRows(user: any) {
+    const locations = await this.findAll(user);
+    return locations.map((l: any) => ({
+      'Warehouse Code': l.warehouse.code,
+      'Zone Type': l.zoneType,
+      'Storage Type': l.storageType,
+      'Category': l.category?.name || '',
+      'Zone': l.zone || '',
+      'Aisle': l.aisle || '',
+      'Rack': l.rack || '',
+      'Level': l.level || '',
+      'Bin': l.bin || '',
+      'Block': l.block || '',
+      'Stack': l.stack || '',
+      'Depth': l.depth ?? '',
+      'Width': l.width ?? '',
+      'Height': l.height ?? '',
+      'Code': l.code,
+      'Capacity': l.capacity ?? '',
+      'Active': l.isActive ? 'TRUE' : 'FALSE',
+    }));
+  }
+
   private async assertAccess(id: string, user: any) {
     const location = await this.prisma.location.findUnique({
       where: { id },

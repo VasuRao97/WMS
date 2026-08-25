@@ -162,6 +162,19 @@ const handleImport = async () => {
     loadCustomers();
   };
 
+  const handleExport = () => {
+    fetch('http://localhost:3000/customers/export', { headers: authHeaders() })
+      .then((res) => res.blob())
+      .then((blob) => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'Customer_Master_Export.xlsx';
+        a.click();
+        window.URL.revokeObjectURL(url);
+      });
+  };
+
   const handleDeactivate = async (id: string, isActive: boolean) => {
     const action = isActive ? 'deactivate' : 'reactivate';
     await fetch(`http://localhost:3000/customers/${id}/${action}`, { method: 'PATCH', headers: authHeaders() });
@@ -210,6 +223,7 @@ const handleImport = async () => {
       <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
       <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>{importing ? 'Importing...' : 'Import'}
         </button>
+      <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
       <button onClick={handleDeleteAll} style={{ marginLeft: 8, color: 'crimson' }}>Delete All</button>
       {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
       {importResult && ( <div style={{ marginTop: 16 }}> <p> 

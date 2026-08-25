@@ -359,4 +359,23 @@ export class UsersService {
     await this.assertEditAccess(id, editor);
     return this.prisma.user.update({ where: { id }, data: { isActive: true }, select: SELECT_SAFE });
   }
+
+  // One row per User, columns matching the Excel import ("Password" is
+  // deliberately excluded — passwordHash can't be reversed, and re-exporting
+  // even a hash would be a real security smell). Same visibility as
+  // findAll/getLoginHistory (self, or shares a warehouse for a scoped role,
+  // or Admin sees everyone).
+  async exportRows(user: any) {
+    const users = await this.findAll(user);
+    return users.map((u: any) => ({
+      'Login ID': u.email,
+      'Name': u.name,
+      'Role': u.role,
+      'Function Tag': u.functionTag || '',
+      'Warehouse Code(s)': u.assignedWarehouses.map((w: any) => w.code).join(', '),
+      'Active': u.isActive ? 'TRUE' : 'FALSE',
+      'Last Login At': u.lastLoginAt ? u.lastLoginAt.toISOString() : '',
+      'Created At': u.createdAt.toISOString(),
+    }));
+  }
 }
