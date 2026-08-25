@@ -61,7 +61,12 @@ const ROW_GAP = 6;
 const WALKWAY_W = 34;
 const AISLE_GAP = 36;
 const PAD_TOP = 46;
-const PAD_BOTTOM = 16;
+// Tall enough to mirror the top header (Section/Aisle + flank callouts) at
+// the bottom of each column too — on a tall aisle (many rows), scrolling to
+// the far end used to lose sight of which flank (R1/R2...) you were looking
+// at; repeating the same callouts at the bottom fixes that. Confirmed
+// 2026-08-25.
+const PAD_BOTTOM = 46;
 const PAD_X = 16;
 
 // Numeric-aware sort so "2" < "10" instead of the default lexical "10" < "2".
@@ -316,6 +321,11 @@ function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[
   const rowBandH = CELL_H + ROW_GAP;
   const totalHeight = PAD_TOP + maxRows * rowBandH + PAD_BOTTOM;
 
+  // Bottom edge of every aisle's walkway/boxes — same line for every aisle
+  // (row 0 is shared), used to mirror the header callouts below the columns
+  // too, same as walkwayTop (PAD_TOP) already anchors the top ones.
+  const walkwayBottomY = PAD_TOP + maxRows * rowBandH - ROW_GAP;
+
   const aisleWidths = aisles.map((a) => a.maxLeftW + WALKWAY_W + a.maxRightW);
   const totalWidth = PAD_X * 2 + aisleWidths.reduce((s, w) => s + w, 0) + AISLE_GAP * (aisles.length - 1);
 
@@ -419,6 +429,72 @@ function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[
                     <text
                       x={walkwayLeftX - aisle.maxLeftW / 2}
                       y={PAD_TOP - 10}
+                      textAnchor="middle"
+                      fontSize={12}
+                      fontWeight="bold"
+                      fontFamily="sans-serif"
+                      fill="#222"
+                    >
+                      R{aisle.leftFlankNumber}
+                    </text>
+                  )}
+                  {/* Same header, mirrored below the columns — on a tall
+                      aisle, scrolling to the far row used to lose sight of
+                      which flank/aisle you were looking at. Confirmed 2026-08-25. */}
+                  {aisle.section ? (
+                    <>
+                      <text
+                        x={walkwayLeftX + WALKWAY_W / 2}
+                        y={walkwayBottomY + 22}
+                        textAnchor="middle"
+                        fontSize={10}
+                        fontFamily="sans-serif"
+                        fill="#777"
+                      >
+                        Aisle {aisle.aisleCode}
+                      </text>
+                      <text
+                        x={walkwayLeftX + WALKWAY_W / 2}
+                        y={walkwayBottomY + 38}
+                        textAnchor="middle"
+                        fontSize={13}
+                        fontWeight="bold"
+                        fontFamily="sans-serif"
+                        fill="#222"
+                      >
+                        Section {aisle.section}
+                      </text>
+                    </>
+                  ) : (
+                    <text
+                      x={walkwayLeftX + WALKWAY_W / 2}
+                      y={walkwayBottomY + 22}
+                      textAnchor="middle"
+                      fontSize={12}
+                      fontWeight="bold"
+                      fontFamily="sans-serif"
+                      fill="#222"
+                    >
+                      {aisle.aisleCode}
+                    </text>
+                  )}
+                  {aisle.rightFlankNumber != null && (
+                    <text
+                      x={walkwayRightX + aisle.maxRightW / 2}
+                      y={walkwayBottomY + 22}
+                      textAnchor="middle"
+                      fontSize={12}
+                      fontWeight="bold"
+                      fontFamily="sans-serif"
+                      fill="#222"
+                    >
+                      R{aisle.rightFlankNumber}
+                    </text>
+                  )}
+                  {aisle.leftFlankNumber != null && (
+                    <text
+                      x={walkwayLeftX - aisle.maxLeftW / 2}
+                      y={walkwayBottomY + 22}
                       textAnchor="middle"
                       fontSize={12}
                       fontWeight="bold"
