@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 
 type StorageType = {
   id: string;
@@ -39,6 +39,14 @@ type WarehouseCustomerSummary = {
   localCount: number;
   upcountryCount: number;
 };
+
+// Planned Pallet Positions (from the Storage Type breakdown below) vs how
+// many actually exist among generated Locations — a "did we forget to
+// generate something" cross-check, not the reverse (a Location that
+// doesn't match any planned row isn't flagged as extra). See
+// WarehousesService.getMappingSummary for the full reasoning.
+type MappingRow = { storageType: string; category: string; planned: number; mapped: number };
+type WarehouseMappingSummary = { warehouseId: string; code: string; name: string; rows: MappingRow[]; totalPlanned: number; totalMapped: number };
 
 type StorageTypeInput = {
   storageType: string;
@@ -89,6 +97,7 @@ const emptyStorageType: StorageTypeInput = { storageType: '', palletPositions: '
 function WarehousesPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [customerSummary, setCustomerSummary] = useState<WarehouseCustomerSummary[]>([]);
+  const [mappingSummary, setMappingSummary] = useState<WarehouseMappingSummary[]>([]);
   const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
@@ -142,6 +151,12 @@ function WarehousesPage() {
       .then((data) => setCustomerSummary(Array.isArray(data) ? data : []));
   };
 
+  const loadMappingSummary = () => {
+    fetch('http://localhost:3000/warehouses/mapping-summary', { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? [] : res.json()))
+      .then((data) => setMappingSummary(Array.isArray(data) ? data : []));
+  };
+
   const loadCategories = () => {
     fetch('http://localhost:3000/product-categories', { headers: authHeaders() })
       .then((res) => {
@@ -158,6 +173,7 @@ function WarehousesPage() {
   const refreshAll = () => {
     loadWarehouses();
     loadCustomerSummary();
+    loadMappingSummary();
   };
 
   useEffect(() => {
@@ -475,6 +491,58 @@ function WarehousesPage() {
           ))}
         </tbody>
       </table>
+
+      <h2 style={{ marginTop: 32 }}>Storage Type Mapping — Planned vs. Generated</h2>
+      <p style={{ marginTop: -4, marginBottom: 8, fontSize: 12, color: '#888' }}>
+        Cross-checks each Storage Type breakdown row's planned Pallet Positions against how many actually exist among
+        generated Locations, so nothing gets missed. A "Mix" row (not yet broken down by real storage type) isn't
+        shown here — there's nothing concrete to compare it against yet.
+      </p>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Warehouse</th>
+            <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Storage Type</th>
+            <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Category</th>
+            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Planned</th>
+            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Mapped</th>
+          </tr>
+        </thead>
+        <tbody>
+          {mappingSummary
+            .filter((s) => s.rows.length > 0)
+            .map((s) => (
+              <Fragment key={s.warehouseId}>
+                {s.rows.map((r, i) => (
+                  <tr key={`${s.warehouseId}-${i}`}>
+                    <td style={{ padding: '4px 8px' }}>{i === 0 ? <><strong>{s.code}</strong> — {s.name}</> : ''}</td>
+                    <td style={{ padding: '4px 8px' }}>{labelFor(STORAGE_TYPE_OPTIONS, r.storageType)}</td>
+                    <td style={{ padding: '4px 8px' }}>{r.category}</td>
+                    <td style={{ textAlign: 'right', padding: '4px 8px' }}>{r.planned}</td>
+                    <td style={{ textAlign: 'right', padding: '4px 8px', color: r.mapped >= r.planned ? '#1a7f37' : 'crimson', fontWeight: r.mapped < r.planned ? 'bold' : 'normal' }}>
+                      {r.mapped}
+                    </td>
+                  </tr>
+                ))}
+                <tr key={`${s.warehouseId}-total`} style={{ borderBottom: '2px solid #ccc' }}>
+                  <td style={{ padding: '4px 8px' }} />
+                  <td style={{ padding: '4px 8px' }} colSpan={2}>
+                    <strong>Total</strong>
+                  </td>
+                  <td style={{ textAlign: 'right', padding: '4px 8px' }}>
+                    <strong>{s.totalPlanned}</strong>
+                  </td>
+                  <td style={{ textAlign: 'right', padding: '4px 8px', color: s.totalMapped >= s.totalPlanned ? '#1a7f37' : 'crimson' }}>
+                    <strong>{s.totalMapped}</strong>
+                  </td>
+                </tr>
+              </Fragment>
+            ))}
+        </tbody>
+      </table>
+      {mappingSummary.filter((s) => s.rows.length > 0).length === 0 && (
+        <p style={{ marginTop: -20, marginBottom: 32 }}>No Storage Type breakdown data to cross-check yet.</p>
+      )}
     </div>
   );
 }

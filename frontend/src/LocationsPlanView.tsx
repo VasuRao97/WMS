@@ -115,7 +115,22 @@ type Box = {
   lines: string[];
   hasInactive: boolean;
   width: number;
+  storageType: string;
 };
+
+// One fill/border colour per Storage Type, so the shape of the layout is
+// readable at a glance without reading every box's text — confirmed
+// 2026-08-25. Light pastel fills keep the black text legible; an inactive
+// box overrides this with the existing grey/dashed treatment (that signal
+// stays distinct from storage type, not blended into it).
+const STORAGE_TYPE_COLORS: Record<string, { fill: string; stroke: string }> = {
+  SPR: { fill: '#dbeafe', stroke: '#2563eb' },
+  DRIVE_IN: { fill: '#ede9fe', stroke: '#7c3aed' },
+  ASRS: { fill: '#ccfbf1', stroke: '#0d9488' },
+  GROUND_FLOOR: { fill: '#ffedd5', stroke: '#ea580c' },
+  STILLAGE: { fill: '#fce7f3', stroke: '#db2777' },
+};
+const DEFAULT_BOX_COLOR = { fill: '#ffffff', stroke: '#333' };
 
 type Cell = {
   posVal: string;
@@ -155,7 +170,7 @@ function buildCell(posVal: string, rows: Location[]): Cell {
       // stored here, which is more useful at a glance. Confirmed 2026-08-25.
       const category = atDepth[0].category?.name;
       if (category) lines.push(category);
-      return { key: atDepth[0].id, lines, hasInactive: atDepth.some((r) => !r.isActive), width: CELL_W };
+      return { key: atDepth[0].id, lines, hasInactive: atDepth.some((r) => !r.isActive), width: CELL_W, storageType };
     });
     return { posVal, boxes, totalWidth: boxes.reduce((s, b) => s + b.width, 0) };
   }
@@ -166,7 +181,7 @@ function buildCell(posVal: string, rows: Location[]): Cell {
   const w = rows[0].width ?? 1;
   const h = rows[0].height ?? 1;
   const lines = [typeLabel, `${d}×${w}×${h}`, rows.length === 1 ? rows[0].code : `${rows.length} bins`];
-  const box: Box = { key: rows[0].id, lines, hasInactive: rows.some((r) => !r.isActive), width: CELL_W };
+  const box: Box = { key: rows[0].id, lines, hasInactive: rows.some((r) => !r.isActive), width: CELL_W, storageType };
   return { posVal, boxes: [box], totalWidth: CELL_W };
 }
 
@@ -232,6 +247,7 @@ function buildLayout(locations: Location[]): { aisles: AisleBlock[]; skipped: nu
 }
 
 function AisleCellBox({ box, x, y }: { box: Box; x: number; y: number }) {
+  const color = STORAGE_TYPE_COLORS[box.storageType] || DEFAULT_BOX_COLOR;
   return (
     <g>
       <rect
@@ -239,8 +255,8 @@ function AisleCellBox({ box, x, y }: { box: Box; x: number; y: number }) {
         y={y}
         width={box.width}
         height={CELL_H}
-        fill={box.hasInactive ? '#f3f3f3' : '#ffffff'}
-        stroke="#333"
+        fill={box.hasInactive ? '#f3f3f3' : color.fill}
+        stroke={box.hasInactive ? '#333' : color.stroke}
         strokeWidth={1}
         strokeDasharray={box.hasInactive ? '4 3' : undefined}
       />
@@ -308,6 +324,10 @@ function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[
   // further up rather than floating independently.
   const yForRow = (rowIndex: number) => PAD_TOP + (maxRows - 1 - rowIndex) * rowBandH;
 
+  // Legend only lists Storage Types actually present, not all five always —
+  // keeps it relevant to what's actually on screen.
+  const presentStorageTypes = Array.from(new Set(locations.map((l) => l.storageType))).sort();
+
   return (
     <div>
       <p style={{ fontSize: 12, color: '#666', marginTop: 4, marginBottom: 12 }}>
@@ -317,6 +337,17 @@ function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[
         Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number.
         {skipped > 0 ? ` ${skipped} location(s) with no Aisle set are not shown.` : ''}
       </p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 10, fontSize: 12 }}>
+        {presentStorageTypes.map((st) => {
+          const color = STORAGE_TYPE_COLORS[st] || DEFAULT_BOX_COLOR;
+          return (
+            <span key={st} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 12, height: 12, borderRadius: 2, background: color.fill, border: `1.5px solid ${color.stroke}`, display: 'inline-block' }} />
+              {labelFor(STORAGE_TYPE_OPTIONS, st)}
+            </span>
+          );
+        })}
+      </div>
       <div style={{ overflow: 'auto', border: '1px solid #ddd', borderRadius: 8, padding: 8 }}>
         <svg width={totalWidth} height={totalHeight} viewBox={`0 0 ${totalWidth} ${totalHeight}`}>
           {(() => {
