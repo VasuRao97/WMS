@@ -5,13 +5,15 @@ import LoginPage from './LoginPage';
 import CustomersPage from './CustomersPage';
 import UsersPage from './UsersPage';
 import LocationsPage from './LocationsPage';
+import VehiclesPage from './VehiclesPage';
+import DriversPage from './DriversPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
 const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
 function App() {
-  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers' | 'users' | 'locations'>('warehouses');
+  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'vehicles' | 'drivers'>('warehouses');
   const [user, setUser] = useState<any>(
     localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
   );
@@ -47,6 +49,12 @@ function App() {
         <button onClick={() => setTab('locations')} style={{ fontWeight: tab === 'locations' ? 'bold' : 'normal' }}>
           Locations
         </button>
+        <button onClick={() => setTab('vehicles')} style={{ fontWeight: tab === 'vehicles' ? 'bold' : 'normal' }}>
+          Vehicles
+        </button>
+        <button onClick={() => setTab('drivers')} style={{ fontWeight: tab === 'drivers' ? 'bold' : 'normal' }}>
+          Drivers
+        </button>
         {CAN_MANAGE_USERS.includes(user?.role) && (
           <button onClick={() => setTab('users')} style={{ fontWeight: tab === 'users' ? 'bold' : 'normal' }}>
             Users
@@ -65,6 +73,10 @@ function App() {
         <CustomersPage />
       ) : tab === 'locations' ? (
         <LocationsPage />
+      ) : tab === 'vehicles' ? (
+        <VehiclesPage />
+      ) : tab === 'drivers' ? (
+        <DriversPage />
       ) : (
         <UsersPage />
       )}
