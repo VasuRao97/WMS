@@ -129,21 +129,23 @@ export class LocationsService {
     return { zoneType, storageType, fields };
   }
 
-  // `side` (set only by generate(), see below) distinguishes the two flanks
-  // of an aisle when they reuse the SAME rack/block number — e.g. "mirror"
-  // both sides with Rack 01-15 on each. The primary side never gets a
-  // suffix (existing codes are untouched); the secondary side's letter is
+  // `isSecondaryFlank` (computed per-row by resolveFlankNumber, see below —
+  // never itself persisted, since flankNumber already conveys the same
+  // information by comparison) distinguishes the two flanks of an aisle
+  // when they reuse the SAME rack/block number — e.g. "mirror" both sides
+  // with Rack 01-15 on each. The primary flank never gets a suffix
+  // (existing codes are untouched); the secondary flank's letter is
   // appended right after the rack/block number so codes stay unique even
   // when the identifier itself is identical on both flanks.
-  private buildCode(storageType: string, f: Record<string, any>): string {
-    const sideSuffix = f.side ? String(f.side) : '';
+  private buildCode(storageType: string, f: Record<string, any>, isSecondaryFlank: boolean): string {
+    const suffix = isSecondaryFlank ? 'B' : '';
     if (RACK_STORAGE_TYPES.includes(storageType)) {
-      return [f.aisle, f.rack ? `R${f.rack}${sideSuffix}` : null, f.level ? `L${f.level}` : null, f.bin ? `B${f.bin}` : null, f.depth ? `D${f.depth}` : null]
+      return [f.aisle, f.rack ? `R${f.rack}${suffix}` : null, f.level ? `L${f.level}` : null, f.bin ? `B${f.bin}` : null, f.depth ? `D${f.depth}` : null]
         .filter(Boolean)
         .join('-');
     }
     if (storageType === 'GROUND_FLOOR') {
-      return ['GF', f.aisle, f.block ? `BLK${f.block}${sideSuffix}` : null].filter(Boolean).join('-');
+      return ['GF', f.aisle, f.block ? `BLK${f.block}${suffix}` : null].filter(Boolean).join('-');
     }
     if (storageType === 'STILLAGE') {
       return ['ST', f.aisle, f.stack].filter(Boolean).join('-');
@@ -193,23 +195,102 @@ export class LocationsService {
     }
   }
 
+  // Section is a manually-typed physical section name with a hard 1:1
+  // invariant against Aisle (unlike `zone`, a free label with no such rule)
+  // — see schema.prisma's comment on Location.section. Enforced here, not
+  // in the DB, since it's a lookup across existing rows rather than a
+  // simple column constraint. Resolves to: the incoming value if this Aisle
+  // has no established Section yet; the existing Section if the incoming
+  // value is blank (auto-inherit, so you don't have to retype it on every
+  // later batch for the same Aisle) or matches it case-insensitively; an
+  // error if the incoming value genuinely conflicts with an established one.
+  // `excludeId` lets update() re-check without a row matching itself.
+  private async assertSectionConsistency(warehouseId: string, aisle: string, incomingSection: any, errors: string[], excludeId?: string): Promise<string | undefined> {
+    const incoming = incomingSection ? String(incomingSection).trim() : '';
+    const existing = await this.prisma.location.findFirst({
+      where: { warehouseId, aisle, section: { not: null }, ...(excludeId ? { id: { not: excludeId } } : {}) },
+      select: { section: true },
+    });
+    if (existing?.section) {
+      if (incoming && incoming.toUpperCase() !== existing.section.toUpperCase()) {
+        errors.push(`Aisle "${aisle}" is already assigned to Section "${existing.section}" — enter the same Section (or leave it blank to reuse it) rather than "${incoming}".`);
+        return undefined;
+      }
+      return existing.section;
+    }
+    return incoming || undefined;
+  }
+
+  // Next available flank number, warehouse-wide, never resetting and never
+  // reusing/wasting a number — the max across every location already in
+  // this warehouse (any aisle, any storage type), plus one, or 1 if none
+  // exist yet. Deliberately simple (no dedicated counter/sequence table,
+  // no row locking) — matches this codebase's existing risk tolerance for
+  // uniqueness checks elsewhere (e.g. the code-collision check just below),
+  // fine at this app's real usage pattern (one admin generating batches
+  // sequentially through the UI, not true concurrent writers).
+  private async nextFlankNumber(warehouseId: string): Promise<number> {
+    const result = await this.prisma.location.aggregate({ where: { warehouseId }, _max: { flankNumber: true } });
+    return (result._max.flankNumber ?? 0) + 1;
+  }
+
+  // Resolves which flank number a row belongs to, and whether it's the
+  // primary or secondary flank of its Aisle (for buildCode's letter
+  // suffix) — see schema.prisma's comment on Location.flankNumber for the
+  // full design. Given an Aisle's existing distinct flank numbers (0, 1, or
+  // 2 of them):
+  // - Primary request (isSecondary false): reuse the lower existing number,
+  //   or allocate a fresh one if this Aisle has none yet.
+  // - Secondary request (isSecondary true): reuse the higher existing
+  //   number if the Aisle already has two; otherwise allocate a fresh one
+  //   (becomes the Aisle's second number, whatever the primary's turns out
+  //   to be — their numbers only stay adjacent if the primary flank was
+  //   fully built out before the secondary one is added, an operational
+  //   convention, not something enforced here).
+  private async resolveFlankNumber(warehouseId: string, aisle: string, isSecondary: boolean, excludeId?: string): Promise<{ flankNumber: number; isSecondaryFlank: boolean }> {
+    const existing = await this.prisma.location.findMany({
+      where: { warehouseId, aisle, flankNumber: { not: null }, ...(excludeId ? { id: { not: excludeId } } : {}) },
+      select: { flankNumber: true },
+      distinct: ['flankNumber'],
+    });
+    const nums = existing.map((e) => e.flankNumber!).sort((a, b) => a - b);
+    if (!isSecondary) {
+      if (nums.length > 0) return { flankNumber: nums[0], isSecondaryFlank: false };
+      return { flankNumber: await this.nextFlankNumber(warehouseId), isSecondaryFlank: false };
+    }
+    if (nums.length >= 2) return { flankNumber: nums[1], isSecondaryFlank: true };
+    return { flankNumber: await this.nextFlankNumber(warehouseId), isSecondaryFlank: true };
+  }
+
   // Shared by create()/generate()/bulkImport() — validates one row's data and
   // returns everything needed to insert it (or the errors blocking it). Never
   // throws; callers decide single-record (throw) vs batch (collect) handling.
   // Same "one function, many callers" shape as SkusService.validateSkuData.
-  private async prepareRow(data: any, user: any): Promise<{ errors: string[]; warehouseId?: string; zoneType?: string; storageType?: string; categoryId?: string; fields?: Record<string, any>; code?: string }> {
+  private async prepareRow(data: any, user: any, excludeId?: string): Promise<{ errors: string[]; warehouseId?: string; zoneType?: string; storageType?: string; categoryId?: string; fields?: Record<string, any>; code?: string }> {
     const errors: string[] = [];
     const { zoneType, storageType, fields } = this.buildLocationFields(data, errors);
-    // Only generate() ever sets data.side ('B' for a secondary-flank row) —
-    // manual create/import never pass it, so fields.side stays undefined
-    // (Prisma treats that as "don't set this column") for every other path.
-    if (data.side) fields.side = String(data.side);
     const categoryId = await this.resolveCategory(data.category, errors);
     const warehouseId = data.warehouseId;
     if (!warehouseId) errors.push('Warehouse is required.');
     else await this.assertWarehouseAccess(warehouseId, user, errors);
+    let isSecondaryFlank = false;
+    if (warehouseId && fields.aisle && errors.length === 0) {
+      const resolvedSection = await this.assertSectionConsistency(warehouseId, fields.aisle, data.section, errors, excludeId);
+      if (resolvedSection) fields.section = resolvedSection;
+      // Only generate() ever sets data.isSecondary (true for a row from a
+      // Second Range or the "mirror" checkbox) — manual create/import never
+      // pass it, so every row they create resolves as the primary flank
+      // (reusing the Aisle's existing one, or starting a brand-new Aisle's
+      // first flank) unless that Aisle already has two flanks established,
+      // in which case it's ambiguous which one a hand-typed row belongs to
+      // and this defaults to the primary — a real known limitation, not an
+      // oversight (manual create is the rare/secondary path; see CLAUDE.md).
+      const resolved = await this.resolveFlankNumber(warehouseId, fields.aisle, !!data.isSecondary, excludeId);
+      fields.flankNumber = resolved.flankNumber;
+      isSecondaryFlank = resolved.isSecondaryFlank;
+    }
     if (errors.length > 0) return { errors };
-    return { errors, warehouseId, zoneType, storageType, categoryId, fields, code: this.buildCode(storageType, fields) };
+    return { errors, warehouseId, zoneType, storageType, categoryId, fields, code: this.buildCode(storageType, fields, isSecondaryFlank) };
   }
 
   async create(data: any, user: any) {
@@ -266,14 +347,13 @@ export class LocationsService {
     // "Second range" fields let one generate() call build both flanks of a
     // single aisle in one go — e.g. Rack Range 01-10 (one side) + Second Rack
     // Range 11-20 (the other side), same Aisle, same Depth for both. A row
-    // from the second range is tagged `side: 'B'` (see schema.prisma's
-    // comment on Location.side and buildCode() above) so the Plan View can
-    // tell "two real flanks" apart from "one flank" without guessing — and
-    // so the SAME rack/block number can be reused on both sides (e.g. a
+    // from the second range is tagged `isSecondary: true` so prepareRow's
+    // resolveFlankNumber (see above) can allocate/reuse the right flank
+    // number and buildCode can append the right letter suffix — this also
+    // lets the SAME rack/block number be reused on both sides (e.g. a
     // "mirror" generation, same numbers both flanks) without colliding on
-    // code, since buildCode() appends the side letter for secondary rows.
-    // Omit the second range and behavior is identical to a single-sided
-    // generation (unchanged, no `side` set at all).
+    // code. Omit the second range and behavior is identical to a
+    // single-sided generation (unchanged, isSecondary never set at all).
     let rows: Record<string, any>[];
     if (RACK_STORAGE_TYPES.includes(storageType)) {
       const rackRanges = [data.rackRange, data.rackRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
@@ -282,8 +362,8 @@ export class LocationsService {
       const depths = expandRange(depthRangeInput);
       rows = [];
       rackRanges.forEach((rackRangeStr, rangeIndex) => {
-        const side = rangeIndex === 1 ? 'B' : undefined;
-        for (const rack of expandRange(rackRangeStr)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth, side });
+        const isSecondary = rangeIndex === 1;
+        for (const rack of expandRange(rackRangeStr)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth, isSecondary });
       });
       if (rackRanges.length === 0) {
         for (const rack of expandRange(undefined)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth });
@@ -292,8 +372,8 @@ export class LocationsService {
       const blockRanges = [data.blockRange, data.blockRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
       rows = [];
       blockRanges.forEach((blockRangeStr, rangeIndex) => {
-        const side = rangeIndex === 1 ? 'B' : undefined;
-        for (const block of expandRange(blockRangeStr)) rows.push({ block, depth: data.depth, width: data.width, height: data.height, side });
+        const isSecondary = rangeIndex === 1;
+        for (const block of expandRange(blockRangeStr)) rows.push({ block, depth: data.depth, width: data.width, height: data.height, isSecondary });
       });
       if (blockRanges.length === 0) {
         for (const block of expandRange(undefined)) rows.push({ block, depth: data.depth, width: data.width, height: data.height });
@@ -459,6 +539,8 @@ export class LocationsService {
       'Storage Type': l.storageType,
       'Category': l.category?.name || '',
       'Zone': l.zone || '',
+      'Section': l.section || '',
+      'Flank #': l.flankNumber ?? '',
       'Aisle': l.aisle || '',
       'Rack': l.rack || '',
       'Level': l.level || '',
@@ -493,7 +575,7 @@ export class LocationsService {
   async update(id: string, data: any, user: any) {
     const existingLocation = await this.assertAccess(id, user);
 
-    const prepared = await this.prepareRow({ ...data, warehouseId: data.warehouseId || existingLocation.warehouseId }, user);
+    const prepared = await this.prepareRow({ ...data, warehouseId: data.warehouseId || existingLocation.warehouseId }, user, id);
     if (prepared.errors.length > 0) throw new BadRequestException(prepared.errors);
 
     const duplicate = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: prepared.warehouseId!, code: prepared.code! } } });

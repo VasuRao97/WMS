@@ -299,6 +299,16 @@ model Location {
   // (SPR/DRIVE_IN/ASRS): aisle+rack+level+bin. Ground (GROUND_FLOOR):
   // aisle+block. Stillage (STILLAGE): aisle+stack. `aisle` is the one field
   // shared by all three (every location sits along some walking aisle).
+  // Manually-named physical section — one Section per Aisle, always (a hard
+  // 1:1 invariant enforced in the service layer, not the DB — see
+  // `assertSectionConsistency` in locations.service.ts). Distinct from
+  // `zone` (a free label with no such invariant) and from the future Zone
+  // grouping-of-aisles concept (a Zone will span several Aisles; a Section
+  // never spans more than one). Typed by hand — real Section names are
+  // often tied to something physical (a building landmark, a client's own
+  // floor plan) rather than a neat sequence, so this is never auto-lettered.
+  section String?
+
   aisle String?
   rack  String? // bay/column within the rack row
   level String? // vertical tier within the rack (1 = ground)
@@ -306,15 +316,21 @@ model Location {
   block String? // ground-floor block id (e.g. block-stacked tyre pallets)
   stack String? // stillage column id (cages stacked one on another)
 
-  // Which flank of the aisle this row belongs to — set only by the range
-  // generator (generate()), never by manual create/import. Blank = primary
-  // side (the first Rack/Block Range box, or the only side for a
-  // single-sided aisle). 'B' = secondary side (a manually-typed Second
-  // Range, or the "mirror" checkbox using the same numbers as the primary).
-  // Exists purely so the Plan View can tell "genuinely one flank" apart from
-  // "two flanks" without guessing from the raw rack/block numbers alone —
-  // see CLAUDE.md's Locations/Bins Plan View notes for why guessing broke.
-  side String?
+  // Global, warehouse-wide flank number — "R1", "R2", "R3"... one per whole
+  // flank (everything on one side of one aisle), never resetting between
+  // aisles. Replaces the earlier `side` field (2026-08-25 design pass,
+  // retired the same day it was added — see CLAUDE.md's Locations/Bins
+  // Plan View notes): `side` only ever answered "primary or secondary
+  // flank of *this* aisle" for the Plan View's split logic; `flankNumber`
+  // answers that AND gives every flank a real, storable, globally unique
+  // identity — needed for the future Putaway/Pick logic to reference, not
+  // just for display. Within one aisle, whichever flank number is LOWER is
+  // the primary/right flank, the higher one (if it exists) is secondary/
+  // left — derived by comparison, not a separate flag. Allocated by
+  // `LocationsService.resolveFlankNumber()`: a brand-new flank gets the
+  // next available number warehouse-wide (never reused/wasted); a flank
+  // that already has a number (an aisle being added to later) reuses it.
+  flankNumber Int?
 
   // Dimensional fields — shared concept, meaning depends on storageType.
   // Rack: depth = position in a multi-deep drive-in lane (1=front..N=back).

@@ -58,6 +58,7 @@ export class LocationsController {
         category: r['Category'] ? String(r['Category']).trim() : undefined,
         zone: r['Zone'] ? String(r['Zone']).trim() : undefined,
         aisle: r['Aisle'] ? String(r['Aisle']).trim() : '',
+        section: r['Section'] ? String(r['Section']).trim() : undefined,
         rack: r['Rack'] ? String(r['Rack']).trim() : undefined,
         level: r['Level'] ? String(r['Level']).trim() : undefined,
         bin: r['Bin'] ? String(r['Bin']).trim() : undefined,
