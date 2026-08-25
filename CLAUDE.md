@@ -608,6 +608,45 @@ continuing the sequence at 3, with real per-depth boxes) — Level lines (`L01-L
 labels (`Section TBR`, `Section TBB`) alongside them, exactly matching the design conversation's own
 worked examples. Cleaned up via Delete All afterward.
 
+**Follow-up polish, same day:**
+- **`Zone` (the pre-existing free-text field) vs `Section` — not the same concept, even though they
+  look identical today.** `zone`'s original schema comment already said "a zone groups aisles" — the
+  "Zone" concept discussed as future work (grouping *several* Aisles, e.g. Zone 1 = Aisles 1-4) isn't
+  a new field to build, it's exactly what `zone` was already meant for; it just has no consistency
+  rule yet (unlike Section). Hierarchy: Zone (coarse, many Aisles) > Section (exactly 1 per Aisle) >
+  Aisle. Section was kept, not removed — they serve different granularities.
+- **Bin Range hidden by default in the generator**, behind a "+ This rack has multiple bins per
+  level (small-parts shelving)" checkbox (`genShowBinRange` in `LocationsPage.tsx`) — it only ever
+  applies to shelving, never to pallet racking (the common case), where it just sat unused at its
+  default `'1'`. No schema/backend change — purely hides the field and omits it from the generate
+  payload unless checked.
+- **Level labels switched from `L1`/`L2` to a real building/racking convention** — Level 1 (ground)
+  shows as `G`, everything above counts up from there (`G+1`, `G+2`...). A contiguous range starting
+  at ground shows only the top (`G+3` for levels 1-4, not "G to G+3" — confirmed explicitly, the
+  range is implied). A range that doesn't start at ground (rare) falls back to showing both ends
+  (`G+1-G+3`) rather than silently dropping that it's not a from-the-floor stack — an assumption
+  flagged, not separately confirmed. `levelLabel`/`levelRangeLabel` in `LocationsPlanView.tsx`.
+
+Verified live through the actual browser: the Bin Range field is hidden until the checkbox is
+checked, then appears; three seeded aisles (levels 1-4, level 3 alone, level 1 alone) rendered
+`G+3`, `G+2`, and `G` respectively in the Plan View, exactly as specified.
+
+**A second follow-up, same day: a flank-level callout, and a corrected "bins" label.** A Rack box's
+third line used to read "N bins" when a top-down box collapsed multiple Levels into one visual
+position — technically accurate, but confusing since it reads like the actual `Bin` field. Replaced
+with the location's **Category** name instead (more useful at a glance — "what's actually meant to be
+stored here"). Each flank also gets a callout above its whole column — `R1`, `R2`... — the same way
+the Aisle code sits above the walkway. **This is additive, not a replacement** — every box still
+shows its full `R{flank}-{rack}[-D{depth}]` label too (`R1-04`, not just `04`). A first pass wrongly
+dropped the per-box prefix on the assumption the callout made it redundant; corrected the same day
+once flagged — the callout is for scanning a whole column at a glance, the full per-box label is
+still the real identity. Applies to every storage type present (flankNumber is assigned regardless of
+Rack/Ground/Stillage), not rack-only — worth another look once Ground gets its own naming treatment,
+in case it should read differently there. Verified live (twice — once for the mistaken version, once
+after the fix): seeded a mirrored aisle with 4 levels and a Category set — confirmed `R1`/`R2`
+callouts render above the correct columns, every box shows its full `R1-01`/`R2-02`-style label (not
+just the bare number), no "bins" text appears anywhere, and the Category name shows in every box.
+
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
 record could plausibly have more than one of (barcodes, storage units, customer ship-to

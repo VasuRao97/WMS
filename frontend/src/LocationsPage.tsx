@@ -176,6 +176,11 @@ function LocationsPage() {
   const [genMirrorRack, setGenMirrorRack] = useState(false);
   const [genLevelRange, setGenLevelRange] = useState('');
   const [genBinRange, setGenBinRange] = useState('');
+  // Bin Range only applies to small-parts shelving (multiple bins per
+  // level) — pallet racking (the common case) never touches it, so it
+  // stays hidden by default rather than cluttering the form with a field
+  // that just sits at its default '1' unused. Confirmed 2026-08-25.
+  const [genShowBinRange, setGenShowBinRange] = useState(false);
   const [genDepthRange, setGenDepthRange] = useState('');
   const [genBlockRange, setGenBlockRange] = useState('');
   const [genBlockRange2, setGenBlockRange2] = useState('');
@@ -355,6 +360,7 @@ function LocationsPage() {
     setGenMirrorRack(false);
     setGenLevelRange('');
     setGenBinRange('');
+    setGenShowBinRange(false);
     setGenDepthRange('');
     setGenBlockRange('');
     setGenBlockRange2('');
@@ -385,7 +391,7 @@ function LocationsPage() {
       // code so they stay unique despite reusing the same rack numbers.
       rackRange2: genMirrorRack ? genRackRange || undefined : genRackRange2 || undefined,
       levelRange: genLevelRange || undefined,
-      binRange: genBinRange || undefined,
+      binRange: genShowBinRange ? genBinRange || undefined : undefined,
       depthRange: genDepthRange || undefined,
       blockRange: genBlockRange || undefined,
       blockRange2: genMirrorBlock ? genBlockRange || undefined : genBlockRange2 || undefined,
@@ -561,8 +567,14 @@ function LocationsPage() {
                     Mirror same numbers on other side
                   </label>
                   <input placeholder="Level Range * (e.g. 01-04)" value={genLevelRange} onChange={(e) => setGenLevelRange(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="Bin Range (default 1)" value={genBinRange} onChange={(e) => setGenBinRange(e.target.value)} style={{ width: 170 }} />
                   <input placeholder="Depth = lane depth (e.g. 2 → positions 1-2)" value={genDepthRange} onChange={(e) => setGenDepthRange(e.target.value)} style={{ width: 260 }} />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, width: '100%' }}>
+                    <input type="checkbox" checked={genShowBinRange} onChange={(e) => setGenShowBinRange(e.target.checked)} />
+                    This rack has multiple bins per level (small-parts shelving)
+                  </label>
+                  {genShowBinRange && (
+                    <input placeholder="Bin Range (default 1)" value={genBinRange} onChange={(e) => setGenBinRange(e.target.value)} style={{ width: 170 }} />
+                  )}
                 </>
               )}
 

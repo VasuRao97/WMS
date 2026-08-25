@@ -76,6 +76,30 @@ function uniqSorted(values: (string | undefined)[]): string[] {
   return Array.from(new Set(values.filter((v): v is string => !!v))).sort(naturalCompare);
 }
 
+// Real-world building/racking convention (Ground, then G+1, G+2...) instead
+// of L1/L2 — Level 1 is ground level itself, everything above counts up
+// from there. Confirmed 2026-08-25.
+function levelLabel(levelNum: number): string {
+  return levelNum === 1 ? 'G' : `G+${levelNum - 1}`;
+}
+
+// A rack position's level line: a single level shows just its own label
+// (`G`, `G+2`...). A contiguous range starting at ground shows only the TOP
+// — "goes up to G+3" implies it starts at G, no need to say both ends. A
+// range that doesn't start at ground (rare — a rack missing its lowest
+// level) falls back to showing both ends rather than silently dropping
+// that it's not a from-the-floor stack.
+function levelRangeLabel(levels: string[]): string | undefined {
+  if (levels.length === 0) return undefined;
+  const nums = levels.map((l) => parseInt(l, 10)).filter((n) => !Number.isNaN(n)).sort((a, b) => a - b);
+  if (nums.length === 0) return undefined;
+  if (nums.length === 1) return levelLabel(nums[0]);
+  const min = nums[0];
+  const max = nums[nums.length - 1];
+  if (min === 1) return levelLabel(max);
+  return `${levelLabel(min)}-${levelLabel(max)}`;
+}
+
 function posOf(l: Location): string | undefined {
   if (l.storageType === 'GROUND_FLOOR') return l.block;
   if (l.storageType === 'STILLAGE') return l.stack;
@@ -113,15 +137,24 @@ function buildCell(posVal: string, rows: Location[]): Cell {
     const boxes: Box[] = depths.map((d) => {
       const atDepth = rows.filter((r) => depthKey(r) === d);
       const levels = uniqSorted(atDepth.map((r) => r.level));
-      // "Rack Name" — see the file-level comment above. flankNumber is a
-      // hard invariant of the whole flank (every row here shares it), so
-      // the first row's value is authoritative.
+      // "Rack Name" — see the file-level comment above. Full format on
+      // every box (R1-04-D2), even though the flank number also gets its
+      // own callout above the whole column — that's an addition for
+      // scanning the column at a glance, not a replacement for the
+      // per-box identity (confirmed 2026-08-25, an earlier version wrongly
+      // dropped the R-prefix from every box when the callout was added).
       const flank = atDepth[0].flankNumber;
       const rackName = [flank != null ? `R${flank}` : 'R?', posVal, depths.length > 1 ? `D${d}` : null].filter(Boolean).join('-');
       const lines = [rackName];
-      if (levels.length === 1) lines.push(`L${levels[0]}`);
-      else if (levels.length > 1) lines.push(`L${levels[0]}-L${levels[levels.length - 1]}`);
-      if (atDepth.length > 1) lines.push(`${atDepth.length} bins`);
+      const levelLine = levelRangeLabel(levels);
+      if (levelLine) lines.push(levelLine);
+      // Category, not a "N bins" count — that count was really just "how
+      // many Levels got collapsed into this one box" (a top-down plan can't
+      // show them separately), which read as confusingly close to the
+      // actual Bin field. Category tells you what's actually meant to be
+      // stored here, which is more useful at a glance. Confirmed 2026-08-25.
+      const category = atDepth[0].category?.name;
+      if (category) lines.push(category);
       return { key: atDepth[0].id, lines, hasInactive: atDepth.some((r) => !r.isActive), width: CELL_W };
     });
     return { posVal, boxes, totalWidth: boxes.reduce((s, b) => s + b.width, 0) };
@@ -140,6 +173,8 @@ function buildCell(posVal: string, rows: Location[]): Cell {
 type AisleBlock = {
   aisleCode: string;
   section?: string;
+  rightFlankNumber?: number;
+  leftFlankNumber?: number;
   rightCells: Cell[];
   leftCells: Cell[];
   maxRightW: number;
@@ -184,6 +219,8 @@ function buildLayout(locations: Location[]): { aisles: AisleBlock[]; skipped: nu
     return {
       aisleCode,
       section,
+      rightFlankNumber: primaryFlank,
+      leftFlankNumber: secondaryFlank,
       rightCells,
       leftCells,
       maxRightW: Math.max(CELL_W, ...rightCells.map((c) => c.totalWidth)),
@@ -332,6 +369,32 @@ function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[
                       fill="#222"
                     >
                       {aisle.aisleCode}
+                    </text>
+                  )}
+                  {aisle.rightFlankNumber != null && (
+                    <text
+                      x={walkwayRightX + aisle.maxRightW / 2}
+                      y={PAD_TOP - 10}
+                      textAnchor="middle"
+                      fontSize={12}
+                      fontWeight="bold"
+                      fontFamily="sans-serif"
+                      fill="#222"
+                    >
+                      R{aisle.rightFlankNumber}
+                    </text>
+                  )}
+                  {aisle.leftFlankNumber != null && (
+                    <text
+                      x={walkwayLeftX - aisle.maxLeftW / 2}
+                      y={PAD_TOP - 10}
+                      textAnchor="middle"
+                      fontSize={12}
+                      fontWeight="bold"
+                      fontFamily="sans-serif"
+                      fill="#222"
+                    >
+                      R{aisle.leftFlankNumber}
                     </text>
                   )}
                   <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} />
