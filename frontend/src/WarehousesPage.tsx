@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 
 type StorageType = {
   id: string;
@@ -25,6 +25,8 @@ type Warehouse = {
   threePlName?: string;
   noOfDocks?: number;
   areaSqFt?: number;
+  contactName?: string;
+  contactPhone?: string;
   isActive: boolean;
   storageTypes: StorageType[];
   dispatchFlows: DispatchFlow[];
@@ -103,6 +105,8 @@ function WarehousesPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
   const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [showList, setShowList] = useState(true);
 
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
@@ -323,6 +327,35 @@ function WarehousesPage() {
     refreshAll();
   };
 
+  const warehouseStats = {
+    total: warehouses.length,
+    active: warehouses.filter((w) => w.isActive).length,
+    inactive: warehouses.filter((w) => !w.isActive).length,
+  };
+
+  // Node-wise count — one row per Node Type actually present, plus a Total
+  // row, same shape as the Storage Type Mapping table below it.
+  const nodeTypeMatrix = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const w of warehouses) {
+      const label = labelFor(NODE_TYPE_OPTIONS, w.nodeType) || 'Unspecified';
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    const rows = Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    return { rows, total: warehouses.length };
+  }, [warehouses]);
+
+  const filteredWarehouses = warehouses.filter((w) => {
+    const q = search.toLowerCase();
+    return (
+      w.code.toLowerCase().includes(q) ||
+      w.name.toLowerCase().includes(q) ||
+      (w.city || '').toLowerCase().includes(q) ||
+      labelFor(NODE_TYPE_OPTIONS, w.nodeType).toLowerCase().includes(q) ||
+      (w.contactName || '').toLowerCase().includes(q)
+    );
+  });
+
   return (
     <div style={{ maxWidth: 1100, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Warehouse Master</h1>
@@ -433,52 +466,36 @@ function WarehousesPage() {
       </div>
       )}
 
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 24 }}>
+        <div style={cardStyle}><strong>{warehouseStats.total}</strong><div>Total Warehouses</div></div>
+        <div style={cardStyle}><strong>{warehouseStats.active}</strong><div>Active</div></div>
+        <div style={cardStyle}><strong>{warehouseStats.inactive}</strong><div>Inactive</div></div>
+      </div>
+
+      <h2 style={{ marginTop: 32 }}>Warehouses by Node Type</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
         <thead>
-          <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
-            <th style={{ padding: 8 }}>Code</th>
-            <th style={{ padding: 8 }}>Node Type</th>
-            <th style={{ padding: 8 }}>City</th>
-            <th style={{ padding: 8 }}>3PL Name</th>
-            <th style={{ padding: 8 }}>Storage</th>
-            <th style={{ padding: 8 }}>Dispatch Flows</th>
-            <th style={{ padding: 8 }}>Status</th>
-            <th style={{ padding: 8 }}>Actions</th>
+          <tr>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Node Type</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Count</th>
           </tr>
         </thead>
         <tbody>
-          {warehouses.map((w) => (
-            <tr key={w.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
-              <td style={{ padding: 8, fontWeight: 'bold' }}>{w.code}</td>
-              <td style={{ padding: 8 }}>{labelFor(NODE_TYPE_OPTIONS, w.nodeType)}</td>
-              <td style={{ padding: 8 }}>{w.city || '—'}</td>
-              <td style={{ padding: 8 }}>{w.threePlName || '—'}</td>
-              <td style={{ padding: 8 }}>
-                {w.storageTypes.length
-                  ? w.storageTypes.map((s) => `${labelFor(STORAGE_TYPE_OPTIONS, s.storageType)}=${s.palletPositions}`).join(', ')
-                  : '—'}
-              </td>
-              <td style={{ padding: 8 }}>
-                {w.dispatchFlows.length ? w.dispatchFlows.map((f) => labelFor(DISPATCH_FLOW_OPTIONS, f.flowType)).join(', ') : '—'}
-              </td>
-              <td style={{ padding: 8 }}>{w.isActive ? 'Active' : 'Inactive'}</td>
-              <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
-                <button onClick={() => handleDeactivate(w.id, w.isActive)}>
-                  {w.isActive ? 'Deactivate' : 'Reactivate'}
-                </button>
-                <button onClick={() => handleDelete(w.id, w.code)} style={{ marginLeft: 6, color: 'crimson' }}>
-                  Delete
-                </button>
-              </td>
+          {nodeTypeMatrix.rows.map(([label, count]) => (
+            <tr key={label}>
+              <td style={{ textAlign: 'center', padding: '4px 8px' }}>{label}</td>
+              <td style={{ textAlign: 'center', padding: '4px 8px' }}>{count}</td>
             </tr>
           ))}
+          <tr style={{ borderTop: '2px solid #ccc' }}>
+            <td style={{ textAlign: 'center', padding: '4px 8px' }}><strong>Total</strong></td>
+            <td style={{ textAlign: 'center', padding: '4px 8px' }}><strong>{nodeTypeMatrix.total}</strong></td>
+          </tr>
         </tbody>
       </table>
 
-      {warehouses.length === 0 && <p style={{ marginTop: 16 }}>No warehouses found.</p>}
-
       <h2 style={{ marginTop: 32 }}>Local / Upc Split Analysis</h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
         <thead>
           <tr>
             <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Warehouse</th>
@@ -548,8 +565,85 @@ function WarehousesPage() {
       {mappingSummary.filter((s) => s.rows.length > 0).length === 0 && (
         <p style={{ marginTop: -20, marginBottom: 32 }}>No Storage Type breakdown data to cross-check yet.</p>
       )}
+
+      <h2 style={{ marginBottom: 8, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowList(!showList)}>
+        {showList ? '▾' : '▸'} List of Warehouses
+      </h2>
+
+      {showList && (
+        <>
+          <input
+            placeholder="Search by code, name, city, node type, or manager..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: '100%', padding: 8, marginBottom: 16, boxSizing: 'border-box' }}
+          />
+
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
+            <thead>
+              <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
+                <th style={{ padding: 8 }}>Code</th>
+                <th style={{ padding: 8 }}>Node Type</th>
+                <th style={{ padding: 8 }}>City</th>
+                <th style={{ padding: 8 }}>3PL Name</th>
+                <th style={{ padding: 8 }}>Warehouse Manager</th>
+                <th style={{ padding: 8 }}>Storage</th>
+                <th style={{ padding: 8 }}>Dispatch Flows</th>
+                <th style={{ padding: 8 }}>Status</th>
+                <th style={{ padding: 8 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredWarehouses.map((w) => (
+                <tr key={w.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
+                  <td style={{ padding: 8, fontWeight: 'bold' }}>{w.code}</td>
+                  <td style={{ padding: 8 }}>{labelFor(NODE_TYPE_OPTIONS, w.nodeType)}</td>
+                  <td style={{ padding: 8 }}>{w.city || '—'}</td>
+                  <td style={{ padding: 8 }}>{w.threePlName || '—'}</td>
+                  <td style={{ padding: 8 }}>
+                    {w.contactName ? (
+                      <span title={w.contactPhone ? `Phone: ${w.contactPhone}` : 'No phone number on file'} style={{ cursor: 'default', borderBottom: '1px dotted #888' }}>
+                        {w.contactName}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    {w.storageTypes.length
+                      ? w.storageTypes.map((s) => `${labelFor(STORAGE_TYPE_OPTIONS, s.storageType)}=${s.palletPositions}`).join(', ')
+                      : '—'}
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    {w.dispatchFlows.length ? w.dispatchFlows.map((f) => labelFor(DISPATCH_FLOW_OPTIONS, f.flowType)).join(', ') : '—'}
+                  </td>
+                  <td style={{ padding: 8 }}>{w.isActive ? 'Active' : 'Inactive'}</td>
+                  <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
+                    <button onClick={() => handleDeactivate(w.id, w.isActive)}>
+                      {w.isActive ? 'Deactivate' : 'Reactivate'}
+                    </button>
+                    <button onClick={() => handleDelete(w.id, w.code)} style={{ marginLeft: 6, color: 'crimson' }}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {filteredWarehouses.length === 0 && <p style={{ marginTop: 16 }}>No warehouses found.</p>}
+        </>
+      )}
     </div>
   );
 }
 
 export default WarehousesPage;
+
+const cardStyle: React.CSSProperties = {
+  border: '1px solid #ccc',
+  borderRadius: 8,
+  padding: '12px 16px',
+  textAlign: 'center',
+  minWidth: 100,
+};
