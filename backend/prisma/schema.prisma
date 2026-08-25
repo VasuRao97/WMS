@@ -306,6 +306,16 @@ model Location {
   block String? // ground-floor block id (e.g. block-stacked tyre pallets)
   stack String? // stillage column id (cages stacked one on another)
 
+  // Which flank of the aisle this row belongs to — set only by the range
+  // generator (generate()), never by manual create/import. Blank = primary
+  // side (the first Rack/Block Range box, or the only side for a
+  // single-sided aisle). 'B' = secondary side (a manually-typed Second
+  // Range, or the "mirror" checkbox using the same numbers as the primary).
+  // Exists purely so the Plan View can tell "genuinely one flank" apart from
+  // "two flanks" without guessing from the raw rack/block numbers alone —
+  // see CLAUDE.md's Locations/Bins Plan View notes for why guessing broke.
+  side String?
+
   // Dimensional fields — shared concept, meaning depends on storageType.
   // Rack: depth = position in a multi-deep drive-in lane (1=front..N=back).
   // Ground: depth/width = the block's footprint (e.g. 4 deep x 4 wide);

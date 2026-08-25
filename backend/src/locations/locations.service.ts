@@ -129,14 +129,21 @@ export class LocationsService {
     return { zoneType, storageType, fields };
   }
 
+  // `side` (set only by generate(), see below) distinguishes the two flanks
+  // of an aisle when they reuse the SAME rack/block number — e.g. "mirror"
+  // both sides with Rack 01-15 on each. The primary side never gets a
+  // suffix (existing codes are untouched); the secondary side's letter is
+  // appended right after the rack/block number so codes stay unique even
+  // when the identifier itself is identical on both flanks.
   private buildCode(storageType: string, f: Record<string, any>): string {
+    const sideSuffix = f.side ? String(f.side) : '';
     if (RACK_STORAGE_TYPES.includes(storageType)) {
-      return [f.aisle, f.rack ? `R${f.rack}` : null, f.level ? `L${f.level}` : null, f.bin ? `B${f.bin}` : null, f.depth ? `D${f.depth}` : null]
+      return [f.aisle, f.rack ? `R${f.rack}${sideSuffix}` : null, f.level ? `L${f.level}` : null, f.bin ? `B${f.bin}` : null, f.depth ? `D${f.depth}` : null]
         .filter(Boolean)
         .join('-');
     }
     if (storageType === 'GROUND_FLOOR') {
-      return ['GF', f.aisle, f.block ? `BLK${f.block}` : null].filter(Boolean).join('-');
+      return ['GF', f.aisle, f.block ? `BLK${f.block}${sideSuffix}` : null].filter(Boolean).join('-');
     }
     if (storageType === 'STILLAGE') {
       return ['ST', f.aisle, f.stack].filter(Boolean).join('-');
@@ -193,6 +200,10 @@ export class LocationsService {
   private async prepareRow(data: any, user: any): Promise<{ errors: string[]; warehouseId?: string; zoneType?: string; storageType?: string; categoryId?: string; fields?: Record<string, any>; code?: string }> {
     const errors: string[] = [];
     const { zoneType, storageType, fields } = this.buildLocationFields(data, errors);
+    // Only generate() ever sets data.side ('B' for a secondary-flank row) —
+    // manual create/import never pass it, so fields.side stays undefined
+    // (Prisma treats that as "don't set this column") for every other path.
+    if (data.side) fields.side = String(data.side);
     const categoryId = await this.resolveCategory(data.category, errors);
     const warehouseId = data.warehouseId;
     if (!warehouseId) errors.push('Warehouse is required.');
@@ -254,11 +265,15 @@ export class LocationsService {
 
     // "Second range" fields let one generate() call build both flanks of a
     // single aisle in one go — e.g. Rack Range 01-10 (one side) + Second Rack
-    // Range 11-20 (the other side), same Aisle, same Depth for both, since a
-    // rack/block number already disambiguates the two sides (real warehouses
-    // number both flanks of an aisle continuously, never reusing a number) —
-    // no "side" field needed on Location itself. Omit the second range and
-    // behavior is identical to a single-sided generation (unchanged).
+    // Range 11-20 (the other side), same Aisle, same Depth for both. A row
+    // from the second range is tagged `side: 'B'` (see schema.prisma's
+    // comment on Location.side and buildCode() above) so the Plan View can
+    // tell "two real flanks" apart from "one flank" without guessing — and
+    // so the SAME rack/block number can be reused on both sides (e.g. a
+    // "mirror" generation, same numbers both flanks) without colliding on
+    // code, since buildCode() appends the side letter for secondary rows.
+    // Omit the second range and behavior is identical to a single-sided
+    // generation (unchanged, no `side` set at all).
     let rows: Record<string, any>[];
     if (RACK_STORAGE_TYPES.includes(storageType)) {
       const rackRanges = [data.rackRange, data.rackRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
@@ -266,14 +281,22 @@ export class LocationsService {
       const bins = expandRange(data.binRange);
       const depths = expandRange(depthRangeInput);
       rows = [];
-      for (const rackRangeStr of rackRanges.length ? rackRanges : [undefined]) {
-        for (const rack of expandRange(rackRangeStr)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth });
+      rackRanges.forEach((rackRangeStr, rangeIndex) => {
+        const side = rangeIndex === 1 ? 'B' : undefined;
+        for (const rack of expandRange(rackRangeStr)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth, side });
+      });
+      if (rackRanges.length === 0) {
+        for (const rack of expandRange(undefined)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth });
       }
     } else if (storageType === 'GROUND_FLOOR') {
       const blockRanges = [data.blockRange, data.blockRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
       rows = [];
-      for (const blockRangeStr of blockRanges.length ? blockRanges : [undefined]) {
-        for (const block of expandRange(blockRangeStr)) rows.push({ block, depth: data.depth, width: data.width, height: data.height });
+      blockRanges.forEach((blockRangeStr, rangeIndex) => {
+        const side = rangeIndex === 1 ? 'B' : undefined;
+        for (const block of expandRange(blockRangeStr)) rows.push({ block, depth: data.depth, width: data.width, height: data.height, side });
+      });
+      if (blockRanges.length === 0) {
+        for (const block of expandRange(undefined)) rows.push({ block, depth: data.depth, width: data.width, height: data.height });
       }
     } else {
       // STILLAGE — no "second side" concept; a stillage stack isn't a
