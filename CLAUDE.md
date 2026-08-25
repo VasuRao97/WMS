@@ -474,6 +474,140 @@ two distinct x-positions (a real left/right split) for the mirrored aisle. Clean
 afterward in both passes (no company-delete endpoint exists, so the empty throwaway companies/logins
 are left behind, same as prior sessions).
 
+**Two more corrections caught looking at real generated data** (same day, 2026-08-25, after the
+`side` fix above):
+- **Aisle growth direction was backwards.** New aisles were being added to the *right* of the
+  previous one; they should grow to the *left*, same direction the corner-anchoring already governs
+  everywhere else (row 0 nearest the corner, right flank = lower numbers). Fixed by placing aisles
+  in a single right-to-left pass — Aisle 1 (lowest code) now sits closest to the bottom-right corner,
+  each further aisle's right edge sits `AISLE_GAP` left of the previous aisle's left edge.
+- **A multi-deep Rack lane drew as one box with "Depth 1-3" as text**, which reads as a single pallet
+  even though a 3-deep lane is 3 real, separately-addressable `Location` rows. Fixed: a Rack
+  position now draws one box **per distinct depth value** (side by side, extending further from the
+  aisle the deeper it goes), each box showing just its own `D{n}`/Level text — single-deep racks are
+  unaffected (still one box, no `D1` label, since depths.length is 1). `Cell` went from a single
+  fixed-size box to a `boxes[]` array with a `totalWidth`, and the per-aisle/per-flank width used for
+  layout is now the *max* cell width in that flank rather than a constant — cells can be different
+  widths within the same flank now (a 1-deep and a 3-deep rack side by side), anchored so they still
+  align flush against the walkway on the near edge and only the far edge is ragged.
+- **Deliberately left unchanged for now**: Ground/Floor and Stillage still show `depth×width×height`
+  as text in one box, not sub-boxes — unlike Rack, their depth is a dimension on a single database
+  row (the unique-code constraint on `GF-{aisle}-BLK{block}` guarantees exactly one row per block),
+  not multiple separate rows, so a sub-box split there would be purely decorative rather than
+  one-box-per-real-record. Whether that should still visually expand is an open question, raised and
+  parked, not decided against.
+
+Verified against fresh throwaway data (a single-sided 15-rack aisle coded `"1"`, a 3-deep mirrored
+Drive-in aisle coded `"2"`) via the real API, then loaded through the actual browser: confirmed
+Aisle `"1"`'s label sits near the SVG's right edge and Aisle `"2"`'s sits well to its left; confirmed
+exactly 45 boxes total (15 single-depth + 5 positions × 3 depths × 2 flanks); confirmed the 3 depth
+boxes per position sit at three evenly-spaced x-positions (110px apart, matching box width) extending
+outward from the aisle on both flanks. Cleaned up via Delete All afterward.
+
+### Locations/Bins: Section field (2026-08-25)
+`Location.section` — a manually-typed physical section name, added specifically for the Plan View
+once real generated data made clear that `aisle` alone (often a bare number like `"1"`) isn't a
+human-friendly enough label, and that a proper naming layer needed to be **stored**, not just
+computed for display, so it can also show up in exports and be used for reconciling. Distinct from
+`zone` (an existing free-text label with no consistency rule) and from a future **Zone** concept
+(grouping *several* Aisles together, e.g. Zone 1 = Aisles 1-4 — raised in the same conversation,
+explicitly not built yet) — `section` is a **1:1 invariant with Aisle**, one Section per Aisle
+always, never spanning more than one.
+
+**Deliberately manual, not auto-lettered.** An early proposal was to auto-assign A/B/C by the Plan
+View's own left-to-right aisle order — rejected: a real Section name is often tied to something
+physical (a building landmark, a client's own floor plan already in use) rather than a neat
+alphabetical sequence, so it has to be typed, not computed.
+
+**The 1:1 invariant is enforced in the service layer, not the DB** — `assertSectionConsistency` in
+`locations.service.ts`, called from `prepareRow` (so `create()`/`generate()`/`bulkImport()`/
+`update()` all go through it, same "one function, many callers" shape as everywhere else in this
+module). Given a Warehouse + Aisle + an incoming Section value: no existing row on that Aisle has a
+Section yet → the incoming value is used as-is (including blank). An existing row already has one →
+blank incoming value **auto-inherits** it (so you don't have to retype a Section on every later
+generate/import batch for the same Aisle), a matching value (case-insensitively) is accepted and
+normalized to the existing casing, a genuinely different value is rejected with a clear error naming
+the conflict. `update()` passes its own `id` as an `excludeId` so editing a location's *own* Section
+doesn't spuriously compare against itself and permanently block ever changing it.
+
+Wired through the same places `zone` already was: the generator form, manual create/edit form, Excel
+import/export (`Section` column, same "only fill what applies" convention), search/filter, and the
+Plan View — each aisle strip now shows `Section {name}` prominently with `Aisle {code}` as smaller
+secondary text, falling back to just the Aisle code alone (unchanged from before) for an aisle that
+has no Section set yet.
+
+Verified via a throwaway-company test script (13/13): first batch on an Aisle sets its Section;
+a second batch on the same Aisle with Section left blank auto-inherits it; an explicit matching value
+succeeds; a case-different value (`"a"` vs `"A"`) is accepted and normalized; a genuinely conflicting
+value is blocked with the right error message; a different Aisle gets its own independent Section
+freely; manual create both inherits correctly and is blocked on a genuine conflict; the export
+endpoint responds. Then re-verified live through the actual browser: Table View's new Section column,
+the edit form correctly pre-filling an existing Section, and the Plan View showing "Section A" /
+"Aisle 1", "Section B" / "Aisle 2" for two seeded aisles and a plain "3" (no special treatment) for a
+third aisle that was deliberately generated with no Section at all, confirming the graceful fallback.
+
+### Locations/Bins: Rack Name and `flankNumber` — `side` retired (2026-08-25)
+Same day as Section, a follow-up conversation nailed down a real physical naming scheme for
+individual Rack positions (not just Aisles) — "Rack Name", e.g. `R1-04` or `R1-04-D2` for a
+multi-deep box — and in the process **retired the `side` field** (added earlier that same day) in
+favor of a proper stored `Location.flankNumber` (nullable int). This section is the terse version;
+schema.prisma's comment on `Location.flankNumber` and `LocationsPlanView.tsx`'s file-level comment
+carry the full reasoning.
+
+**Why `side` wasn't enough.** `side` (blank/`'B'`) only ever answered "primary or secondary flank of
+*this* aisle" — good enough for the Plan View's left/right split, but Rack Name needed something
+with a real, globally-unique identity (`R1`, `R2`, `R3`...) that Putaway/Pick logic could reference
+later, not just a local flag. `flankNumber` replaces it entirely: within one aisle, whichever number
+is lower is the primary/right flank, the higher (if it exists) is secondary/left — derived by
+comparison, no separate flag needed. `side` was dropped from the schema the same day it was added
+(only ever used by throwaway test data — confirmed no real data depended on it before dropping).
+
+**Allocation is warehouse-wide and never wastes a number** (`LocationsService.resolveFlankNumber` +
+`nextFlankNumber`) — confirmed explicitly, not assumed: a single-sided aisle consumes exactly one
+number, the next aisle's first flank continues right on from there (no reserved-but-unused slot). A
+flank that already has a number (adding to an aisle already built) reuses it; a brand-new flank gets
+`MAX(flankNumber) + 1` across the whole warehouse. **Two flanks of the same aisle are only guaranteed
+adjacent if you finish one aisle before starting the next** — confirmed as an operational convention
+("we will ask them to start from scratch, or only add new aisles to the next section"), not something
+the system enforces; building a second flank onto an old aisle much later, after other aisles were
+generated in between, will *not* backfill an adjacent number, by design.
+
+**Rack Name format**: `R{flankNumber}-{rack}[-D{depth}]` — e.g. `R1-04` (single-deep), `R1-04-D2`
+(the 2nd position in a multi-deep lane). Deliberately excludes Level — a top-down plan can't spatially
+show height, so Level stays separate smaller text below the name (unchanged from before), not baked
+into the label. `buildCode()` still appends a plain `B` letter for a secondary flank's code (the
+*database* code format is untouched — `A01-R05-L02-B1` vs `A01-R05B-L02-B1` exactly as before,
+computed from a transient `isSecondaryFlank` boolean rather than the retired `side` field); Rack Name
+is a separate, newer, more human-facing label built from `flankNumber` and shown in the Plan View,
+not a replacement for the existing `code`.
+
+**Manual create's known gap.** The generator always knows primary vs secondary (whichever range box
+you typed into); manual single-record create has no such choice. If an Aisle already has both flanks
+established and a manual create doesn't specify one, it defaults to the primary (lower) flank — an
+accepted, documented limitation given manual create is already the rare/secondary path (bulk
+generation is the primary one for real scale, per existing convention above).
+
+**"Add Location manually" (the blank-create entry point) was removed from the frontend the same
+day**, per direct instruction — "let's avoid having add location manually... both do same tasks why
+to confuse all." The range generator is now the only way to create a Location; **Edit was
+deliberately kept** (a distinct, still-needed maintenance operation, not a duplicate of generation) —
+`LocationsPage.tsx`'s form now only ever opens via `startEdit()`, `handleSubmit` always PATCHes, and
+`resetForm()` now also closes the form (previously it stayed open for the next manual add, which no
+longer applies). The backend's `POST /locations` endpoint itself was left functional/untouched — only
+the frontend's blank-create UI entry point was removed.
+
+Verified via a throwaway-company test script (9/9): single-sided allocates flank 1; adding a mirrored
+second flank to that same aisle allocates flank 2 (no gap); a *different* aisle's single flank
+continues at 3 (no reset); code suffixes match (`B` only on the higher/secondary flank); all codes
+stay unique; manual create on an aisle with two established flanks correctly defaults to the primary.
+Then re-verified live through the actual browser: confirmed "Add Location manually" is gone from the
+UI while every row's "Edit" button still works, and confirmed the Plan View renders `R1-01`..`R1-04`
+(primary flank), `R2-01`..`R2-04` (mirrored secondary flank, same rack numbers as primary, different
+flank number), and `R3-01-D1`/`D2` through `R3-03-D1`/`D2` (a second aisle's single flank correctly
+continuing the sequence at 3, with real per-depth boxes) — Level lines (`L01-L04`, `L01`) and Section
+labels (`Section TBR`, `Section TBB`) alongside them, exactly matching the design conversation's own
+worked examples. Cleaned up via Delete All afterward.
+
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
 record could plausibly have more than one of (barcodes, storage units, customer ship-to
