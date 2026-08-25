@@ -36,4 +36,12 @@ export class GateEntriesController {
   gateOut(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
     return this.gateEntriesService.gateOut(id, body, user);
   }
+
+  // Lightweight stand-in for real Dock Scheduling — see
+  // GateEntriesService.dockIn's comment.
+  @Patch(':id/dock-in')
+  @Roles(...GATE_YARD_OPERATE_ROLES)
+  dockIn(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.gateEntriesService.dockIn(id, user);
+  }
 }

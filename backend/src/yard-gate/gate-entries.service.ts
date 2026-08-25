@@ -19,8 +19,10 @@ const GATE_ENTRY_INCLUDE = {
   warehouse: { select: { id: true, code: true, name: true } },
   vehicle: { select: { id: true, vehicleNumber: true, vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } } },
   driver: { select: { id: true, name: true, phone: true } },
+  yardSlot: { select: { id: true, code: true } },
   gateInBy: { select: { id: true, name: true } },
   gateOutBy: { select: { id: true, name: true } },
+  dockedInBy: { select: { id: true, name: true } },
   documentChecks: true,
 };
 
@@ -137,14 +139,44 @@ export class GateEntriesService {
     return result;
   }
 
+  // Yard slot auto-assignment at Gate In (2026-08-26 Yard Management pass).
+  // A warehouse with zero YardSlot rows (no `yardCapacity` set at creation —
+  // a small facility with no on-site parking) is a no-op here: no slot, no
+  // warning, no block — Yard Management simply doesn't apply to it, but
+  // Gate In/Out itself proceeds exactly as normal (confirmed with the
+  // client). Only a warehouse that DOES have slots, all currently occupied,
+  // triggers the "yard full" warning/block path.
+  private async assignYardSlot(warehouseId: string, companyId: string, errors: string[]): Promise<{ yardSlotId?: string; yardFullWarning: boolean }> {
+    const totalSlots = await this.prisma.yardSlot.count({ where: { warehouseId, isActive: true } });
+    if (totalSlots === 0) return { yardFullWarning: false };
+
+    const freeSlot = await this.prisma.yardSlot.findFirst({
+      where: { warehouseId, isActive: true, status: 'AVAILABLE' },
+      orderBy: { createdAt: 'asc' }, // any free slot works — which exact one doesn't matter (confirmed)
+    });
+    if (freeSlot) return { yardSlotId: freeSlot.id, yardFullWarning: false };
+
+    // Yard is full — always warn; only hard-block if this company opted in.
+    const company = await this.prisma.company.findUnique({ where: { id: companyId } });
+    if (company?.blockGateInWhenYardFull) {
+      errors.push('The yard is at full capacity — no parking slots available. This vehicle cannot be gated in until a slot frees up.');
+    }
+    return { yardFullWarning: true };
+  }
+
   async create(data: any, user: any) {
     if (!user.companyId) {
       throw new ForbiddenException('Super admin accounts cannot log gate entries directly — log in as a company admin instead.');
     }
     const errors: string[] = [];
     const warehouseId = data.warehouseId;
+    let companyId: string | undefined;
     if (!warehouseId) errors.push('Warehouse is required.');
-    else await this.assertWarehouseAccess(warehouseId, user, errors);
+    else {
+      await this.assertWarehouseAccess(warehouseId, user, errors);
+      const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { companyId: true } });
+      companyId = warehouse?.companyId;
+    }
 
     const vehicleId = await this.resolveVehicle(data.vehicleId, user, errors);
     const driverId = await this.resolveDriver(data.driverId, user, errors);
@@ -161,27 +193,40 @@ export class GateEntriesService {
 
     const documentChecks = this.validateDocumentChecks(data.documentChecks, errors);
 
+    let yardResult: { yardSlotId?: string; yardFullWarning: boolean } = { yardFullWarning: false };
+    if (warehouseId && companyId && errors.length === 0) {
+      yardResult = await this.assignYardSlot(warehouseId, companyId, errors);
+    }
+
     if (errors.length > 0) throw new BadRequestException(errors);
 
-    const created = await this.prisma.vehicleGateEntry.create({
-      data: {
-        warehouse: { connect: { id: warehouseId } },
-        vehicle: { connect: { id: vehicleId } },
-        driver: { connect: { id: driverId } },
-        transporterName: data.transporterName ? String(data.transporterName).trim() : undefined,
-        purpose: purpose as any,
-        referenceNo: data.referenceNo ? String(data.referenceNo).trim() : undefined,
-        gateInBy: { connect: { id: user.userId } },
-        grossWeightKg: grossWeightKg,
-        grossWeighedAt: grossWeightKg !== undefined ? new Date() : undefined,
-        documentChecks: documentChecks.length
-          ? { create: documentChecks.map((d) => ({ documentType: d.documentType as any, status: d.status as any, note: d.note })) }
-          : undefined,
-      },
-      include: GATE_ENTRY_INCLUDE,
+    const created = await this.prisma.$transaction(async (tx) => {
+      const entry = await tx.vehicleGateEntry.create({
+        data: {
+          warehouse: { connect: { id: warehouseId } },
+          vehicle: { connect: { id: vehicleId } },
+          driver: { connect: { id: driverId } },
+          transporterName: data.transporterName ? String(data.transporterName).trim() : undefined,
+          purpose: purpose as any,
+          referenceNo: data.referenceNo ? String(data.referenceNo).trim() : undefined,
+          destinationCity: data.destinationCity ? String(data.destinationCity).trim() : undefined,
+          yardSlot: yardResult.yardSlotId ? { connect: { id: yardResult.yardSlotId } } : undefined,
+          gateInBy: { connect: { id: user.userId } },
+          grossWeightKg: grossWeightKg,
+          grossWeighedAt: grossWeightKg !== undefined ? new Date() : undefined,
+          documentChecks: documentChecks.length
+            ? { create: documentChecks.map((d) => ({ documentType: d.documentType as any, status: d.status as any, note: d.note })) }
+            : undefined,
+        },
+        include: GATE_ENTRY_INCLUDE,
+      });
+      if (yardResult.yardSlotId) {
+        await tx.yardSlot.update({ where: { id: yardResult.yardSlotId }, data: { status: 'OCCUPIED' } });
+      }
+      return entry;
     });
 
-    return this.attachNetWeight(created);
+    return { ...this.attachNetWeight(created), yardFullWarning: yardResult.yardFullWarning };
   }
 
   async findAll(user: any) {
@@ -231,8 +276,33 @@ export class GateEntriesService {
         driver: { connect: { id: driverId } },
         transporterName: data.transporterName !== undefined ? String(data.transporterName).trim() || null : undefined,
         referenceNo: data.referenceNo !== undefined ? String(data.referenceNo).trim() || null : undefined,
+        destinationCity: data.destinationCity !== undefined ? String(data.destinationCity).trim() || null : undefined,
       },
       include: GATE_ENTRY_INCLUDE,
+    });
+
+    return this.attachNetWeight(updated);
+  }
+
+  // A deliberately lightweight stand-in for real Dock Scheduling (not built
+  // yet) — just marks "this vehicle left the yard," frees its slot, and
+  // stops here. No dock door selection, no appointment logic — that's a
+  // separate future feature. See schema.prisma's comment on `dockedInAt`.
+  async dockIn(id: string, user: any) {
+    const existing = await this.assertAccess(id, user);
+    if (existing.dockedInAt) throw new BadRequestException('This vehicle has already been marked docked in.');
+    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const entry = await tx.vehicleGateEntry.update({
+        where: { id },
+        data: { dockedInAt: new Date(), dockedInBy: { connect: { id: user.userId } } },
+        include: GATE_ENTRY_INCLUDE,
+      });
+      if (existing.yardSlotId) {
+        await tx.yardSlot.update({ where: { id: existing.yardSlotId }, data: { status: 'AVAILABLE' } });
+      }
+      return entry;
     });
 
     return this.attachNetWeight(updated);
@@ -276,18 +346,29 @@ export class GateEntriesService {
 
     if (errors.length > 0) throw new BadRequestException(errors);
 
-    const updated = await this.prisma.vehicleGateEntry.update({
-      where: { id },
-      data: {
-        gateOutAt: new Date(),
-        gateOutBy: { connect: { id: user.userId } },
-        tareWeightKg,
-        tareWeighedAt: tareWeightKg !== undefined ? new Date() : undefined,
-        eWayBillNo,
-        eWayBillGeneratedAt: eWayBillNo !== undefined ? new Date() : undefined,
-        materialReceivedConfirmed,
-      },
-      include: GATE_ENTRY_INCLUDE,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const entry = await tx.vehicleGateEntry.update({
+        where: { id },
+        data: {
+          gateOutAt: new Date(),
+          gateOutBy: { connect: { id: user.userId } },
+          tareWeightKg,
+          tareWeighedAt: tareWeightKg !== undefined ? new Date() : undefined,
+          eWayBillNo,
+          eWayBillGeneratedAt: eWayBillNo !== undefined ? new Date() : undefined,
+          materialReceivedConfirmed,
+        },
+        include: GATE_ENTRY_INCLUDE,
+      });
+      // Safety net: a vehicle that never got marked "Docked In" (e.g. loaded/
+      // unloaded straight from the yard, or an operator just forgot the
+      // step) must still free its slot once it's actually gone — otherwise
+      // the slot leaks as permanently occupied. If dockIn() already ran,
+      // the slot is already AVAILABLE and this is a harmless no-op.
+      if (existing.yardSlotId) {
+        await tx.yardSlot.update({ where: { id: existing.yardSlotId }, data: { status: 'AVAILABLE' } });
+      }
+      return entry;
     });
 
     return this.attachNetWeight(updated);

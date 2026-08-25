@@ -49,6 +49,10 @@ export class WarehousesService {
     if (data.areaSqFt !== undefined && data.areaSqFt !== null && data.areaSqFt !== '' && Number(data.areaSqFt) <= 0) {
       errors.push('Area sq ft must be a positive number.');
     }
+    if (data.yardCapacity !== undefined && data.yardCapacity !== null && data.yardCapacity !== '') {
+      const n = Number(data.yardCapacity);
+      if (!Number.isInteger(n) || n < 0) errors.push('Parking Slots must be a whole number, 0 or more.');
+    }
     if (data.latitude !== undefined && data.latitude !== null && data.latitude !== '' && isNaN(Number(data.latitude))) {
       errors.push('Latitude must be a number.');
     }
@@ -148,6 +152,7 @@ export class WarehousesService {
       threePlName: data.threePlName || undefined,
       noOfDocks: toNumberOrUndefined(data.noOfDocks),
       areaSqFt: toNumberOrUndefined(data.areaSqFt),
+      yardCapacity: toNumberOrUndefined(data.yardCapacity),
       gstin: data.gstin || undefined,
       workingDays: data.workingDays || undefined,
       workingHours: data.workingHours || undefined,
@@ -157,6 +162,18 @@ export class WarehousesService {
       storageTypes: resolvedStorageTypes.length ? { create: resolvedStorageTypes } : undefined,
       dispatchFlows: dispatchFlowTypes.size ? { create: [...dispatchFlowTypes].map((flowType) => ({ flowType })) } : undefined,
     };
+  }
+
+  // Generates YardSlot rows Y1..YN for a freshly-created warehouse, per its
+  // yardCapacity — real, individually-addressable rows per the 2026-08-25
+  // Yard Management design conversation (see schema.prisma's comment on
+  // YardSlot). Only settable at creation for now — there's no Warehouse
+  // Edit yet, so a capacity change/increase isn't handled here.
+  private async generateYardSlots(warehouseId: string, capacity: number | undefined) {
+    if (!capacity || capacity <= 0) return;
+    await this.prisma.yardSlot.createMany({
+      data: Array.from({ length: capacity }, (_, i) => ({ warehouseId, code: `Y${i + 1}` })),
+    });
   }
 
   async create(data: any, user: any) {
@@ -173,10 +190,12 @@ export class WarehousesService {
     });
     if (existing) throw new BadRequestException(`Location Code "${data.code}" already exists.`);
 
-    return this.prisma.warehouse.create({
+    const created = await this.prisma.warehouse.create({
       data: this.buildCreateData(data, user.companyId, data.name, resolvedStorageTypes),
       include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
     });
+    await this.generateYardSlots(created.id, toNumberOrUndefined(data.yardCapacity));
+    return created;
   }
 
   async findAll(user: any) {
@@ -226,7 +245,8 @@ export class WarehousesService {
       const name = group.city ? `${group.city} ${NODE_TYPE_LABELS[nodeType]}` : upperCode;
 
       try {
-        await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name, resolvedStorageTypes) });
+        const created = await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name, resolvedStorageTypes) });
+        await this.generateYardSlots(created.id, toNumberOrUndefined(group.yardCapacity));
         const dispatchFlowCount = new Set((group.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType))).size;
         results.push({
           code: upperCode,
@@ -457,6 +477,7 @@ export class WarehousesService {
         '3PL Name': w.threePlName || '',
         'No of Docks': w.noOfDocks ?? '',
         'Area sq ft': w.areaSqFt ?? '',
+        'Parking Slots': w.yardCapacity ?? '',
         'GSTIN': w.gstin || '',
         'Working Days': w.workingDays || '',
         'Working Hours': w.workingHours || '',

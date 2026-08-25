@@ -119,6 +119,7 @@ export class WarehousesController {
           threePlName: r['3PL Name'] ? String(r['3PL Name']).trim() : undefined,
           noOfDocks: toNumberOrUndefined(r['No of Docks']),
           areaSqFt: toNumberOrUndefined(r['Area sq ft']),
+          yardCapacity: toNumberOrUndefined(r['Parking Slots']),
           gstin: r['GSTIN'] ? String(r['GSTIN']).trim() : undefined,
           workingDays: r['Working Days'] ? String(r['Working Days']).trim() : undefined,
           workingHours: r['Working Hours'] ? String(r['Working Hours']).trim() : undefined,
