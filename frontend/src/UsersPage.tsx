@@ -251,6 +251,7 @@ function UsersPage() {
               you can only import roles you're allowed to create, into warehouses you yourself have access to.
               Columns: Name, Login ID, Password, Role, Function Tag, Warehouse Code(s) (comma-separated).
             </p>
+            <a href="/templates/User_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
             <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
             <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
               {importing ? 'Importing...' : 'Import'}
@@ -397,7 +398,7 @@ function UsersPage() {
 
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
+          <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
             <th style={{ padding: 8 }}>Name</th>
             <th style={{ padding: 8 }}>Login ID</th>
             <th style={{ padding: 8 }}>Role</th>
@@ -412,7 +413,7 @@ function UsersPage() {
         <tbody>
           {filtered.map((u) => (
             <Fragment key={u.id}>
-              <tr style={{ borderBottom: '1px solid #eee' }}>
+              <tr style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                 <td style={{ padding: 8, fontWeight: 'bold' }}>{u.name}</td>
                 <td style={{ padding: 8 }}>{u.email}</td>
                 <td style={{ padding: 8 }}>{ROLE_LABELS[u.role] || u.role}</td>

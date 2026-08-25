@@ -324,6 +324,7 @@ function SkusPage() {
 
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
         <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
+        <a href="/templates/SKU_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
         <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
         <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
           {importing ? 'Importing...' : 'Import'}
@@ -471,7 +472,7 @@ function SkusPage() {
 
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
+          <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
             <th style={{ padding: 8 }}>Code</th>
             <th style={{ padding: 8 }}>Description</th>
             <th style={{ padding: 8 }}>Category</th>
@@ -483,7 +484,7 @@ function SkusPage() {
         </thead>
         <tbody>
           {filtered.map((sku) => (
-            <tr key={sku.id} style={{ borderBottom: '1px solid #eee' }}>
+            <tr key={sku.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
               <td style={{ padding: 8, fontWeight: 'bold' }}>{sku.code}</td>
               <td style={{ padding: 8 }}>{sku.description}</td>
               <td style={{ padding: 8 }}>{sku.category.name}</td>

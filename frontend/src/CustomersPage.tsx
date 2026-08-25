@@ -219,7 +219,8 @@ const handleImport = async () => {
     <div style={{ maxWidth: 1050, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Customer Master</h1>
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}> 
-      <h3 style={{ marginTop: 0 }}>Import from Excel</h3> 
+      <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
+      <a href="/templates/Customer_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
       <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
       <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>{importing ? 'Importing...' : 'Import'}
         </button>
@@ -306,7 +307,7 @@ const handleImport = async () => {
 
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
+          <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
             <th style={{ padding: 8 }}>Code</th>
             <th style={{ padding: 8 }}>Name</th>
             <th style={{ padding: 8 }}>Category</th>
@@ -319,7 +320,7 @@ const handleImport = async () => {
         <tbody>
           {filtered.map((c) => (
             <Fragment key={c.id}>
-              <tr style={{ borderBottom: '1px solid #eee' }}>
+              <tr style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                 <td style={{ padding: 8, fontWeight: 'bold' }}>{c.code}</td>
                 <td style={{ padding: 8 }}>{c.name}</td>
                 <td style={{ padding: 8 }}>{c.category || '—'}</td>
@@ -347,7 +348,7 @@ const handleImport = async () => {
                     ) : (
                       <table style={{ width: '100%' }}>
                         <thead>
-                          <tr style={{ textAlign: 'left', fontSize: 13, color: '#666' }}>
+                          <tr style={{ textAlign: 'center', fontSize: 13, color: '#666' }}>
                             <th style={{ padding: 4 }}>Ship To ID</th>
                             <th style={{ padding: 4 }}>Address</th>
                             <th style={{ padding: 4 }}>Pincode</th>
@@ -360,7 +361,7 @@ const handleImport = async () => {
                         </thead>
                         <tbody>
                           {c.shipToLocations.map((s) => (
-                            <tr key={s.id}>
+                            <tr key={s.id} style={{ textAlign: 'center' }}>
                               <td style={{ padding: 4 }}>{s.shipToCode || '—'}</td>
                               <td style={{ padding: 4 }}>{s.address}</td>
                               <td style={{ padding: 4 }}>{s.pincode}</td>

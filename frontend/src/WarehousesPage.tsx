@@ -295,6 +295,17 @@ function WarehousesPage() {
     refreshAll();
   };
 
+  const handleDelete = async (id: string, code: string) => {
+    if (!confirm(`Permanently delete ${code}? This cannot be undone.`)) return;
+    const res = await fetch(`http://localhost:3000/warehouses/${id}`, { method: 'DELETE', headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.message || 'Could not delete this warehouse.');
+      return;
+    }
+    refreshAll();
+  };
+
   const handleDeleteAll = async () => {
     if (!confirm('Permanently delete ALL warehouses that have no linked data (customers, locations, transactions)? This cannot be undone.')) return;
     const res = await fetch('http://localhost:3000/warehouses/all', { method: 'DELETE', headers: authHeaders() });
@@ -316,35 +327,36 @@ function WarehousesPage() {
     <div style={{ maxWidth: 1100, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Warehouse Master</h1>
 
-      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
-        <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <a href="/templates/Warehouse_Master_Import_Template.xlsx" download>Download Template</a>
         <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
-        <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
+        <button onClick={handleImport} disabled={!file || importing}>
           {importing ? 'Importing...' : 'Import'}
         </button>
-        <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
-        <button onClick={handleDeleteAll} style={{ marginLeft: 8, color: 'crimson' }}>Delete All</button>
-
-        {importResult && (
-          <div style={{ marginTop: 16 }}>
-            <p><strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalWarehouses} warehouses.</p>
-            <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
-              {importResult.results?.map((r, i) => (
-                <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
-                  {r.code}: {r.status === 'success' ? `Imported (${r.storageTypeCount} storage entr${r.storageTypeCount === 1 ? 'y' : 'ies'}, ${r.dispatchFlowCount} dispatch flow(s))` : r.errors?.join('; ')}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
-      </div>
-
-      <div style={{ marginBottom: 24 }}>
+        <button onClick={handleExport}>Export to Excel</button>
+        <button onClick={handleDeleteAll} style={{ color: 'crimson' }}>Delete All</button>
         <button type="button" onClick={() => setShowForm(!showForm)}>
           {showForm ? '▾ Hide manual entry' : '▸ Add Warehouse manually'}
         </button>
       </div>
+
+      {(importResult || deleteAllResult) && (
+        <div style={{ marginBottom: 24 }}>
+          {importResult && (
+            <div>
+              <p><strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalWarehouses} warehouses.</p>
+              <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
+                {importResult.results?.map((r, i) => (
+                  <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
+                    {r.code}: {r.status === 'success' ? `Imported (${r.storageTypeCount} storage entr${r.storageTypeCount === 1 ? 'y' : 'ies'}, ${r.dispatchFlowCount} dispatch flow(s))` : r.errors?.join('; ')}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {deleteAllResult && <p style={{ marginTop: importResult ? 12 : 0 }}>{deleteAllResult}</p>}
+        </div>
+      )}
 
       {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
@@ -423,12 +435,11 @@ function WarehousesPage() {
 
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
         <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
+          <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
             <th style={{ padding: 8 }}>Code</th>
-            <th style={{ padding: 8 }}>Name</th>
-            <th style={{ padding: 8 }}>Type of Node</th>
+            <th style={{ padding: 8 }}>Node Type</th>
             <th style={{ padding: 8 }}>City</th>
-            <th style={{ padding: 8 }}>Docks</th>
+            <th style={{ padding: 8 }}>3PL Name</th>
             <th style={{ padding: 8 }}>Storage</th>
             <th style={{ padding: 8 }}>Dispatch Flows</th>
             <th style={{ padding: 8 }}>Status</th>
@@ -437,17 +448,14 @@ function WarehousesPage() {
         </thead>
         <tbody>
           {warehouses.map((w) => (
-            <tr key={w.id} style={{ borderBottom: '1px solid #eee' }}>
+            <tr key={w.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
               <td style={{ padding: 8, fontWeight: 'bold' }}>{w.code}</td>
-              <td style={{ padding: 8 }}>{w.name}</td>
               <td style={{ padding: 8 }}>{labelFor(NODE_TYPE_OPTIONS, w.nodeType)}</td>
               <td style={{ padding: 8 }}>{w.city || '—'}</td>
-              <td style={{ padding: 8 }}>{w.noOfDocks ?? '—'}</td>
+              <td style={{ padding: 8 }}>{w.threePlName || '—'}</td>
               <td style={{ padding: 8 }}>
                 {w.storageTypes.length
-                  ? w.storageTypes
-                      .map((s) => `${labelFor(STORAGE_TYPE_OPTIONS, s.storageType)}/${s.category?.name || 'Uncategorized'}=${s.palletPositions}`)
-                      .join(', ')
+                  ? w.storageTypes.map((s) => `${labelFor(STORAGE_TYPE_OPTIONS, s.storageType)}=${s.palletPositions}`).join(', ')
                   : '—'}
               </td>
               <td style={{ padding: 8 }}>
@@ -458,6 +466,9 @@ function WarehousesPage() {
                 <button onClick={() => handleDeactivate(w.id, w.isActive)}>
                   {w.isActive ? 'Deactivate' : 'Reactivate'}
                 </button>
+                <button onClick={() => handleDelete(w.id, w.code)} style={{ marginLeft: 6, color: 'crimson' }}>
+                  Delete
+                </button>
               </td>
             </tr>
           ))}
@@ -466,46 +477,40 @@ function WarehousesPage() {
 
       {warehouses.length === 0 && <p style={{ marginTop: 16 }}>No warehouses found.</p>}
 
-      <h2 style={{ marginTop: 32 }}>Customers per Warehouse</h2>
+      <h2 style={{ marginTop: 32 }}>Local / Upc Split Analysis</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Warehouse</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Customers</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Ship-To Locations</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Local</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Upcountry</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Warehouse</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Local</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Upcountry</th>
           </tr>
         </thead>
         <tbody>
           {customerSummary.map((s) => (
             <tr key={s.warehouseId}>
-              <td style={{ padding: '4px 8px' }}>
+              <td style={{ textAlign: 'center', padding: '4px 8px' }}>
                 <strong>{s.code}</strong> — {s.name}
               </td>
-              <td style={{ textAlign: 'right', padding: '4px 8px' }}>{s.customerCount}</td>
-              <td style={{ textAlign: 'right', padding: '4px 8px' }}>{s.shipToCount}</td>
-              <td style={{ textAlign: 'right', padding: '4px 8px' }}>{s.localCount}</td>
-              <td style={{ textAlign: 'right', padding: '4px 8px' }}>{s.upcountryCount}</td>
+              <td style={{ textAlign: 'center', padding: '4px 8px' }}>{s.localCount}</td>
+              <td style={{ textAlign: 'center', padding: '4px 8px' }}>{s.upcountryCount}</td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      <h2 style={{ marginTop: 32 }}>Storage Type Mapping — Planned vs. Generated</h2>
+      <h2 style={{ marginTop: 32 }}>Storage Type Mapping</h2>
       <p style={{ marginTop: -4, marginBottom: 8, fontSize: 12, color: '#888' }}>
-        Cross-checks each Storage Type breakdown row's planned Pallet Positions against how many actually exist among
-        generated Locations, so nothing gets missed. A "Mix" row (not yet broken down by real storage type) isn't
-        shown here — there's nothing concrete to compare it against yet.
+        Cross-checks planned Pallet Positions against how many actually exist among generated Locations.
       </p>
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
         <thead>
           <tr>
-            <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Warehouse</th>
-            <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Storage Type</th>
-            <th style={{ textAlign: 'left', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Category</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Planned</th>
-            <th style={{ textAlign: 'right', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Mapped</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Warehouse</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Storage Type</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Category</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Planned</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Mapped</th>
           </tr>
         </thead>
         <tbody>
@@ -515,24 +520,24 @@ function WarehousesPage() {
               <Fragment key={s.warehouseId}>
                 {s.rows.map((r, i) => (
                   <tr key={`${s.warehouseId}-${i}`}>
-                    <td style={{ padding: '4px 8px' }}>{i === 0 ? <><strong>{s.code}</strong> — {s.name}</> : ''}</td>
-                    <td style={{ padding: '4px 8px' }}>{labelFor(STORAGE_TYPE_OPTIONS, r.storageType)}</td>
-                    <td style={{ padding: '4px 8px' }}>{r.category}</td>
-                    <td style={{ textAlign: 'right', padding: '4px 8px' }}>{r.planned}</td>
-                    <td style={{ textAlign: 'right', padding: '4px 8px', color: r.mapped >= r.planned ? '#1a7f37' : 'crimson', fontWeight: r.mapped < r.planned ? 'bold' : 'normal' }}>
+                    <td style={{ textAlign: 'center', padding: '4px 8px' }}>{i === 0 ? <><strong>{s.code}</strong> — {s.name}</> : ''}</td>
+                    <td style={{ textAlign: 'center', padding: '4px 8px' }}>{labelFor(STORAGE_TYPE_OPTIONS, r.storageType)}</td>
+                    <td style={{ textAlign: 'center', padding: '4px 8px' }}>{r.category}</td>
+                    <td style={{ textAlign: 'center', padding: '4px 8px' }}>{r.planned}</td>
+                    <td style={{ textAlign: 'center', padding: '4px 8px', color: r.mapped >= r.planned ? '#1a7f37' : 'crimson', fontWeight: r.mapped < r.planned ? 'bold' : 'normal' }}>
                       {r.mapped}
                     </td>
                   </tr>
                 ))}
                 <tr key={`${s.warehouseId}-total`} style={{ borderBottom: '2px solid #ccc' }}>
-                  <td style={{ padding: '4px 8px' }} />
-                  <td style={{ padding: '4px 8px' }} colSpan={2}>
+                  <td style={{ textAlign: 'center', padding: '4px 8px' }} />
+                  <td style={{ textAlign: 'center', padding: '4px 8px' }} colSpan={2}>
                     <strong>Total</strong>
                   </td>
-                  <td style={{ textAlign: 'right', padding: '4px 8px' }}>
+                  <td style={{ textAlign: 'center', padding: '4px 8px' }}>
                     <strong>{s.totalPlanned}</strong>
                   </td>
-                  <td style={{ textAlign: 'right', padding: '4px 8px', color: s.totalMapped >= s.totalPlanned ? '#1a7f37' : 'crimson' }}>
+                  <td style={{ textAlign: 'center', padding: '4px 8px', color: s.totalMapped >= s.totalPlanned ? '#1a7f37' : 'crimson' }}>
                     <strong>{s.totalMapped}</strong>
                   </td>
                 </tr>

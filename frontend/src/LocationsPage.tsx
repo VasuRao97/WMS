@@ -330,6 +330,17 @@ function LocationsPage() {
     loadLocations();
   };
 
+  const handleDelete = async (id: string, code: string) => {
+    if (!confirm(`Permanently delete ${code}? This cannot be undone.`)) return;
+    const res = await fetch(`http://localhost:3000/locations/${id}`, { method: 'DELETE', headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.message || 'Could not delete this location.');
+      return;
+    }
+    loadLocations();
+  };
+
   const handleDeleteAll = async () => {
     if (!confirm('Permanently delete ALL locations that have no linked data (stock movements, putaway tasks, etc.)? This cannot be undone.')) return;
     const res = await fetch('http://localhost:3000/locations/all', { method: 'DELETE', headers: authHeaders() });
@@ -484,6 +495,7 @@ function LocationsPage() {
               Type (Rack/Level for rack storage; Block+Depth+Width for Ground/Floor; Stack+Height for Stillage), the rest can
               be left blank. <code>Section</code> is one-per-Aisle — leave it blank for a row whose Aisle already has one set.
             </p>
+            <a href="/templates/Location_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
             <input type="file" accept=".xlsx" onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)} />
             <button onClick={handleImport} disabled={!importFile || importing} style={{ marginLeft: 8 }}>
               {importing ? 'Importing...' : 'Import'}
@@ -798,7 +810,7 @@ function LocationsPage() {
 
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
             <thead>
-              <tr style={{ textAlign: 'left', borderBottom: '2px solid #ccc' }}>
+              <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
                 <th style={{ padding: 8 }}>Code</th>
                 <th style={{ padding: 8 }}>Warehouse</th>
                 <th style={{ padding: 8 }}>Zone Type</th>
@@ -813,7 +825,7 @@ function LocationsPage() {
             </thead>
             <tbody>
               {filteredLocations.map((l) => (
-                <tr key={l.id} style={{ borderBottom: '1px solid #eee' }}>
+                <tr key={l.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                   <td style={{ padding: 8, fontWeight: 'bold' }}>{l.code}</td>
                   <td style={{ padding: 8 }}>{l.warehouse.code}</td>
                   <td style={{ padding: 8 }}>{labelFor(ZONE_TYPE_OPTIONS, l.zoneType)}</td>
@@ -827,6 +839,9 @@ function LocationsPage() {
                     <button onClick={() => startEdit(l)}>Edit</button>
                     <button onClick={() => handleDeactivate(l.id, l.isActive)} style={{ marginLeft: 6 }}>
                       {l.isActive ? 'Deactivate' : 'Reactivate'}
+                    </button>
+                    <button onClick={() => handleDelete(l.id, l.code)} style={{ marginLeft: 6, color: 'crimson' }}>
+                      Delete
                     </button>
                   </td>
                 </tr>
