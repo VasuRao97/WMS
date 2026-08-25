@@ -430,6 +430,29 @@ import (`sheet_to_json` → per-row validation, dedup within the file, dedup aga
 row-by-row success/error results) and export (`json_to_sheet` → buffer streamed via `Response`).
 Reuse this shape for other modules needing Excel import/export.
 
+**Export was extended to Warehouse/Customer/Location/User** (2026-08-24), matching SKU's pattern
+exactly: a `GET /<resource>/export` endpoint (`exportRows()` in the service, `MASTER_DATA_READ_ROLES`-
+or `CAN_MANAGE_USERS`-gated same as the resource's other reads) building rows via `json_to_sheet` →
+`.xlsx` buffer, and a `handleExport()` on the frontend page (`fetch` → `.blob()` →
+`URL.createObjectURL` → synthetic `<a download>` click), copy-pasted verbatim from `SkusPage.tsx`.
+For Warehouse and Customer — whose import already groups repeated rows under one parent key
+(Location Code / Bill To ID) — export mirrors that shape in reverse: **one row per (parent, child)
+pair** (Warehouse × Storage Type, Customer × Ship-to), so an exported file edits and re-imports
+unchanged; a parent with zero children still gets one row (blank child columns) so it isn't dropped.
+Warehouse's Dispatch Flows have no natural per-row slot to repeat into, so they're joined as one
+comma-separated column instead, repeated identically on every row for that warehouse. Location
+export intentionally names its sheet `Location Import` — the same name its own importer reads —
+so an exported file round-trips through re-import with no manual rename. User export excludes any
+password/password-hash column on purpose (a hash can't be reversed, and re-exporting one anywhere
+would be a real security smell).
+
+Verified end-to-end via a throwaway-company test script (25/25: correct row-shape and grouping for
+all four, Dispatch Flow joining, Ship-to warehouse-code resolution, the Location-Import round-trip
+actually re-importing and correctly flagging every row as a pre-existing duplicate, User export
+never containing a password field, and Operator correctly blocked (403) from every export
+endpoint) plus a live browser check confirming the real Export buttons on Warehouse and User pages
+trigger the correct request.
+
 **Read import sheets by name, not position.** SKU/Customer read `workbook.SheetNames[0]`
 (historical, works because their templates only ever had one meaningful sheet). Warehouse
 Master's template ships with "How To Use" and "Legend & Rules" tabs alongside the data —
