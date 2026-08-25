@@ -25,6 +25,7 @@ type Warehouse = {
   threePlName?: string;
   noOfDocks?: number;
   areaSqFt?: number;
+  yardCapacity?: number;
   contactName?: string;
   contactPhone?: string;
   isActive: boolean;
@@ -119,6 +120,7 @@ function WarehousesPage() {
   const [threePlName, setThreePlName] = useState('');
   const [noOfDocks, setNoOfDocks] = useState('');
   const [areaSqFt, setAreaSqFt] = useState('');
+  const [yardCapacity, setYardCapacity] = useState('');
   const [gstin, setGstin] = useState('');
   const [workingDays, setWorkingDays] = useState('');
   const [workingHours, setWorkingHours] = useState('');
@@ -248,6 +250,7 @@ function WarehousesPage() {
         threePlName: threePlName || undefined,
         noOfDocks: noOfDocks || undefined,
         areaSqFt: areaSqFt || undefined,
+        yardCapacity: yardCapacity || undefined,
         gstin: gstin || undefined,
         workingDays: workingDays || undefined,
         workingHours: workingHours || undefined,
@@ -413,6 +416,7 @@ function WarehousesPage() {
             <input placeholder="3PL Name (or OWN)" value={threePlName} onChange={(e) => setThreePlName(e.target.value)} style={{ width: 160 }} />
             <input placeholder="No of Docks" value={noOfDocks} onChange={(e) => setNoOfDocks(e.target.value)} style={{ width: 110 }} />
             <input placeholder="Area sq ft" value={areaSqFt} onChange={(e) => setAreaSqFt(e.target.value)} style={{ width: 110 }} />
+            <input placeholder="Parking Slots" value={yardCapacity} onChange={(e) => setYardCapacity(e.target.value)} style={{ width: 110 }} title="How many vehicles can park in the yard at once. Leave blank for a facility with no on-site parking." />
             <input placeholder="GSTIN" value={gstin} onChange={(e) => setGstin(e.target.value)} style={{ width: 150 }} />
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
