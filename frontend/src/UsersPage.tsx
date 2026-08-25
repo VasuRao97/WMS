@@ -70,6 +70,7 @@ function UsersPage() {
   const [warehouses, setWarehouses] = useState<WarehouseRef[]>([]);
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [showList, setShowList] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [formError, setFormError] = useState('');
@@ -236,6 +237,12 @@ function UsersPage() {
       (u.functionTag || '').toLowerCase().includes(search.toLowerCase()),
   );
 
+  const userStats = {
+    total: users.length,
+    active: users.filter((u) => u.isActive).length,
+    inactive: users.filter((u) => !u.isActive).length,
+  };
+
   return (
     <div style={{ maxWidth: 1050, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>User Master</h1>
@@ -244,40 +251,43 @@ function UsersPage() {
         <p style={{ color: '#888' }}>Your role cannot create or manage other users.</p>
       ) : (
         <>
-          <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
-            <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
-            <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>
-              For onboarding many users at once (e.g. a batch of Operators) — same rules apply as adding one by hand:
-              you can only import roles you're allowed to create, into warehouses you yourself have access to.
-              Columns: Name, Login ID, Password, Role, Function Tag, Warehouse Code(s) (comma-separated).
-            </p>
-            <a href="/templates/User_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
+          <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: '#888', textAlign: 'center' }}>
+            For onboarding many users at once (e.g. a batch of Operators) — same rules apply as adding one by hand:
+            you can only import roles you're allowed to create, into warehouses you yourself have access to.
+            Columns: Name, Login ID, Password, Role, Function Tag, Warehouse Code(s) (comma-separated).
+          </p>
+          <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <a href="/templates/User_Master_Import_Template.xlsx" download>Download Template</a>
             <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
-            <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
+            <button onClick={handleImport} disabled={!file || importing}>
               {importing ? 'Importing...' : 'Import'}
             </button>
-            <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
-            {importResult && (
-              <div style={{ marginTop: 16 }}>
-                <p>
-                  <strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed,
-                  out of {importResult.totalUsers} users.
-                </p>
-                <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
-                  {importResult.results?.map((r: any, i: number) => (
-                    <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
-                      {r.email}: {r.status === 'success' ? 'Imported' : r.errors?.join('; ')}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-
-          <div style={{ marginBottom: 24 }}>
+            <button onClick={handleExport}>Export to Excel</button>
             <button type="button" onClick={() => (showForm ? resetForm() : setShowForm(true))}>
               {showForm ? '▾ Hide' : '▸ Add User manually'}
             </button>
+          </div>
+
+          {importResult && (
+            <div style={{ marginBottom: 24 }}>
+              <p>
+                <strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed,
+                out of {importResult.totalUsers} users.
+              </p>
+              <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
+                {importResult.results?.map((r: any, i: number) => (
+                  <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
+                    {r.email}: {r.status === 'success' ? 'Imported' : r.errors?.join('; ')}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 24 }}>
+            <div style={cardStyle}><strong>{userStats.total}</strong><div>Total Users</div></div>
+            <div style={cardStyle}><strong>{userStats.active}</strong><div>Active</div></div>
+            <div style={cardStyle}><strong>{userStats.inactive}</strong><div>Inactive</div></div>
           </div>
         </>
       )}
@@ -389,6 +399,12 @@ function UsersPage() {
         </div>
       )}
 
+      <h2 style={{ marginBottom: 8, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowList(!showList)}>
+        {showList ? '▾' : '▸'} List of Users
+      </h2>
+
+      {showList && (
+        <>
       <input
         placeholder="Search by name, login ID, or function tag..."
         value={search}
@@ -462,8 +478,18 @@ function UsersPage() {
       </table>
 
       {filtered.length === 0 && <p style={{ marginTop: 16 }}>No users found.</p>}
+        </>
+      )}
     </div>
   );
 }
 
 export default UsersPage;
+
+const cardStyle: React.CSSProperties = {
+  border: '1px solid #ccc',
+  borderRadius: 8,
+  padding: '12px 16px',
+  textAlign: 'center',
+  minWidth: 100,
+};

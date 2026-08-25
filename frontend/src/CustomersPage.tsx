@@ -64,6 +64,7 @@ function CustomersPage() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<any>(null);
   const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
+  const [showList, setShowList] = useState(true);
 
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
@@ -203,6 +204,12 @@ const handleImport = async () => {
     loadCustomers();
   };
 
+  const customerStats = {
+    total: customers.length,
+    active: customers.filter((c) => c.isActive).length,
+    inactive: customers.filter((c) => !c.isActive).length,
+  };
+
   const allShipTos = customers.flatMap((c) => c.shipToLocations);
   const localCount = allShipTos.filter((s) => s.deliveryZone === 'LOCAL').length;
   const upcountryCount = allShipTos.filter((s) => s.deliveryZone === 'UPCOUNTRY').length;
@@ -218,26 +225,39 @@ const handleImport = async () => {
   return (
     <div style={{ maxWidth: 1050, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Customer Master</h1>
-      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}> 
-      <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
-      <a href="/templates/Customer_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
-      <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
-      <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>{importing ? 'Importing...' : 'Import'}
-        </button>
-      <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
-      <button onClick={handleDeleteAll} style={{ marginLeft: 8, color: 'crimson' }}>Delete All</button>
-      {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
-      {importResult && ( <div style={{ marginTop: 16 }}> <p> 
-          <strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalCustomers} customers. </p>
-           <ul style={{ maxHeight: 200, overflowY: 'auto' }}> {importResult.results?.map((r: any, i: number) => ( <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}> {r.code}: {r.status === 'success' ? `Imported (${r.shipToCount} ship-to location(s))` : r.errors?.join('; ')} </li> ))} 
-           </ul> </div> )} 
-           </div>
 
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <a href="/templates/Customer_Master_Import_Template.xlsx" download>Download Template</a>
+        <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
+        <button onClick={handleImport} disabled={!file || importing}>
+          {importing ? 'Importing...' : 'Import'}
+        </button>
+        <button onClick={handleExport}>Export to Excel</button>
+        <button onClick={handleDeleteAll} style={{ color: 'crimson' }}>Delete All</button>
         <button type="button" onClick={() => setShowForm(!showForm)}>
           {showForm ? '▾ Hide manual entry' : '▸ Add Customer manually'}
         </button>
       </div>
+
+      {(importResult || deleteAllResult) && (
+        <div style={{ marginBottom: 24 }}>
+          {importResult && (
+            <div>
+              <p>
+                <strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalCustomers} customers.
+              </p>
+              <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
+                {importResult.results?.map((r: any, i: number) => (
+                  <li key={i} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
+                    {r.code}: {r.status === 'success' ? `Imported (${r.shipToCount} ship-to location(s))` : r.errors?.join('; ')}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {deleteAllResult && <p style={{ marginTop: importResult ? 12 : 0 }}>{deleteAllResult}</p>}
+        </div>
+      )}
 
       {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
@@ -293,17 +313,44 @@ const handleImport = async () => {
       </div>
       )}
 
-      <p style={{ fontSize: 14, color: '#555' }}>
-        Ship-to zones: <strong>{localCount}</strong> Local · <strong>{upcountryCount}</strong> Upcountry
-        {unclassifiedCount > 0 && <> · <strong>{unclassifiedCount}</strong> Unclassified</>}
-      </p>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 24 }}>
+        <div style={cardStyle}><strong>{customerStats.total}</strong><div>Total Customers</div></div>
+        <div style={cardStyle}><strong>{customerStats.active}</strong><div>Active</div></div>
+        <div style={cardStyle}><strong>{customerStats.inactive}</strong><div>Inactive</div></div>
+      </div>
 
-      <input
-        placeholder="Search by code, name, or category..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        style={{ width: '100%', padding: 8, marginBottom: 16, boxSizing: 'border-box' }}
-      />
+      <h2 style={{ marginTop: 32 }}>Ship-to Zone Split</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Local</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Upcountry</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Unclassified</th>
+            <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Total Ship-tos</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={{ textAlign: 'center', padding: '4px 8px' }}>{localCount}</td>
+            <td style={{ textAlign: 'center', padding: '4px 8px' }}>{upcountryCount}</td>
+            <td style={{ textAlign: 'center', padding: '4px 8px' }}>{unclassifiedCount}</td>
+            <td style={{ textAlign: 'center', padding: '4px 8px' }}><strong>{allShipTos.length}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 style={{ marginBottom: 8, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowList(!showList)}>
+        {showList ? '▾' : '▸'} List of Customers
+      </h2>
+
+      {showList && (
+        <>
+          <input
+            placeholder="Search by code, name, or category..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: '100%', padding: 8, marginBottom: 16, boxSizing: 'border-box' }}
+          />
 
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
@@ -388,8 +435,18 @@ const handleImport = async () => {
       </table>
 
       {filtered.length === 0 && <p style={{ marginTop: 16 }}>No customers found.</p>}
+        </>
+      )}
     </div>
   );
 }
 
 export default CustomersPage;
+
+const cardStyle: React.CSSProperties = {
+  border: '1px solid #ccc',
+  borderRadius: 8,
+  padding: '12px 16px',
+  textAlign: 'center',
+  minWidth: 100,
+};

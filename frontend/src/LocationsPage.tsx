@@ -201,6 +201,7 @@ function LocationsPage() {
   const [filterZoneType, setFilterZoneType] = useState('');
   const [filterStorageType, setFilterStorageType] = useState('');
   const [searchText, setSearchText] = useState('');
+  const [showList, setShowList] = useState(true);
 
   // --- View mode: Table vs. Plan (top-down structural floor plan) ---
   const [viewMode, setViewMode] = useState<'table' | 'plan'>('table');
@@ -474,43 +475,55 @@ function LocationsPage() {
     return true;
   });
 
+  const locationStats = {
+    total: locations.length,
+    active: locations.filter((l) => l.isActive).length,
+    inactive: locations.filter((l) => !l.isActive).length,
+  };
+
   return (
     <div style={{ maxWidth: 1200, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>Locations / Bins</h1>
 
-      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
         <button type="button" onClick={() => setShowImport(!showImport)}>
           {showImport ? '▾ Hide Excel import' : '▸ Import from Excel'}
         </button>
-        <button onClick={handleDeleteAll} style={{ marginLeft: 8, color: 'crimson' }}>Delete All</button>
-        {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
-
-        {showImport && (
-          <div style={{ marginTop: 16 }}>
-            <p style={{ fontSize: 12, color: '#666', marginBottom: 8 }}>
-              One row per Location, on a sheet named exactly <code>Location Import</code>. Columns: <code>Warehouse Code*</code>,{' '}
-              <code>Zone Type*</code>, <code>Storage Type*</code>, <code>Category</code>, <code>Zone</code>, <code>Section</code>,{' '}
-              <code>Aisle*</code>, <code>Rack</code>, <code>Level</code>, <code>Bin</code>, <code>Block</code>, <code>Stack</code>,{' '}
-              <code>Depth</code>, <code>Width</code>, <code>Height</code> — only fill the columns relevant to a row's Storage
-              Type (Rack/Level for rack storage; Block+Depth+Width for Ground/Floor; Stack+Height for Stillage), the rest can
-              be left blank. <code>Section</code> is one-per-Aisle — leave it blank for a row whose Aisle already has one set.
-            </p>
-            <a href="/templates/Location_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
-            <input type="file" accept=".xlsx" onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)} />
-            <button onClick={handleImport} disabled={!importFile || importing} style={{ marginLeft: 8 }}>
-              {importing ? 'Importing...' : 'Import'}
-            </button>
-            <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
-            {importResult && <BatchResultList summary={importResult} totalLabel="rows" />}
-          </div>
-        )}
-      </div>
-
-      <div style={{ marginBottom: 24 }}>
+        <button onClick={handleDeleteAll} style={{ color: 'crimson' }}>Delete All</button>
         <button type="button" onClick={() => setShowGenerator(!showGenerator)}>
           {showGenerator ? '▾ Hide range generator' : '▸ Generate a range of Locations'}
         </button>
       </div>
+
+      {deleteAllResult && <p style={{ marginTop: -8, marginBottom: 16, textAlign: 'center' }}>{deleteAllResult}</p>}
+
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 24 }}>
+        <div style={cardStyle}><strong>{locationStats.total}</strong><div>Total Locations</div></div>
+        <div style={cardStyle}><strong>{locationStats.active}</strong><div>Active</div></div>
+        <div style={cardStyle}><strong>{locationStats.inactive}</strong><div>Inactive</div></div>
+      </div>
+
+      {showImport && (
+        <div style={{ marginBottom: 24 }}>
+          <p style={{ fontSize: 12, color: '#666', marginBottom: 8, textAlign: 'center' }}>
+            One row per Location, on a sheet named exactly <code>Location Import</code>. Columns: <code>Warehouse Code*</code>,{' '}
+            <code>Zone Type*</code>, <code>Storage Type*</code>, <code>Category</code>, <code>Zone</code>, <code>Section</code>,{' '}
+            <code>Aisle*</code>, <code>Rack</code>, <code>Level</code>, <code>Bin</code>, <code>Block</code>, <code>Stack</code>,{' '}
+            <code>Depth</code>, <code>Width</code>, <code>Height</code> — only fill the columns relevant to a row's Storage
+            Type (Rack/Level for rack storage; Block+Depth+Width for Ground/Floor; Stack+Height for Stillage), the rest can
+            be left blank. <code>Section</code> is one-per-Aisle — leave it blank for a row whose Aisle already has one set.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <a href="/templates/Location_Master_Import_Template.xlsx" download>Download Template</a>
+            <input type="file" accept=".xlsx" onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)} />
+            <button onClick={handleImport} disabled={!importFile || importing}>
+              {importing ? 'Importing...' : 'Import'}
+            </button>
+            <button onClick={handleExport}>Export to Excel</button>
+          </div>
+          {importResult && <BatchResultList summary={importResult} totalLabel="rows" />}
+        </div>
+      )}
 
       {showGenerator && (
         <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
@@ -762,6 +775,12 @@ function LocationsPage() {
         </div>
       )}
 
+      <h2 style={{ marginBottom: 8, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowList(!showList)}>
+        {showList ? '▾' : '▸'} List of Locations
+      </h2>
+
+      {showList && (
+      <>
       <div style={{ marginBottom: 12 }}>
         <button
           type="button"
@@ -871,8 +890,18 @@ function LocationsPage() {
           )}
         </div>
       )}
+      </>
+      )}
     </div>
   );
 }
 
 export default LocationsPage;
+
+const cardStyle: React.CSSProperties = {
+  border: '1px solid #ccc',
+  borderRadius: 8,
+  padding: '12px 16px',
+  textAlign: 'center',
+  minWidth: 100,
+};
