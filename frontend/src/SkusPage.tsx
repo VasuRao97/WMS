@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 type StorageUnit = { id: string; unitType: string; qtyInBaseUom: number; isPreferred: boolean };
 type Barcode = { id: string; barcode: string; type: string };
@@ -14,6 +14,7 @@ type Sku = {
   storageCondition: string;
   shelfLifeTracked: boolean;
   shelfLifeDays?: number;
+  abcClass?: string;
   isActive: boolean;
   storageUnits: StorageUnit[];
   barcodes: Barcode[];
@@ -62,6 +63,7 @@ function SkusPage() {
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
   const [deleteAllResult, setDeleteAllResult] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [showList, setShowList] = useState(true);
 
   const [code, setCode] = useState('');
   const [description, setDescription] = useState('');
@@ -295,63 +297,103 @@ function SkusPage() {
       s.category.name.toLowerCase().includes(search.toLowerCase()),
   );
 
+  // ABC × Category matrix — active SKUs only (an inactive SKU isn't a real
+  // slotting/putaway concern any more), so this reads deeper than the old
+  // flat "By ABC Class" count: which categories actually carry the fast-
+  // moving (A) vs slow-moving (C) volume, not just a company-wide total.
+  const abcMatrix = useMemo(() => {
+    const activeSkus = skus.filter((s) => s.isActive);
+    const categoryNames = Array.from(new Set(activeSkus.map((s) => s.category?.name || 'Uncategorized'))).sort();
+    const columns = [...ABC_OPTIONS, 'Unclassified'];
+    const rows = categoryNames.map((cat) => {
+      const counts = columns.map((col) => activeSkus.filter((s) => (s.category?.name || 'Uncategorized') === cat && (s.abcClass || 'Unclassified') === col).length);
+      return { category: cat, counts, total: counts.reduce((sum, n) => sum + n, 0) };
+    });
+    const columnTotals = columns.map((_, i) => rows.reduce((sum, r) => sum + r.counts[i], 0));
+    const grandTotal = columnTotals.reduce((sum, n) => sum + n, 0);
+    return { columns, rows, columnTotals, grandTotal };
+  }, [skus]);
+
   return (
     <div style={{ maxWidth: 1000, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1>SKU Master</h1>
 
-      {summary && (
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24 }}>
-          <div style={cardStyle}><strong>{summary.total}</strong><div>Total SKUs</div></div>
-          <div style={cardStyle}><strong>{summary.active}</strong><div>Active</div></div>
-          <div style={cardStyle}><strong>{summary.inactive}</strong><div>Inactive</div></div>
-          <div style={cardStyle}><strong>{summary.hazmatCount}</strong><div>Hazmat</div></div>
-          <div style={cardStyle}><strong>{summary.batchTrackedCount}</strong><div>Batch Tracked</div></div>
-          <div style={cardStyle}><strong>{summary.shelfLifeTrackedCount}</strong><div>Shelf-Life Tracked</div></div>
-          <div style={{ ...cardStyle, minWidth: 200 }}>
-            <div style={{ fontWeight: 'bold', marginBottom: 4 }}>By Category</div>
-            {Object.entries(summary.byCategory).map(([cat, count]) => (
-              <div key={cat} style={{ fontSize: 13 }}>{cat}: {count}</div>
-            ))}
-          </div>
-          <div style={{ ...cardStyle, minWidth: 160 }}>
-            <div style={{ fontWeight: 'bold', marginBottom: 4 }}>By ABC Class</div>
-            {Object.entries(summary.byAbc).map(([abc, count]) => (
-              <div key={abc} style={{ fontSize: 13 }}>{abc}: {count}</div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
-        <h3 style={{ marginTop: 0 }}>Import from Excel</h3>
-        <a href="/templates/SKU_Master_Import_Template.xlsx" download style={{ marginRight: 8 }}>Download Template</a>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <a href="/templates/SKU_Master_Import_Template.xlsx" download>Download Template</a>
         <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)} />
-        <button onClick={handleImport} disabled={!file || importing} style={{ marginLeft: 8 }}>
+        <button onClick={handleImport} disabled={!file || importing}>
           {importing ? 'Importing...' : 'Import'}
         </button>
-        <button onClick={handleExport} style={{ marginLeft: 8 }}>Export to Excel</button>
-        <button onClick={handleDeleteAll} style={{ marginLeft: 8, color: 'crimson' }}>Delete All</button>
-
-        {importResult && (
-          <div style={{ marginTop: 16 }}>
-            <p><strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalRows} rows.</p>
-            <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
-              {importResult.results?.map((r) => (
-                <li key={r.row} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
-                  Row {r.row} ({r.code}): {r.status === 'success' ? 'Imported' : r.errors?.join('; ')}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {deleteAllResult && <p style={{ marginTop: 12 }}>{deleteAllResult}</p>}
-      </div>
-
-      <div style={{ marginBottom: 24 }}>
+        <button onClick={handleExport}>Export to Excel</button>
+        <button onClick={handleDeleteAll} style={{ color: 'crimson' }}>Delete All</button>
         <button type="button" onClick={() => setShowForm(!showForm)}>
           {showForm ? '▾ Hide manual entry' : '▸ Add SKU manually'}
         </button>
       </div>
+
+      {(importResult || deleteAllResult) && (
+        <div style={{ marginBottom: 24 }}>
+          {importResult && (
+            <div>
+              <p><strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalRows} rows.</p>
+              <ul style={{ maxHeight: 200, overflowY: 'auto' }}>
+                {importResult.results?.map((r) => (
+                  <li key={r.row} style={{ color: r.status === 'error' ? 'crimson' : 'green' }}>
+                    Row {r.row} ({r.code}): {r.status === 'success' ? 'Imported' : r.errors?.join('; ')}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {deleteAllResult && <p style={{ marginTop: importResult ? 12 : 0 }}>{deleteAllResult}</p>}
+        </div>
+      )}
+
+      {summary && (
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 24 }}>
+          <div style={cardStyle}><strong>{summary.total}</strong><div>Total SKUs</div></div>
+          <div style={cardStyle}><strong>{summary.active}</strong><div>Active</div></div>
+          <div style={cardStyle}><strong>{summary.inactive}</strong><div>Inactive</div></div>
+        </div>
+      )}
+
+      {abcMatrix.rows.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <h2 style={{ marginBottom: 4 }}>ABC Analysis by Category</h2>
+          <p style={{ marginTop: -4, marginBottom: 8, fontSize: 12, color: '#888' }}>
+            Active SKUs only, by Category and ABC Class — which categories actually carry the fast-moving (A) volume.
+          </p>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Category</th>
+                {abcMatrix.columns.map((col) => (
+                  <th key={col} style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>{col}</th>
+                ))}
+                <th style={{ textAlign: 'center', borderBottom: '1px solid #ccc', padding: '4px 8px' }}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {abcMatrix.rows.map((r) => (
+                <tr key={r.category}>
+                  <td style={{ textAlign: 'center', padding: '4px 8px' }}>{r.category}</td>
+                  {r.counts.map((n, i) => (
+                    <td key={abcMatrix.columns[i]} style={{ textAlign: 'center', padding: '4px 8px' }}>{n}</td>
+                  ))}
+                  <td style={{ textAlign: 'center', padding: '4px 8px' }}><strong>{r.total}</strong></td>
+                </tr>
+              ))}
+              <tr style={{ borderTop: '2px solid #ccc' }}>
+                <td style={{ textAlign: 'center', padding: '4px 8px' }}><strong>Total</strong></td>
+                {abcMatrix.columnTotals.map((n, i) => (
+                  <td key={abcMatrix.columns[i]} style={{ textAlign: 'center', padding: '4px 8px' }}><strong>{n}</strong></td>
+                ))}
+                <td style={{ textAlign: 'center', padding: '4px 8px' }}><strong>{abcMatrix.grandTotal}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {showForm && (
       <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
@@ -463,50 +505,56 @@ function SkusPage() {
       </div>
       )}
 
-      <input
-        placeholder="Search by code, description, or category..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        style={{ width: '100%', padding: 8, marginBottom: 16, boxSizing: 'border-box' }}
-      />
+      <h2 style={{ marginBottom: 8, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowList(!showList)}>
+        {showList ? '▾' : '▸'} List of SKUs
+      </h2>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
-            <th style={{ padding: 8 }}>Code</th>
-            <th style={{ padding: 8 }}>Description</th>
-            <th style={{ padding: 8 }}>Category</th>
-            <th style={{ padding: 8 }}>Storage Units</th>
-            <th style={{ padding: 8 }}>Barcodes</th>
-            <th style={{ padding: 8 }}>Status</th>
-            <th style={{ padding: 8 }}>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((sku) => (
-            <tr key={sku.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
-              <td style={{ padding: 8, fontWeight: 'bold' }}>{sku.code}</td>
-              <td style={{ padding: 8 }}>{sku.description}</td>
-              <td style={{ padding: 8 }}>{sku.category.name}</td>
-              <td style={{ padding: 8 }}>
-                {sku.storageUnits.map((u) => `${u.unitType}=${u.qtyInBaseUom}${u.isPreferred ? ' *' : ''}`).join(', ')}
-              </td>
-              <td style={{ padding: 8 }}>{sku.barcodes.map((b) => b.barcode).join(', ') || '—'}</td>
-              <td style={{ padding: 8 }}>{sku.isActive ? 'Active' : 'Inactive'}</td>
-              <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
-                <button onClick={() => handleDeactivate(sku.id, sku.isActive)}>
-                  {sku.isActive ? 'Deactivate' : 'Reactivate'}
-                </button>
-                <button onClick={() => handleDelete(sku.id, sku.code)} style={{ marginLeft: 6, color: 'crimson' }}>
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {showList && (
+        <>
+          <input
+            placeholder="Search by code, description, or category..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: '100%', padding: 8, marginBottom: 16, boxSizing: 'border-box' }}
+          />
 
-      {filtered.length === 0 && <p style={{ marginTop: 16 }}>No SKUs found.</p>}
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
+                <th style={{ padding: 8 }}>Code</th>
+                <th style={{ padding: 8 }}>Description</th>
+                <th style={{ padding: 8 }}>Category</th>
+                <th style={{ padding: 8 }}>Storage Units</th>
+                <th style={{ padding: 8 }}>Status</th>
+                <th style={{ padding: 8 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((sku) => (
+                <tr key={sku.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
+                  <td style={{ padding: 8, fontWeight: 'bold' }}>{sku.code}</td>
+                  <td style={{ padding: 8 }}>{sku.description}</td>
+                  <td style={{ padding: 8 }}>{sku.category.name}</td>
+                  <td style={{ padding: 8 }}>
+                    {sku.storageUnits.map((u) => `${u.unitType}=${u.qtyInBaseUom}${u.isPreferred ? ' *' : ''}`).join(', ')}
+                  </td>
+                  <td style={{ padding: 8 }}>{sku.isActive ? 'Active' : 'Inactive'}</td>
+                  <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
+                    <button onClick={() => handleDeactivate(sku.id, sku.isActive)}>
+                      {sku.isActive ? 'Deactivate' : 'Reactivate'}
+                    </button>
+                    <button onClick={() => handleDelete(sku.id, sku.code)} style={{ marginLeft: 6, color: 'crimson' }}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {filtered.length === 0 && <p style={{ marginTop: 16 }}>No SKUs found.</p>}
+        </>
+      )}
     </div>
   );
 }
