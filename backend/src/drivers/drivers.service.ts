@@ -50,6 +50,21 @@ export class DriversService {
     return this.prisma.driver.findMany({ where: companyFilter(user), orderBy: { name: 'asc' } });
   }
 
+  // Export only — see VehiclesService.exportRows for why there's no bulk
+  // import counterpart (2026-08-27 Vehicle & Driver Master pass).
+  async exportRows(user: any) {
+    const drivers = await this.findAll(user);
+    return drivers.map((d) => ({
+      'Name': d.name,
+      'Phone': d.phone ?? '',
+      'License Number': d.licenseNumber ?? '',
+      'License Expiry': d.licenseExpiry ? d.licenseExpiry.toISOString().slice(0, 10) : '',
+      'Blacklisted': d.isBlacklisted ? 'TRUE' : 'FALSE',
+      'Blacklist Reason': d.blacklistReason ?? '',
+      'Active': d.isActive ? 'TRUE' : 'FALSE',
+    }));
+  }
+
   private async assertAccess(id: string, user: any) {
     const driver = await this.prisma.driver.findUnique({ where: { id } });
     if (!driver) throw new NotFoundException('Driver not found.');

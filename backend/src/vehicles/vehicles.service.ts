@@ -97,6 +97,34 @@ export class VehiclesService {
     });
   }
 
+  // Export only — no bulk import for Vehicle/Driver (deliberate, 2026-08-27
+  // Vehicle & Driver Master pass: registration is a one-time-per-vehicle
+  // manual step via Gate & Yard's Register modal, not a batch-onboarding
+  // scenario the way Users/SKUs are).
+  async exportRows(user: any) {
+    const vehicles = await this.findAll(user);
+    return vehicles.map((v) => ({
+      'Vehicle Number': v.vehicleNumber,
+      'Vehicle Type': v.vehicleType.name,
+      'Segment': v.vehicleType.segment,
+      'Max Capacity (Ton)': v.maxTonnage ?? v.vehicleType.maxTonnage,
+      'Length (ft)': v.lengthFt ?? '',
+      'Width (ft)': v.widthFt ?? '',
+      'Height (ft)': v.heightFt ?? '',
+      'RC Number': v.rcNumber ?? '',
+      'RC Expiry': v.rcExpiry ? v.rcExpiry.toISOString().slice(0, 10) : '',
+      'Insurance Number': v.insuranceNumber ?? '',
+      'Insurance Expiry': v.insuranceExpiry ? v.insuranceExpiry.toISOString().slice(0, 10) : '',
+      'PUC Number': v.pucNumber ?? '',
+      'PUC Expiry': v.pucExpiry ? v.pucExpiry.toISOString().slice(0, 10) : '',
+      'Fitness Number': v.fitnessNumber ?? '',
+      'Fitness Expiry': v.fitnessExpiry ? v.fitnessExpiry.toISOString().slice(0, 10) : '',
+      'Blacklisted': v.isBlacklisted ? 'TRUE' : 'FALSE',
+      'Blacklist Reason': v.blacklistReason ?? '',
+      'Active': v.isActive ? 'TRUE' : 'FALSE',
+    }));
+  }
+
   private async assertAccess(id: string, user: any) {
     const vehicle = await this.prisma.vehicle.findUnique({ where: { id } });
     if (!vehicle) throw new NotFoundException('Vehicle not found.');

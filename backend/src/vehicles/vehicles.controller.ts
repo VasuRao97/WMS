@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
+import * as XLSX from 'xlsx';
 import { VehiclesService } from './vehicles.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -21,6 +23,21 @@ export class VehiclesController {
   @Roles(...GATE_YARD_READ_ROLES)
   findAll(@CurrentUser() user: any) {
     return this.vehiclesService.findAll(user);
+  }
+
+  @Get('export')
+  @Roles(...GATE_YARD_READ_ROLES)
+  async export(@Res() res: Response, @CurrentUser() user: any) {
+    const rows = await this.vehiclesService.exportRows(user);
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Vehicle Master');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': 'attachment; filename="Vehicle_Master_Export.xlsx"',
+    });
+    res.send(buffer);
   }
 
   @Patch(':id')
