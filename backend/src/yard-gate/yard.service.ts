@@ -1,12 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
+import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
 
-// Yard Management (2026-08-26) — the summary/parked-list read side of the
-// yard-slot tracking built in GateEntriesService. Deliberately its own
-// small service rather than folded into DockDoorsService/GateEntriesService
-// — this is a reporting view over data those two already own, not a third
-// place that mutates YardSlot/VehicleGateEntry.
+// Yard Management (2026-08-26, extended 2026-08-27) — the summary/tracker
+// read side of the yard-slot tracking built in GateEntriesService.
+// Deliberately its own small service rather than folded into
+// DockDoorsService/GateEntriesService — this is a reporting view over data
+// those two already own, not a third place that mutates
+// YardSlot/VehicleGateEntry.
 @Injectable()
 export class YardService {
   constructor(private prisma: PrismaService) {}
@@ -22,6 +23,7 @@ export class YardService {
   // 2026-08-25 that this should be a clean "not configured" state, not an
   // empty/zero stat box).
   async summary(user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const warehouseIds = await this.accessibleWarehouseIds(user);
     const warehouses = await this.prisma.warehouse.findMany({
       where: { ...companyFilter(user), ...(warehouseIds ? { id: { in: warehouseIds } } : {}) },
@@ -49,18 +51,29 @@ export class YardService {
     });
   }
 
-  // Vehicles currently sitting in the yard (slot assigned, not yet docked
-  // in or gated out) — the "working table" from the Yard Management design
-  // conversation. Elapsed time is never stored, only computed here at read
-  // time (NOW - gateInAt), same "always derive" philosophy as net weight.
-  async parked(user: any, warehouseId?: string) {
+  // The "working table" — every gate entry still open (not yet gated out),
+  // whether it's still waiting in the yard or has already been marked
+  // Docked In. Elapsed times are never stored, only computed here at read
+  // time, same "always derive" philosophy as net weight:
+  //  - hoursInParking: gateInAt -> dockedInAt (fixed, once docked) or
+  //    gateInAt -> NOW (still climbing, while waiting).
+  //  - hoursInDock: null until dockedInAt is set, then dockedInAt -> NOW
+  //    (a docked-but-not-yet-gated-out vehicle is still "in dock" by
+  //    definition — this row disappears from the table entirely once Gate
+  //    Out closes it).
+  async tracker(user: any, warehouseId?: string) {
+    await assertGateAccessAllowed(this.prisma, user);
     const warehouseIds = await this.accessibleWarehouseIds(user);
-    const where: any = {
-      yardSlotId: { not: null },
-      dockedInAt: null,
-      gateOutAt: null,
-      warehouse: { ...companyFilter(user) },
-    };
+    // Real bug caught 2026-08-27 (client-reported, "supervisor should only
+    // see that warehouse, not all"): an explicit ?warehouseId= query param
+    // used to override the scoped role's own-warehouse restriction entirely
+    // — a Supervisor could just pass a different warehouse's id and see it.
+    // An explicit id must now fall WITHIN the caller's own accessible set,
+    // never bypass it.
+    if (warehouseId && warehouseIds && !warehouseIds.includes(warehouseId)) {
+      throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+    const where: any = { gateOutAt: null, warehouse: { ...companyFilter(user) } };
     if (warehouseId) where.warehouseId = warehouseId;
     else if (warehouseIds) where.warehouseId = { in: warehouseIds };
 
@@ -75,6 +88,8 @@ export class YardService {
     });
 
     const now = Date.now();
+    const hoursBetween = (start: Date, end: number) => (end - start.getTime()) / (1000 * 60 * 60);
+
     return entries.map((e) => ({
       gateEntryId: e.id,
       warehouse: e.warehouse,
@@ -83,7 +98,10 @@ export class YardService {
       destinationCity: e.destinationCity,
       transporterName: e.transporterName,
       gateInAt: e.gateInAt,
-      elapsedHours: (now - e.gateInAt.getTime()) / (1000 * 60 * 60),
+      dockedInAt: e.dockedInAt,
+      status: e.dockedInAt ? 'DOCKED' : 'IN_YARD',
+      hoursInParking: hoursBetween(e.gateInAt, e.dockedInAt ? e.dockedInAt.getTime() : now),
+      hoursInDock: e.dockedInAt ? hoursBetween(e.dockedInAt, now) : null,
     }));
   }
 }

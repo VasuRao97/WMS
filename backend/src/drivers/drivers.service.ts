@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter } from '../common/tenant.util';
+import { assertGateAccessAllowed, companyFilter } from '../common/tenant.util';
 
 // Registered driver master — see schema.prisma's comment on the Driver
 // model. Company-scoped like Vehicle, not warehouse-scoped. No unique
@@ -24,6 +24,7 @@ export class DriversService {
   }
 
   async create(data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     if (!user.companyId) {
       throw new ForbiddenException('Super admin accounts cannot register drivers directly — log in as a company admin instead.');
     }
@@ -45,6 +46,7 @@ export class DriversService {
   }
 
   async findAll(user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     return this.prisma.driver.findMany({ where: companyFilter(user), orderBy: { name: 'asc' } });
   }
 
@@ -58,6 +60,7 @@ export class DriversService {
   }
 
   async update(id: string, data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     await this.assertAccess(id, user);
     const errors: string[] = [];
     this.validate(data, errors);
@@ -77,16 +80,19 @@ export class DriversService {
   }
 
   async deactivate(id: string, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     await this.assertAccess(id, user);
     return this.prisma.driver.update({ where: { id }, data: { isActive: false } });
   }
 
   async reactivate(id: string, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     await this.assertAccess(id, user);
     return this.prisma.driver.update({ where: { id }, data: { isActive: true } });
   }
 
   async removeAll(user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const drivers = await this.prisma.driver.findMany({
       where: companyFilter(user),
       select: { id: true, name: true, _count: { select: { gateEntries: true } } },
@@ -98,6 +104,7 @@ export class DriversService {
   }
 
   async remove(id: string, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const driver = await this.assertAccess(id, user);
     const count = await this.prisma.vehicleGateEntry.count({ where: { driverId: id } });
     if (count > 0) {

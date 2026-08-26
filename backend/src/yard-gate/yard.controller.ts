@@ -17,9 +17,11 @@ export class YardController {
     return this.yardService.summary(user);
   }
 
-  @Get('parked')
+  // Renamed from "parked" (2026-08-27) — now covers docked-but-not-gated-out
+  // vehicles too, not just ones still waiting in the yard.
+  @Get('tracker')
   @Roles(...GATE_YARD_READ_ROLES)
-  parked(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
-    return this.yardService.parked(user, warehouseId);
+  tracker(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+    return this.yardService.tracker(user, warehouseId);
   }
 }

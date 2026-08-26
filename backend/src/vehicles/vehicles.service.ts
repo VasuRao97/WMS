@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter } from '../common/tenant.util';
+import { assertGateAccessAllowed, companyFilter } from '../common/tenant.util';
 import { toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 // Registered vehicle master — see schema.prisma's comment on the Vehicle
@@ -30,6 +30,7 @@ export class VehiclesService {
       ['lengthFt', 'Length'],
       ['widthFt', 'Width'],
       ['heightFt', 'Height'],
+      ['maxTonnage', 'Max Capacity'],
     ] as const) {
       const v = data[field];
       if (v !== undefined && v !== null && v !== '' && Number(v) <= 0) errors.push(`${label} must be a positive number when given.`);
@@ -49,6 +50,7 @@ export class VehiclesService {
   }
 
   async create(data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     if (!user.companyId) {
       throw new ForbiddenException('Super admin accounts cannot register vehicles directly — log in as a company admin instead.');
     }
@@ -70,6 +72,7 @@ export class VehiclesService {
         lengthFt: toNumberOrUndefined(data.lengthFt),
         widthFt: toNumberOrUndefined(data.widthFt),
         heightFt: toNumberOrUndefined(data.heightFt),
+        maxTonnage: toNumberOrUndefined(data.maxTonnage),
         rcNumber: data.rcNumber || undefined,
         rcExpiry: this.toDate(data.rcExpiry),
         insuranceNumber: data.insuranceNumber || undefined,
@@ -86,6 +89,7 @@ export class VehiclesService {
   }
 
   async findAll(user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     return this.prisma.vehicle.findMany({
       where: companyFilter(user),
       include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } },
@@ -103,6 +107,7 @@ export class VehiclesService {
   }
 
   async update(id: string, data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const existingVehicle = await this.assertAccess(id, user);
     const errors: string[] = [];
     const vehicleNumber = this.validate(data, errors);
@@ -122,6 +127,7 @@ export class VehiclesService {
         lengthFt: toNumberOrUndefined(data.lengthFt) ?? null,
         widthFt: toNumberOrUndefined(data.widthFt) ?? null,
         heightFt: toNumberOrUndefined(data.heightFt) ?? null,
+        maxTonnage: toNumberOrUndefined(data.maxTonnage) ?? null,
         rcNumber: data.rcNumber || null,
         rcExpiry: this.toDate(data.rcExpiry) ?? null,
         insuranceNumber: data.insuranceNumber || null,
@@ -138,16 +144,19 @@ export class VehiclesService {
   }
 
   async deactivate(id: string, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     await this.assertAccess(id, user);
     return this.prisma.vehicle.update({ where: { id }, data: { isActive: false } });
   }
 
   async reactivate(id: string, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     await this.assertAccess(id, user);
     return this.prisma.vehicle.update({ where: { id }, data: { isActive: true } });
   }
 
   async removeAll(user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const vehicles = await this.prisma.vehicle.findMany({
       where: companyFilter(user),
       select: { id: true, vehicleNumber: true, _count: { select: { gateEntries: true } } },
@@ -159,6 +168,7 @@ export class VehiclesService {
   }
 
   async remove(id: string, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const vehicle = await this.assertAccess(id, user);
     const count = await this.prisma.vehicleGateEntry.count({ where: { vehicleId: id } });
     if (count > 0) {

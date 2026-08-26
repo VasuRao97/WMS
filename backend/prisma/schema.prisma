@@ -18,11 +18,20 @@ datasource db {
 // AUTH / MASTER DATA
 // ------------------------------------------------------------
 
+// SECURITY_SUPERVISOR added 2026-08-27 — same hierarchy level/creatable-by
+// rules as WAREHOUSE_SUPERVISOR (a peer, not a sub-role), but a different
+// surface: gate/yard duty instead of general warehouse oversight. Confirmed
+// with the client as a genuinely new role tier, not a flag layered onto an
+// existing one — "same level as a wh supervisor, just with different access
+// permissions." See tenant.util.ts's GATE_YARD_ALWAYS_ALLOWED_ROLES and
+// Company.restrictGateAccessToSecuritySupervisor for how it gates the Gate
+// In/Out page.
 enum Role {
   SUPER_ADMIN
   COMPANY_ADMIN
   WAREHOUSE_MANAGER
   WAREHOUSE_SUPERVISOR
+  SECURITY_SUPERVISOR
   OPERATOR
 }
 
@@ -59,6 +68,15 @@ model Company {
   // financial-year quarters (Apr-Jun/Jul-Sep/Oct-Dec/Jan-Mar), not calendar
   // quarters — confirmed with the client 2026-08-25.
   gatePassResetPeriod GatePassResetPeriod @default(FINANCIAL_YEAR)
+
+  // When on, the Gate In/Out page (and Vehicle/Driver registration, now that
+  // both only live on that page) is restricted to SECURITY_SUPERVISOR and
+  // above — a general WAREHOUSE_SUPERVISOR/OPERATOR loses access. Defaults
+  // off (today's broad access, unchanged) since no company has any
+  // SECURITY_SUPERVISOR accounts yet the moment this ships — turning it on
+  // is a deliberate opt-in once those accounts actually exist, not the
+  // default. 2026-08-27 design conversation.
+  restrictGateAccessToSecuritySupervisor Boolean @default(false)
 }
 
 enum GatePassResetPeriod {
@@ -608,6 +626,13 @@ model Vehicle {
   widthFt  Decimal?
   heightFt Decimal?
 
+  // Actual registered max payload capacity for THIS specific vehicle, in
+  // Tons — same override-when-known/fallback-to-VehicleType-otherwise
+  // pattern as the dimensions above. Added 2026-08-27 specifically so the
+  // Gate Out overweight check compares an outbound load against the real
+  // truck's registered capacity, not just its generic segment ceiling.
+  maxTonnage Decimal?
+
   rcNumber        String?
   rcExpiry        DateTime?
   insuranceNumber String?
@@ -804,6 +829,20 @@ model VehicleGateEntry {
   // already capture who/when, so no separate timestamp needed here), to be
   // replaced by a real system-driven check once Inbound is built.
   materialReceivedConfirmed Boolean @default(false)
+
+  // Overweight check for Outbound Dispatch only — this is the client's own
+  // KPI (2026-08-27). Real total should eventually be computed as
+  // SUM(OutboundOrderLine.orderedQty * Sku.grossWeight) once a real
+  // Outbound/Invoice module exists (that schema — Sku.grossWeight,
+  // OutboundOrderLine — already exists and needs no further changes for
+  // this). Until then, this is a plain manual entry at Gate Out, same
+  // "dummy for now" pattern as dockedInAt. Compared against
+  // Vehicle.maxTonnage (falling back to VehicleType.maxTonnage) — over that
+  // ceiling blocks Gate Out entirely, it's not just a warning. The
+  // comparison itself is never stored, only this raw input — always
+  // re-derived against whatever the vehicle's current registered capacity
+  // is at read time.
+  invoiceWeightKg Decimal?
 
   // Weight Bridge — real manual entry (not just an integration hook like
   // erpCode): an operator types the gross and tare readings in directly.

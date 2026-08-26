@@ -11,14 +11,22 @@ import { normalizeCode } from '../common/normalize.util';
 // roles strictly below itself. A configurable per-company permission matrix
 // (toggle-based, replacing this hardcoded map) was discussed and deliberately
 // deferred — see CLAUDE.md's role/access notes once written up.
+//
+// SECURITY_SUPERVISOR (2026-08-27) sits at the SAME level as
+// WAREHOUSE_SUPERVISOR, not above or below it — confirmed explicitly with
+// the client ("same level as a wh supervisor, just with different access
+// permissions"). WAREHOUSE_MANAGER can create both peer roles; neither
+// Supervisor variant can create the other (peers never create peers, only
+// COMPANY_ADMIN does); both can only create OPERATOR below them.
 const CREATABLE_ROLES: Record<string, string[]> = {
-  COMPANY_ADMIN: ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'],
-  WAREHOUSE_MANAGER: ['WAREHOUSE_SUPERVISOR', 'OPERATOR'],
+  COMPANY_ADMIN: ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'],
+  WAREHOUSE_MANAGER: ['WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'],
   WAREHOUSE_SUPERVISOR: ['OPERATOR'],
+  SECURITY_SUPERVISOR: ['OPERATOR'],
   OPERATOR: [],
 };
 
-const ROLE_VALUES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+const ROLE_VALUES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'];
 
 // Shop-floor Supervisor/Operator accounts log in with an arbitrary unique ID,
 // not necessarily a real email address — only Admin/Manager accounts are

@@ -12,11 +12,16 @@ import { stripHeaderAsterisks } from '../common/xlsx-parse.util';
 
 // OPERATOR never touches this controller — no master-data visibility for
 // that role, per the role-access design (see CLAUDE.md once written up).
-// Reuses MASTER_DATA_READ_ROLES as the entry gate (same three roles get past
-// the door); which of them can actually create/edit a given target role is a
-// further, per-request check inside UsersService — it depends on the caller's
-// own role and target role, not a fixed list a single @Roles() can express.
-const CAN_MANAGE_USERS = MASTER_DATA_READ_ROLES;
+// Reuses MASTER_DATA_READ_ROLES as the entry gate, PLUS SECURITY_SUPERVISOR
+// (2026-08-27) — that role is excluded from the other four master-data pages
+// (Warehouse/SKU/Customer/Location) same as OPERATOR, but Users is the one
+// exception: CREATABLE_ROLES lets a SECURITY_SUPERVISOR create/manage
+// OPERATOR accounts under them, so they need to actually reach this
+// controller. Which of the gated-in roles can create/edit a given target
+// role is a further, per-request check inside UsersService — it depends on
+// the caller's own role and target role, not a fixed list a single
+// @Roles() can express.
+const CAN_MANAGE_USERS = [...MASTER_DATA_READ_ROLES, 'SECURITY_SUPERVISOR'];
 
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)

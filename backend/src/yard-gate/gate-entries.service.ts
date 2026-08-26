@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
-import { companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
+import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
 
 // VEHICLE_ONLY (a non-cargo visit) was considered and dropped 2026-08-25 —
 // no concrete real use case for it, easy to add back later if one shows up.
@@ -17,7 +17,7 @@ const DOCUMENT_STATUS_VALUES = ['OK', 'FLAGGED', 'MISSING'];
 
 const GATE_ENTRY_INCLUDE = {
   warehouse: { select: { id: true, code: true, name: true } },
-  vehicle: { select: { id: true, vehicleNumber: true, vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } } },
+  vehicle: { select: { id: true, vehicleNumber: true, maxTonnage: true, vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } } },
   driver: { select: { id: true, name: true, phone: true } },
   yardSlot: { select: { id: true, code: true } },
   gateInBy: { select: { id: true, name: true } },
@@ -165,6 +165,7 @@ export class GateEntriesService {
   }
 
   async create(data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     if (!user.companyId) {
       throw new ForbiddenException('Super admin accounts cannot log gate entries directly — log in as a company admin instead.');
     }
@@ -230,6 +231,7 @@ export class GateEntriesService {
   }
 
   async findAll(user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const where: any = { warehouse: { ...companyFilter(user) } };
     if (GATE_YARD_SCOPED_ROLES.includes(user.role)) {
       where.warehouseId = { in: await ownWarehouseIds(this.prisma, user.userId) };
@@ -242,8 +244,44 @@ export class GateEntriesService {
     return entries.map((e) => this.attachNetWeight(e));
   }
 
+  // A raw dump — everything in scope, not filtered by date here (the
+  // client's own framing: "dump export when we need for date filter,"
+  // i.e. filtering happens in Excel afterward, not in this endpoint).
+  // Same shape convention as every other master-data export in this
+  // codebase, applied to a transaction log for the first time.
+  async exportRows(user: any) {
+    const entries = await this.findAll(user);
+    return entries.map((e: any) => ({
+      'Gate In At': e.gateInAt ? e.gateInAt.toISOString() : '',
+      'Gate In By': e.gateInBy?.name || '',
+      'Warehouse': e.warehouse.code,
+      'Vehicle Number': e.vehicle.vehicleNumber,
+      'Driver': e.driver.name,
+      'Transporter': e.transporterName || '',
+      'Purpose': e.purpose,
+      'Reference No': e.referenceNo || '',
+      'Destination City': e.destinationCity || '',
+      'Yard Slot': e.yardSlot?.code || '',
+      'Docked In At': e.dockedInAt ? e.dockedInAt.toISOString() : '',
+      'Docked In By': e.dockedInBy?.name || '',
+      'Gate Out At': e.gateOutAt ? e.gateOutAt.toISOString() : '',
+      'Gate Out By': e.gateOutBy?.name || '',
+      'E-Way Bill No': e.eWayBillNo || '',
+      'Invoice Weight Kg': e.invoiceWeightKg ?? '',
+      'Material Received Confirmed': e.materialReceivedConfirmed ? 'TRUE' : 'FALSE',
+      'Gross Weight Kg': e.grossWeightKg ?? '',
+      'Tare Weight Kg': e.tareWeightKg ?? '',
+      'Net Weight Kg': e.netWeightKg ?? '',
+      'Document Checks': (e.documentChecks || []).map((d: any) => `${d.documentType}:${d.status}`).join(', '),
+      'Status': e.gateOutAt ? 'GATED_OUT' : e.dockedInAt ? 'DOCKED' : 'IN_YARD',
+    }));
+  }
+
   private async assertAccess(id: string, user: any) {
-    const entry = await this.prisma.vehicleGateEntry.findUnique({ where: { id }, include: { warehouse: true } });
+    const entry = await this.prisma.vehicleGateEntry.findUnique({
+      where: { id },
+      include: { warehouse: true, vehicle: { include: { vehicleType: true } } },
+    });
     if (!entry) throw new NotFoundException('Gate entry not found.');
     if (user.role !== 'SUPER_ADMIN' && entry.warehouse.companyId !== user.companyId) {
       throw new ForbiddenException('You do not have access to this gate entry.');
@@ -261,6 +299,7 @@ export class GateEntriesService {
   // data-integrity smell, not a real correction) — a mistaken entry should
   // be re-logged instead.
   async update(id: string, data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
     if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out — its entry can no longer be edited.');
 
@@ -289,6 +328,7 @@ export class GateEntriesService {
   // stops here. No dock door selection, no appointment logic — that's a
   // separate future feature. See schema.prisma's comment on `dockedInAt`.
   async dockIn(id: string, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
     if (existing.dockedInAt) throw new BadRequestException('This vehicle has already been marked docked in.');
     if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
@@ -312,13 +352,15 @@ export class GateEntriesService {
   // design conversation — see CLAUDE.md):
   //  - OUTBOUND_DISPATCH: an E-Way Bill number, but only if this company has
   //    opted into requiring it (Company.requireEwayBillForOutboundGateOut) —
-  //    not every client routes E-Way Bill data through this system.
+  //    not every client routes E-Way Bill data through this system. ALSO an
+  //    overweight check (2026-08-27, the client's own KPI, not toggleable) —
+  //    see invoiceWeightKg below.
   //  - INBOUND_DELIVERY: a plain manual "all material received" confirmation
   //    — a placeholder until real Inbound/Receiving exists to drive this
   //    automatically.
-  //  - RETURNS / VEHICLE_ONLY: neither requirement applies (not yet raised
-  //    as a real need for these purposes).
+  //  - RETURNS: neither requirement applies (not yet raised as a real need).
   async gateOut(id: string, data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
     if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
 
@@ -333,10 +375,34 @@ export class GateEntriesService {
     const eWayBillNo = data?.eWayBillNo !== undefined ? String(data.eWayBillNo).trim() || undefined : undefined;
     const materialReceivedConfirmed = !!data?.materialReceivedConfirmed;
 
+    let invoiceWeightKg: number | undefined;
+    if (data?.invoiceWeightKg !== undefined && data.invoiceWeightKg !== null && data.invoiceWeightKg !== '') {
+      invoiceWeightKg = Number(data.invoiceWeightKg);
+      if (!Number.isFinite(invoiceWeightKg) || invoiceWeightKg <= 0) errors.push('Invoice Weight must be a positive number.');
+    }
+
     if (existing.purpose === 'OUTBOUND_DISPATCH') {
       const company = await this.prisma.company.findUnique({ where: { id: existing.warehouse.companyId } });
       if (company?.requireEwayBillForOutboundGateOut && !eWayBillNo) {
         errors.push('An E-Way Bill number is required before this vehicle can gate out.');
+      }
+      // Overweight check — the client's own KPI, always on for Outbound (not
+      // a per-company toggle like the E-Way Bill requirement above). Real
+      // total should eventually be SUM(orderLine.orderedQty * sku.grossWeight)
+      // once Outbound exists; invoiceWeightKg is a manual placeholder for
+      // that number until then — see schema.prisma's comment on the field.
+      // Compares against Vehicle.maxTonnage, falling back to VehicleType's
+      // generic ceiling when no per-vehicle override was registered.
+      if (invoiceWeightKg === undefined) {
+        errors.push('Invoice Weight is required before an Outbound vehicle can gate out.');
+      } else if (errors.length === 0) {
+        const maxTonnage = existing.vehicle.maxTonnage ?? existing.vehicle.vehicleType.maxTonnage;
+        const maxWeightKg = Number(maxTonnage) * 1000;
+        if (invoiceWeightKg > maxWeightKg) {
+          errors.push(
+            `This vehicle is OVERWEIGHT — invoice weight ${invoiceWeightKg} kg exceeds "${existing.vehicle.vehicleNumber}"'s registered max capacity of ${maxWeightKg} kg (${maxTonnage} Ton). Gate Out is blocked.`,
+          );
+        }
       }
     } else if (existing.purpose === 'INBOUND_DELIVERY') {
       if (!materialReceivedConfirmed) {
@@ -357,6 +423,7 @@ export class GateEntriesService {
           eWayBillNo,
           eWayBillGeneratedAt: eWayBillNo !== undefined ? new Date() : undefined,
           materialReceivedConfirmed,
+          invoiceWeightKg,
         },
         include: GATE_ENTRY_INCLUDE,
       });
