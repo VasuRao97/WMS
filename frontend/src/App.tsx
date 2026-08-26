@@ -5,15 +5,17 @@ import LoginPage from './LoginPage';
 import CustomersPage from './CustomersPage';
 import UsersPage from './UsersPage';
 import LocationsPage from './LocationsPage';
-import VehiclesPage from './VehiclesPage';
-import DriversPage from './DriversPage';
+import GateYardPage from './GateYardPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
-const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
+// SECURITY_SUPERVISOR (2026-08-27) is included here even though it has no
+// access to the other master-data tabs — it's the one exception, needed to
+// manage the OPERATOR accounts under it.
+const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR'];
 
 function App() {
-  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'vehicles' | 'drivers'>('warehouses');
+  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard'>('warehouses');
   const [user, setUser] = useState<any>(
     localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
   );
@@ -49,11 +51,8 @@ function App() {
         <button onClick={() => setTab('locations')} style={{ fontWeight: tab === 'locations' ? 'bold' : 'normal' }}>
           Locations
         </button>
-        <button onClick={() => setTab('vehicles')} style={{ fontWeight: tab === 'vehicles' ? 'bold' : 'normal' }}>
-          Vehicles
-        </button>
-        <button onClick={() => setTab('drivers')} style={{ fontWeight: tab === 'drivers' ? 'bold' : 'normal' }}>
-          Drivers
+        <button onClick={() => setTab('gateyard')} style={{ fontWeight: tab === 'gateyard' ? 'bold' : 'normal' }}>
+          Gate &amp; Yard
         </button>
         {CAN_MANAGE_USERS.includes(user?.role) && (
           <button onClick={() => setTab('users')} style={{ fontWeight: tab === 'users' ? 'bold' : 'normal' }}>
@@ -73,10 +72,8 @@ function App() {
         <CustomersPage />
       ) : tab === 'locations' ? (
         <LocationsPage />
-      ) : tab === 'vehicles' ? (
-        <VehiclesPage />
-      ) : tab === 'drivers' ? (
-        <DriversPage />
+      ) : tab === 'gateyard' ? (
+        <GateYardPage />
       ) : (
         <UsersPage />
       )}

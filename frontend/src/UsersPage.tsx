@@ -29,9 +29,10 @@ function formatLastLogin(lastLoginAt?: string | null): string {
 // the real enforcement, this is just UX (don't let someone pick a role their
 // role can't create and then get a 403 after filling in the whole form).
 const CREATABLE_ROLES: Record<string, string[]> = {
-  COMPANY_ADMIN: ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'],
-  WAREHOUSE_MANAGER: ['WAREHOUSE_SUPERVISOR', 'OPERATOR'],
+  COMPANY_ADMIN: ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'],
+  WAREHOUSE_MANAGER: ['WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'],
   WAREHOUSE_SUPERVISOR: ['OPERATOR'],
+  SECURITY_SUPERVISOR: ['OPERATOR'],
   OPERATOR: [],
 };
 
@@ -39,6 +40,7 @@ const ROLE_LABELS: Record<string, string> = {
   COMPANY_ADMIN: 'Company Admin',
   WAREHOUSE_MANAGER: 'Warehouse Manager',
   WAREHOUSE_SUPERVISOR: 'Warehouse Supervisor',
+  SECURITY_SUPERVISOR: 'Security Supervisor',
   OPERATOR: 'Operator',
 };
 
