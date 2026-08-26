@@ -77,6 +77,50 @@ model Company {
   // is a deliberate opt-in once those accounts actually exist, not the
   // default. 2026-08-27 design conversation.
   restrictGateAccessToSecuritySupervisor Boolean @default(false)
+
+  // Company-wide default detention rate, ₹/24hr (2026-08-27, revised same
+  // day) — the client reconsidered per-VehicleType granularity as the
+  // PRIMARY input: most companies will just set one number for their whole
+  // fleet ("we can ask the client to update this at the start"), not price
+  // out every vehicle class individually. Vehicle/VehicleType.
+  // detentionCostPerDay (added earlier the same day) are kept as optional
+  // overrides for a company that DOES want to get more granular later —
+  // resolution order is Vehicle -> VehicleType -> this company default
+  // (YardService.tracker()). Defaults to 15000 (a placeholder the client
+  // asked to ship with, "for now") so the calculation is visible
+  // immediately rather than every company starting unconfigured; a
+  // COMPANY_ADMIN can change or clear it from the new Company Settings
+  // page (companies/).
+  detentionCostPerDay Decimal? @default(15000)
+
+  // Free-time window before detention cost starts accruing at all, in
+  // hours (2026-08-27, correcting the earlier "no grace period" call —
+  // "one mistake, you were right"). Cost only starts counting once a
+  // vehicle's dwell exceeds this; the daily rate above then applies per
+  // 24-hour period measured from the END of this window, not from Gate In
+  // itself — so the full detentionCostPerDay amount is reached at
+  // (detentionFreeHours + 24) hours after Gate In, not at 24. See
+  // YardService.tracker() for the actual formula. Defaults to 4 — the
+  // client's own placeholder ("~4 hours"), same "ships with a number,
+  // adjustable later" pattern as detentionCostPerDay above.
+  detentionFreeHours Int? @default(4)
+
+  // Detention alerting — deliberately separate from the cost calculation
+  // above (which has its own grace period, detentionFreeHours). These two
+  // hour counts are purely about WHEN to notify someone, not about the cost
+  // math at all:
+  // detentionAlertHours is how long a vehicle can dwell before the first
+  // alert fires; detentionEscalationHours is how much longer after that,
+  // still unacknowledged, before it also goes to the Company Admin. Both
+  // nullable — a company that hasn't configured them gets no alerts, not a
+  // silent default threshold (unlike the cost rate above, alerting stays
+  // strictly opt-in).
+  detentionAlertHours      Int?
+  detentionEscalationHours Int?
+
+  notificationChannels CompanyNotificationChannel[]
+  notificationLogs     NotificationLog[]
+  selfCheckInRequests  SelfCheckInRequest[]
 }
 
 enum GatePassResetPeriod {
@@ -118,6 +162,10 @@ model User {
   gateEntriesIn     VehicleGateEntry[] @relation("GateInBy")
   gateEntriesOut    VehicleGateEntry[] @relation("GateOutBy")
   gateEntriesDocked VehicleGateEntry[] @relation("DockedInBy")
+
+  notificationsReceived       NotificationLog[]    @relation("NotificationRecipient")
+  notificationsEscalatedTo    NotificationLog[]    @relation("NotificationEscalatedTo")
+  selfCheckInRequestsReviewed SelfCheckInRequest[] @relation("SelfCheckInReviewedBy")
 }
 
 // Append-only login ledger — one row per successful login, never updated or
@@ -185,17 +233,19 @@ model Warehouse {
 
   assignedUsers User[]
 
-  shipToAssignments CustomerShipTo[]
-  locations         Location[]
-  inboundReceipts   InboundReceipt[]
-  outboundOrders    OutboundOrder[]
-  stockMovements    StockMovement[]
-  storageTypes      WarehouseStorageType[]
-  dispatchFlows     WarehouseDispatchFlow[]
-  dockDoors         DockDoor[]
-  gateEntries       VehicleGateEntry[]
-  yardSlots         YardSlot[]
-  gatePassSequences GatePassSequence[]
+  shipToAssignments   CustomerShipTo[]
+  locations           Location[]
+  inboundReceipts     InboundReceipt[]
+  outboundOrders      OutboundOrder[]
+  stockMovements      StockMovement[]
+  storageTypes        WarehouseStorageType[]
+  dispatchFlows       WarehouseDispatchFlow[]
+  dockDoors           DockDoor[]
+  gateEntries         VehicleGateEntry[]
+  yardSlots           YardSlot[]
+  gatePassSequences   GatePassSequence[]
+  notificationLogs    NotificationLog[]
+  selfCheckInRequests SelfCheckInRequest[]
 
   @@unique([companyId, code])
 }
@@ -596,6 +646,16 @@ model VehicleType {
   heightFt   Decimal
   maxTonnage Decimal
 
+  // Optional generic detention cost, ₹ per 24 hours, for this vehicle class
+  // (2026-08-27 — a 40ft container costs more in detention than a
+  // mini-truck) — revised same day to a secondary/optional tier, not the
+  // primary input: most companies just want one flat company-wide rate
+  // (Company.detentionCostPerDay), this is for a company that later wants
+  // to get more granular per vehicle class. Resolution order in
+  // YardService.tracker() is Vehicle -> VehicleType -> Company. Nullable —
+  // unset means this class just falls through to the company default.
+  detentionCostPerDay Decimal?
+
   vehicles Vehicle[]
 }
 
@@ -632,6 +692,18 @@ model Vehicle {
   // Gate Out overweight check compares an outbound load against the real
   // truck's registered capacity, not just its generic segment ceiling.
   maxTonnage Decimal?
+
+  // Optional per-vehicle override — same "override when known" pattern as
+  // maxTonnage/dimensions above, for a specific truck on a specific
+  // contract rate. Most companies won't set this at all and just rely on
+  // Company.detentionCostPerDay's flat rate (revised same day, 2026-08-27)
+  // — this and VehicleType's own rate are secondary refinement tiers for a
+  // company that wants more granularity later. Detention cost accrues past
+  // Company.detentionFreeHours's grace period — always computed live
+  // (Vehicle -> VehicleType -> Company, YardService.tracker()), never
+  // stored, same "always derive" philosophy as on-hand
+  // stock/capacity.
+  detentionCostPerDay Decimal?
 
   rcNumber        String?
   rcExpiry        DateTime?
@@ -811,6 +883,22 @@ model VehicleGateEntry {
   dockedInById String?
   dockedInBy   User?     @relation("DockedInBy", fields: [dockedInById], references: [id])
 
+  // Dock assignment → driver notification (2026-08-27) — the missing piece
+  // of "how does the driver know which dock to go to." Deliberately free
+  // text, not a link to DockDoor — this field is just capturing the OUTPUT
+  // of the real Dock Scheduler (not built yet, still fully deferred), typed
+  // in by hand by a Security Supervisor standing in for that system. Setting
+  // or changing it immediately fires an SMS + automated voice call to the
+  // Driver's own phone (DriverNotificationService, yard-gate module) — see
+  // DriverDockNotification below for the audit trail. dockAssignedAt drives
+  // the two-stage warning timer (15 min initial, another 15 min final
+  // warning, then nothing further automated — actually reassigning the dock
+  // to the next vehicle after that is explicitly the future Dock
+  // Scheduler's job, not built here) and resets on every reassignment.
+  assignedDockNumber      String?
+  dockAssignedAt          DateTime?
+  driverDockNotifications DriverDockNotification[]
+
   // E-Way Bill — for an Outbound Dispatch, generated by us AFTER loading,
   // right before the truck leaves, so it's captured here at Gate Out.
   // (An Inbound Delivery's E-Way Bill was already generated by the sender
@@ -855,9 +943,49 @@ model VehicleGateEntry {
 
   documentChecks GateEntryDocumentCheck[]
 
+  // Back-reference only — set when this entry was created by staff
+  // confirming a SelfCheckInRequest rather than a normal Gate In. See that
+  // model's comment for the full self-service check-in flow.
+  selfCheckInRequest SelfCheckInRequest?
+
   createdAt DateTime @default(now())
 
   @@index([warehouseId, gateInAt])
+}
+
+enum DockNotificationStage {
+  INITIAL
+  FINAL_WARNING
+}
+
+// The audit trail for VehicleGateEntry.assignedDockNumber's driver
+// notifications (2026-08-27) — deliberately separate from NotificationLog
+// (which is for staff/User recipients only): a Driver isn't a User, has no
+// login, and is reached by phone (SMS + an automated voice call), not
+// email. driverPhone is a snapshot of the number actually dialed/texted at
+// the time — kept even if the Driver record's phone changes later, so this
+// stays real proof of what was contacted. status only ever reaches
+// SENT/FAILED here (reusing NotificationStatus from the staff-notification
+// side rather than a redundant enum) — ACKNOWLEDGED doesn't apply, a driver
+// has no way to acknowledge through this system. Whether the call was
+// actually ANSWERED (vs just dialed) is an explicit later upgrade, not
+// built now — the client's own call: "Dailed / Sent sms @ what time is
+// what we need to start building now, answered/non answer is a later
+// upgrade."
+model DriverDockNotification {
+  id           String                @id @default(uuid())
+  gateEntryId  String
+  gateEntry    VehicleGateEntry      @relation(fields: [gateEntryId], references: [id])
+  stage        DockNotificationStage
+  channel      NotificationChannel
+  driverPhone  String
+  message      String
+  status       NotificationStatus    @default(PENDING)
+  sentAt       DateTime?
+  errorMessage String?
+  createdAt    DateTime              @default(now())
+
+  @@index([gateEntryId, stage])
 }
 
 // What's checked at the gate — License/Insurance/RC/PUC/Fitness — against
@@ -883,14 +1011,144 @@ enum GateDocumentStatus {
 }
 
 model GateEntryDocumentCheck {
-  id           String              @id @default(uuid())
+  id           String             @id @default(uuid())
   gateEntryId  String
-  gateEntry    VehicleGateEntry    @relation(fields: [gateEntryId], references: [id])
+  gateEntry    VehicleGateEntry   @relation(fields: [gateEntryId], references: [id])
   documentType GateDocumentType
   status       GateDocumentStatus
   note         String?
 
   @@unique([gateEntryId, documentType])
+}
+
+// ------------------------------------------------------------
+// NOTIFICATIONS & SELF-SERVICE CHECK-IN
+// ------------------------------------------------------------
+
+// 2026-08-27 design conversation: the client wants real capacity to notify
+// by SMS, Email, or WhatsApp depending on what a given client company
+// actually wants ("we need to have capacity to do all... depending on the
+// client requirement"), not one hardcoded channel. This is schema +
+// architecture only — no provider is actually wired up yet (no MSG91/
+// Twilio/etc. API calls exist anywhere in this codebase). The first real
+// trigger is detention alerting (Company.detentionAlertHours/
+// detentionEscalationHours above); more event types get added to
+// NotificationEventType the same way SECURITY_SUPERVISOR was added to Role
+// (ALTER TYPE ... ADD VALUE) as they're actually built.
+enum NotificationChannel {
+  SMS
+  EMAIL
+  WHATSAPP
+  // Added 2026-08-27 for driver dock-assignment notifications — an
+  // automated call, not a message, genuinely different capability than the
+  // three above (telephony, not messaging). See DriverDockNotification.
+  VOICE_CALL
+}
+
+enum NotificationEventType {
+  DETENTION_ALERT
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  ACKNOWLEDGED
+}
+
+// Per-company, per-channel configuration — a child table rather than flat
+// booleans on Company, since a company can enable more than one channel at
+// once (same "more than one of, make it a child table" rule as
+// SkuBarcode/CustomerShipTo). senderId/fromAddress are the per-company
+// identity a message goes out under (e.g. their own WhatsApp Business
+// number); the actual provider API key/secret deliberately does NOT live
+// here — that stays in environment config (same place JWT_SECRET lives),
+// not the database, until this gets real encryption-at-rest. providerName
+// is informational only for now (e.g. "MSG91").
+model CompanyNotificationChannel {
+  id           String              @id @default(uuid())
+  companyId    String
+  company      Company             @relation(fields: [companyId], references: [id])
+  channel      NotificationChannel
+  isEnabled    Boolean             @default(false)
+  senderId     String?
+  fromAddress  String?
+  providerName String?
+
+  @@unique([companyId, channel])
+}
+
+// The audit/delivery/escalation trail — one row per notification actually
+// sent (or attempted). referenceType/referenceId is a free-text pointer
+// (same pattern as StockMovement.referenceType) rather than a typed FK,
+// since NotificationEventType is meant to grow beyond gate-entry-linked
+// events (e.g. a future document-expiry alert would point at a Vehicle/
+// Driver, not a VehicleGateEntry). acknowledgedAt is set when the
+// recipient (a Manager) marks it seen; if that never happens within
+// Company.detentionEscalationHours, escalatedAt/escalatedToId record that
+// it also went to the Company Admin. message is the actual rendered text
+// sent, kept for audit even once templates change later.
+model NotificationLog {
+  id                String                @id @default(uuid())
+  companyId         String
+  company           Company               @relation(fields: [companyId], references: [id])
+  warehouseId       String?
+  warehouse         Warehouse?            @relation(fields: [warehouseId], references: [id])
+  eventType         NotificationEventType
+  referenceType     String?
+  referenceId       String?
+  channel           NotificationChannel
+  recipientUserId   String
+  recipient         User                  @relation("NotificationRecipient", fields: [recipientUserId], references: [id])
+  status            NotificationStatus    @default(PENDING)
+  message           String
+  sentAt            DateTime?
+  acknowledgedAt    DateTime?
+  escalatedAt       DateTime?
+  escalatedToId     String?
+  escalatedTo       User?                 @relation("NotificationEscalatedTo", fields: [escalatedToId], references: [id])
+  providerMessageId String?
+  errorMessage      String?
+  createdAt         DateTime              @default(now())
+
+  @@index([companyId, eventType, status])
+}
+
+enum SelfCheckInStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+// 2026-08-27 — the client confirmed wanting self-service driver check-in
+// eventually ("its a good addition"), basic schema now, real workflow
+// logic customer-specific later. Deliberately isolated from Vehicle/
+// Driver/VehicleGateEntry: a driver has no login/User account anywhere in
+// this system, so this table exists specifically to hold a driver's own
+// unverified, self-submitted claim (via a QR code or link, no auth) until
+// a security guard reviews it. Only on ACCEPTED does it become a real
+// VehicleGateEntry (resultingGateEntryId) — a raw self-submission never
+// becomes an official record on its own.
+model SelfCheckInRequest {
+  id                   String            @id @default(uuid())
+  companyId            String
+  company              Company           @relation(fields: [companyId], references: [id])
+  warehouseId          String
+  warehouse            Warehouse         @relation(fields: [warehouseId], references: [id])
+  vehicleNumberText    String
+  driverNameText       String
+  driverPhoneText      String?
+  purpose              GateEntryPurpose?
+  status               SelfCheckInStatus @default(PENDING)
+  submittedAt          DateTime          @default(now())
+  reviewedById         String?
+  reviewedBy           User?             @relation("SelfCheckInReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt           DateTime?
+  rejectionReason      String?
+  resultingGateEntryId String?           @unique
+  resultingGateEntry   VehicleGateEntry? @relation(fields: [resultingGateEntryId], references: [id])
+
+  @@index([warehouseId, status])
 }
 
 // ------------------------------------------------------------

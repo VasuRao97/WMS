@@ -31,6 +31,7 @@ export class VehiclesService {
       ['widthFt', 'Width'],
       ['heightFt', 'Height'],
       ['maxTonnage', 'Max Capacity'],
+      ['detentionCostPerDay', 'Detention Cost Per Day'],
     ] as const) {
       const v = data[field];
       if (v !== undefined && v !== null && v !== '' && Number(v) <= 0) errors.push(`${label} must be a positive number when given.`);
@@ -73,6 +74,7 @@ export class VehiclesService {
         widthFt: toNumberOrUndefined(data.widthFt),
         heightFt: toNumberOrUndefined(data.heightFt),
         maxTonnage: toNumberOrUndefined(data.maxTonnage),
+        detentionCostPerDay: toNumberOrUndefined(data.detentionCostPerDay),
         rcNumber: data.rcNumber || undefined,
         rcExpiry: this.toDate(data.rcExpiry),
         insuranceNumber: data.insuranceNumber || undefined,
@@ -84,7 +86,7 @@ export class VehiclesService {
         isBlacklisted: !!data.isBlacklisted,
         blacklistReason: data.isBlacklisted ? String(data.blacklistReason).trim() : undefined,
       },
-      include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } },
+      include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true, detentionCostPerDay: true } } },
     });
   }
 
@@ -92,7 +94,7 @@ export class VehiclesService {
     await assertGateAccessAllowed(this.prisma, user);
     return this.prisma.vehicle.findMany({
       where: companyFilter(user),
-      include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } },
+      include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true, detentionCostPerDay: true } } },
       orderBy: { vehicleNumber: 'asc' },
     });
   }
@@ -108,6 +110,7 @@ export class VehiclesService {
       'Vehicle Type': v.vehicleType.name,
       'Segment': v.vehicleType.segment,
       'Max Capacity (Ton)': v.maxTonnage ?? v.vehicleType.maxTonnage,
+      'Detention Cost/Day (₹)': v.detentionCostPerDay ?? v.vehicleType.detentionCostPerDay ?? '',
       'Length (ft)': v.lengthFt ?? '',
       'Width (ft)': v.widthFt ?? '',
       'Height (ft)': v.heightFt ?? '',
@@ -156,6 +159,7 @@ export class VehiclesService {
         widthFt: toNumberOrUndefined(data.widthFt) ?? null,
         heightFt: toNumberOrUndefined(data.heightFt) ?? null,
         maxTonnage: toNumberOrUndefined(data.maxTonnage) ?? null,
+        detentionCostPerDay: toNumberOrUndefined(data.detentionCostPerDay) ?? null,
         rcNumber: data.rcNumber || null,
         rcExpiry: this.toDate(data.rcExpiry) ?? null,
         insuranceNumber: data.insuranceNumber || null,
@@ -167,7 +171,7 @@ export class VehiclesService {
         isBlacklisted: !!data.isBlacklisted,
         blacklistReason: data.isBlacklisted ? String(data.blacklistReason).trim() : null,
       },
-      include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } },
+      include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true, detentionCostPerDay: true } } },
     });
   }
 

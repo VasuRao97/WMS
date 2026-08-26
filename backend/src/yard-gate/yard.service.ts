@@ -81,8 +81,8 @@ export class YardService {
       where,
       include: {
         yardSlot: { select: { code: true } },
-        vehicle: { select: { vehicleNumber: true } },
-        warehouse: { select: { id: true, code: true, name: true } },
+        vehicle: { select: { vehicleNumber: true, detentionCostPerDay: true, vehicleType: { select: { detentionCostPerDay: true } } } },
+        warehouse: { select: { id: true, code: true, name: true, company: { select: { detentionCostPerDay: true, detentionFreeHours: true } } } },
       },
       orderBy: { gateInAt: 'asc' },
     });
@@ -90,18 +90,46 @@ export class YardService {
     const now = Date.now();
     const hoursBetween = (start: Date, end: number) => (end - start.getTime()) / (1000 * 60 * 60);
 
-    return entries.map((e) => ({
-      gateEntryId: e.id,
-      warehouse: e.warehouse,
-      slotCode: e.yardSlot?.code,
-      vehicleNumber: e.vehicle.vehicleNumber,
-      destinationCity: e.destinationCity,
-      transporterName: e.transporterName,
-      gateInAt: e.gateInAt,
-      dockedInAt: e.dockedInAt,
-      status: e.dockedInAt ? 'DOCKED' : 'IN_YARD',
-      hoursInParking: hoursBetween(e.gateInAt, e.dockedInAt ? e.dockedInAt.getTime() : now),
-      hoursInDock: e.dockedInAt ? hoursBetween(e.dockedInAt, now) : null,
-    }));
+    return entries.map((e) => {
+      // Detention cost (2026-08-27, corrected TWICE same day — "one mistake,
+      // you were right," then "don't keep a proportional logic for now,
+      // just keep it simple"): free for the first Company.detentionFreeHours
+      // (default 4), then a flat step of the daily rate is added for every
+      // FULL 24-hour block past that free window — not prorated. So a
+      // vehicle at 27 chargeable-adjusted hours still owes ₹0 (hasn't
+      // completed a full day yet), and one at 28 hours (exactly one full day
+      // past the free window) owes the full rate; a second full rate step
+      // only lands at 52 hours, not gradually between 28 and 52. Always
+      // computed live here, never stored, same "always derive" philosophy as
+      // everything else on this table. Rate resolution: the vehicle's own
+      // override, else its VehicleType's, else the company-wide default —
+      // most companies only ever set the last one (Company.
+      // detentionCostPerDay, defaults to 15000, the client's own
+      // placeholder). Null only if a company has explicitly cleared its own
+      // default AND set no vehicle/type-level rate either.
+      const rate = e.vehicle.detentionCostPerDay ?? e.vehicle.vehicleType.detentionCostPerDay ?? e.warehouse.company.detentionCostPerDay;
+      const freeHours = e.warehouse.company.detentionFreeHours ?? 0;
+      const totalHours = hoursBetween(e.gateInAt, now);
+      const chargeableHours = Math.max(0, totalHours - freeHours);
+      const fullDaysElapsed = Math.floor(chargeableHours / 24);
+      const detentionCost = rate != null ? fullDaysElapsed * Number(rate) : null;
+
+      return {
+        gateEntryId: e.id,
+        warehouse: { id: e.warehouse.id, code: e.warehouse.code, name: e.warehouse.name },
+        slotCode: e.yardSlot?.code,
+        vehicleNumber: e.vehicle.vehicleNumber,
+        destinationCity: e.destinationCity,
+        transporterName: e.transporterName,
+        gateInAt: e.gateInAt,
+        dockedInAt: e.dockedInAt,
+        assignedDockNumber: e.assignedDockNumber,
+        dockAssignedAt: e.dockAssignedAt,
+        status: e.dockedInAt ? 'DOCKED' : 'IN_YARD',
+        hoursInParking: hoursBetween(e.gateInAt, e.dockedInAt ? e.dockedInAt.getTime() : now),
+        hoursInDock: e.dockedInAt ? hoursBetween(e.dockedInAt, now) : null,
+        detentionCost,
+      };
+    });
   }
 }

@@ -1,0 +1,12 @@
+-- Company-wide default detention rate (2026-08-27, same-day revision of the
+-- earlier detention-cost pass) — the client reconsidered per-VehicleType
+-- granularity as the PRIMARY input; most companies just want one flat
+-- ₹/24hr rate for their whole fleet. Vehicle/VehicleType.detentionCostPerDay
+-- (added earlier the same day) stay as optional override tiers for later.
+-- Defaults to 15000 — a placeholder the client explicitly asked to ship
+-- with ("for now you can set it to Rs 15000/day") so the calculation is
+-- visible immediately; existing companies get this value automatically
+-- (nullable column with a constant DEFAULT — Postgres populates existing
+-- rows with it, no separate backfill statement needed), a COMPANY_ADMIN can
+-- change or clear it later via the new Company Settings page.
+ALTER TABLE "Company" ADD COLUMN "detentionCostPerDay" DECIMAL(65,30) DEFAULT 15000;

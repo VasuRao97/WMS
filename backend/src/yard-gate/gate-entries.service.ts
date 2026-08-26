@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
 import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
+import { DriverNotificationService } from './driver-notification.service';
 
 // VEHICLE_ONLY (a non-cargo visit) was considered and dropped 2026-08-25 —
 // no concrete real use case for it, easy to add back later if one shows up.
@@ -36,7 +37,10 @@ const GATE_ENTRY_INCLUDE = {
 // see schema.prisma's comment on the model for why that was rejected.
 @Injectable()
 export class GateEntriesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private driverNotifications: DriverNotificationService,
+  ) {}
 
   // Net weight is always derived (gross - tare) at read time, never stored —
   // same "always derived" philosophy as Location capacity / on-hand stock.
@@ -262,6 +266,7 @@ export class GateEntriesService {
       'Reference No': e.referenceNo || '',
       'Destination City': e.destinationCity || '',
       'Yard Slot': e.yardSlot?.code || '',
+      'Assigned Dock': e.assignedDockNumber || '',
       'Docked In At': e.dockedInAt ? e.dockedInAt.toISOString() : '',
       'Docked In By': e.dockedInBy?.name || '',
       'Gate Out At': e.gateOutAt ? e.gateOutAt.toISOString() : '',
@@ -343,6 +348,40 @@ export class GateEntriesService {
         await tx.yardSlot.update({ where: { id: existing.yardSlotId }, data: { status: 'AVAILABLE' } });
       }
       return entry;
+    });
+
+    return this.attachNetWeight(updated);
+  }
+
+  // "Which dock does the driver go to" (2026-08-27) — a Security Supervisor
+  // types in the dock number they've been told (the output of the future
+  // Dock Scheduler, standing in for it manually for now — see
+  // schema.prisma's comment on assignedDockNumber). Setting or CHANGING it
+  // always re-fires the driver notification and resets the warning timer
+  // — a stale "Dock 2" message sitting uncorrected after a reassignment to
+  // "Dock 5" would be worse than one extra call. Allowed any time before
+  // Gate Out, including after Docked In (a re-route while still on-site is
+  // plausible), unlike dockIn()/gateOut() which are strict one-way gates.
+  async assignDock(id: string, dockNumber: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
+    const existing = await this.assertAccess(id, user);
+    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+
+    const trimmed = dockNumber != null ? String(dockNumber).trim() : '';
+    if (!trimmed) throw new BadRequestException('Dock Number is required.');
+
+    const updated = await this.prisma.vehicleGateEntry.update({
+      where: { id },
+      data: { assignedDockNumber: trimmed, dockAssignedAt: new Date() },
+      include: GATE_ENTRY_INCLUDE,
+    });
+
+    await this.driverNotifications.sendDockAssignment({
+      gateEntryId: id,
+      dockNumber: trimmed,
+      vehicleNumber: updated.vehicle.vehicleNumber,
+      driverPhone: updated.driver.phone,
+      stage: 'INITIAL',
     });
 
     return this.attachNetWeight(updated);

@@ -64,4 +64,12 @@ export class GateEntriesController {
   dockIn(@Param('id') id: string, @CurrentUser() user: any) {
     return this.gateEntriesService.dockIn(id, user);
   }
+
+  // Security Supervisor types in the dock number they've been told — see
+  // GateEntriesService.assignDock's comment.
+  @Patch(':id/assign-dock')
+  @Roles(...GATE_YARD_OPERATE_ROLES)
+  assignDock(@Param('id') id: string, @Body() body: { dockNumber: string }, @CurrentUser() user: any) {
+    return this.gateEntriesService.assignDock(id, body?.dockNumber, user);
+  }
 }

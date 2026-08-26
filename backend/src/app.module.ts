@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { WarehousesModule } from './warehouses/warehouses.module';
@@ -13,10 +14,16 @@ import { YardGateModule } from './yard-gate/yard-gate.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
 import { DriversModule } from './drivers/drivers.module';
 import { VehicleTypesModule } from './vehicle-types/vehicle-types.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { CompaniesModule } from './companies/companies.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Enables @Cron()/@Interval() decorators anywhere in the app — added
+    // 2026-08-27 specifically for DetentionAlertScheduler, the first
+    // timer-driven job in this codebase.
+    ScheduleModule.forRoot(),
     WarehousesModule,
     SkusModule,
     AuthModule,
@@ -28,6 +35,8 @@ import { VehicleTypesModule } from './vehicle-types/vehicle-types.module';
     VehiclesModule,
     DriversModule,
     VehicleTypesModule,
+    NotificationsModule,
+    CompaniesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
