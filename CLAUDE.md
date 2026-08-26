@@ -1109,6 +1109,274 @@ detention alerting; explicitly wants schema-now/logic-later separated for each r
 building either in one shot. Two open questions above (ASN sourcing, detention threshold shape)
 block writing schema for either — resolve those before touching `schema.prisma`.
 
+### Detention, multi-channel notifications, and self-service check-in — schema only (2026-08-27)
+Follow-up conversation resolved the open questions above and added one new requirement, then this
+pass wrote the schema for all three (no service/controller logic yet — deliberately, per the
+schema-now/logic-later split the client asked for). **ASN itself stays deferred until Inbound
+starts**, per the client's own call — nothing built for it this pass.
+
+**Detention** — `VehicleType.detentionCostPerDay` (generic ₹/24hr rate) + `Vehicle.
+detentionCostPerDay` (optional per-vehicle override), the same override-when-known/fall-back-to-
+VehicleType pattern already used for `maxTonnage`/dimensions. **Cost accrues from Gate In with no
+grace period** — the client's own call ("easier for us to code") — always computed live as
+elapsed dwell time × rate, never stored, same "always derive" philosophy as on-hand stock/
+capacity. `Company.detentionAlertHours`/`detentionEscalationHours` are a **separate** concept from
+the cost calc — purely about *when* to notify someone (an alert at N hours, escalation to the
+Company Admin if still unacknowledged M hours after that), not about whether cost applies; without
+this split every vehicle would trigger an alert the instant it gates in, since cost itself now has
+no grace period.
+
+**Multi-channel notifications** — the client explicitly wants real capacity for SMS, Email, *and*
+WhatsApp depending on what a given client company wants ("we need to have capacity to do all...
+depending on the client requirement"), not one hardcoded channel — willing to invest real build
+time in this rather than a minimal placeholder. Web research (2026-08-27) found WhatsApp Business
+API is often cheaper than SMS in India and has meaningfully better real-world read rates for
+operational staff; **MSG91** stood out as a good India-first fit (INR billing, GST invoices, one
+platform covering SMS+WhatsApp+Email). Two real-world catches to remember when this gets wired up
+for real: WhatsApp business-initiated messages need a **pre-approved message template** (no
+freeform text), and SMS in India needs **DLT registration** (a telecom-regulator process, takes
+real days) — neither blocks schema, both block actually sending anything.
+
+Schema: `CompanyNotificationChannel` (child table — a company can enable more than one channel at
+once, same "more than one of, make it a child table" rule as `SkuBarcode`/`CustomerShipTo` — per-
+channel `isEnabled`/`senderId`/`fromAddress`/`providerName`); `NotificationLog` (the audit/
+delivery/escalation trail — `referenceType`/`referenceId` free-text pointer, same pattern as
+`StockMovement.referenceType`, since event types are meant to grow beyond gate-entry-linked ones
+later). `NotificationEventType` starts with just `DETENTION_ALERT`, extends the same way
+`SECURITY_SUPERVISOR` was added to `Role` (`ALTER TYPE ... ADD VALUE`) as more get built.
+**Deliberately NOT in the schema**: any actual provider API key/secret — those stay in environment
+config (same place `JWT_SECRET` lives), not the database, until this gets real encryption-at-rest;
+storing them in `CompanyNotificationChannel` today would be a real security smell. **Also not
+built yet**: any adapter code that actually calls a provider, and the scheduled job that would
+detect "a vehicle crossed the alert threshold" in the first place — nothing in this codebase runs
+on a timer today. `@nestjs/schedule` was added as a dependency (2026-08-27) anticipating that job,
+but is not yet imported/wired into `AppModule` — pure groundwork, no behavior change.
+
+**Self-service check-in** — client confirmed the proposed shape (basic schema now, real workflow
+logic customer-specific later): `SelfCheckInRequest`, deliberately isolated from `Vehicle`/
+`Driver`/`VehicleGateEntry` since a driver has no login/User account anywhere in this system — it
+holds a driver's own unverified, self-submitted claim (vehicle number/name/phone/purpose as raw
+text, no FK to a real `Vehicle`/`Driver`) until a security guard reviews it. Only on `ACCEPTED`
+does `resultingGateEntryId` get set and a real `VehicleGateEntry` exist — a raw self-submission
+never becomes an official record on its own. No endpoint exists yet (an unauthenticated write
+surface, so building it needs its own care, not just wiring a CRUD controller the usual way).
+
+**Migration**: `20260827100000_add_detention_notifications_self_checkin`, hand-written (`prisma
+migrate dev` still refuses to run in this shell) and applied via `migrate deploy` — all new columns
+nullable, all new tables start empty, no backfill needed. Docker Desktop had stopped since the last
+session and needed restarting before Postgres was reachable — worth checking `docker compose ps`
+first if `migrate deploy` fails with "Can't reach database server" rather than assuming a real
+connectivity problem. Verified: `prisma validate`/`format` clean, `tsc --noEmit` clean, a full
+`nest start --watch` boot showed "Nest application successfully started" with all existing routes
+still mapped correctly (then hit `EADDRINUSE` immediately after — a different, already-running
+server instance was live on port 3000 and responding HTTP 200 by that point, not one this session
+started; left untouched rather than killed, since nothing in this pass changed any code path that
+instance runs). **No throwaway-company script yet** — there's no service/controller logic to
+exercise, only schema; that verification is for whenever the actual logic pass happens.
+
+### Detention alerting: cron job + notification logic (2026-08-27, same day)
+Follow-up pass, same session — the client asked to keep going into the actual logic rather than
+stop at schema. Covers detention cost/alerting end-to-end and the notification send/audit/
+escalation pipeline; self-service check-in and a real provider integration are still not built.
+
+**Detention cost now shows up somewhere real**: `YardService.tracker()` (`yard.service.ts`) gained
+a `detentionCost` field per row — `(elapsedHours / 24) × rate`, rate resolved as `Vehicle.
+detentionCostPerDay ?? VehicleType.detentionCostPerDay`, `null` when neither is set (not a silent
+zero). Computed live every call, never stored, same "always derive" philosophy as everything else
+on that table. `GateYardPage.tsx`'s tracker table got a new "Detention Cost" column (`₹` formatted,
+`—` when null) — the first place any of this schema is actually visible to a user.
+
+**`backend/src/notifications/`** — new module, `NotificationsModule` imported into `AppModule`
+alongside `ScheduleModule.forRoot()` (the latter enables `@Cron()` anywhere in the app; this is the
+first timer-driven job this codebase has ever had).
+- **`channels/`** — one file per channel (`EmailAdapter`, `SmsAdapter`, `WhatsappAdapter`) behind a
+  shared `NotificationChannelAdapter` interface (`send(recipient, message) => {success, ...}`).
+  **Every adapter is currently a stub** — logs what it would send via `Logger`, doesn't call any
+  real provider. Swapping in MSG91/Twilio/SES/whatever later means rewriting one adapter file;
+  nothing else in the pipeline changes. `SmsAdapter`/`WhatsappAdapter` both fail gracefully with
+  "no phone number on file" — **`User` has no `phone` field at all**, a real gap flagged, not
+  solved (adding one needs its own confirmation since it touches Login identity rules — see
+  "Role & Access model").
+- **`NotificationsService`** — `channelsFor(companyId)` resolves a company's enabled
+  `CompanyNotificationChannel` rows, or defaults to `['EMAIL']` if none are configured yet (keeps
+  the audit trail/escalation timer running even before a company picks a channel, since every
+  adapter is a stub regardless). `sendAndLog()` writes a `NotificationLog` row, calls the adapter,
+  updates status to `SENT`/`FAILED`. `acknowledge()` only lets the actual `recipientUserId`
+  acknowledge their own notification (403 otherwise), idempotent on a second call.
+- **`DetentionAlertScheduler`** — `@Cron(EVERY_5_MINUTES)`. For every company with
+  `detentionAlertHours` set: finds open (`gateOutAt: null`) gate entries past that threshold with
+  no existing `DETENTION_ALERT` log yet, and alerts every `WAREHOUSE_MANAGER` assigned to that
+  entry's warehouse. For entries that already have an alert, unacknowledged and un-escalated, past
+  `detentionEscalationHours` old: escalates to every `COMPANY_ADMIN` in the company, and stamps
+  `escalatedAt`/`escalatedToId` on the original alert log(s). **Known gap, flagged not solved**: a
+  warehouse with no `WAREHOUSE_MANAGER` assigned never gets an alert logged, so escalation (keyed
+  off an existing alert) never fires either — nobody to escalate *from*. Revisit once this proves
+  out with real warehouse data.
+- **`NotificationsController`** (`GET /notifications`, `PATCH /notifications/:id/acknowledge`) —
+  no `@Roles()` gate on either handler; every authenticated user can see/acknowledge only their own
+  notifications (enforced by `recipientUserId` in the service), same "self access needs no role
+  gate" shape as a User editing their own account. No frontend for this yet.
+
+Verified: `tsc --noEmit` clean on both the yard-tracker change and the new module; a throwaway
+instance booted on a spare port (3999, since a real dev server — not started by this session — was
+already live on 3000) showed a fully clean start with `/notifications` routes mapped and no DI
+errors, then was torn down. **Not yet verified**: the cron job has never actually fired against
+real data (needs a company with `detentionAlertHours` set and a genuinely stale-enough gate entry
+to test against — throwaway-company pass still to do), and there's no frontend for viewing/
+acknowledging a notification.
+
+### Detention cost: company-wide default rate + Company Settings page (2026-08-27, same day)
+Third follow-up pass, same session — completing "the detention cost module" per the client's own
+framing. Two real revisions came out of a short conversation before this got built, both worth
+remembering:
+
+**The rate is primarily company-wide now, not per-VehicleType.** Earlier the same day the client
+had picked "per Vehicle Type + per-Vehicle override" as the primary shape; revisited once it came
+time to actually wire up an input UI — most companies will just set one flat number for their
+whole fleet, not price out every vehicle class ("we can ask the client to update this at the
+start"). `Company.detentionCostPerDay` (`Decimal? @default(15000)` — the client's own placeholder,
+"for now") is now the primary rate; `VehicleType`/`Vehicle.detentionCostPerDay` (built earlier the
+same day) are kept as-is, demoted to optional refinement tiers for a company that wants more
+granularity later. `YardService.tracker()`'s resolution order is now **Vehicle → VehicleType →
+Company** — same override-when-known chain, just with a third fallback link. Every existing
+company got backfilled to 15000 automatically (a nullable column with a constant DB `DEFAULT`
+populates existing rows too, no separate backfill statement needed — migration
+`20260827110000_add_company_detention_cost_default`).
+
+**This is the first Company Settings surface this project has ever had.** A real, separate gap
+surfaced building this: there was (and mostly still is) no Company-level settings endpoint or page
+at all — every other per-company toggle (`requireEwayBillForOutboundGateOut`,
+`blockGateInWhenYardFull`, `gatePassResetPeriod`, `restrictGateAccessToSecuritySupervisor`) has
+only ever been set by hand in the DB during test passes, never through a UI. New
+`backend/src/companies/` module (`GET`/`PATCH /companies/settings`, `COMPANY_ADMIN`-only,
+`CompaniesService.requireCompany()` rejects `SUPER_ADMIN` — no single company for them to
+configure) + `frontend/src/CompanySettingsPage.tsx` (new "Company Settings" nav tab, visible only
+to `COMPANY_ADMIN`) — deliberately scoped to just the three detention fields
+(`detentionCostPerDay`/`detentionAlertHours`/`detentionEscalationHours`) rather than building a
+do-everything settings page in one shot. **Extend this same module/page when those other four
+toggles get their own UI — don't build a second settings surface.** A blank field on Save sends an
+explicit `null` (not just omitted), so an admin can actually clear a setting back to
+"unconfigured," not just set new values.
+
+Also finished the two smaller gaps flagged when this pass started: `VehiclesService.create()`/
+`update()` now actually accept/validate/persist `detentionCostPerDay` (was silently dropped
+before), and both the Gate & Yard "Register Vehicle" modal and Vehicle & Driver Master's Edit
+Vehicle form gained a "Detention Cost/Day (₹)" input — the Vehicle & Driver Master table also
+gained a "Detention Rate" column (shows the vehicle/type-level override only, `—` if neither is
+set — deliberately doesn't show the company-fallback rate here, since that's a company-wide fact,
+not a property of the row).
+
+Verified end-to-end, twice: a throwaway-company API script (`DTCO28`) confirmed the default 15000,
+a `PATCH` to 20000/4hrs/8hrs persisting, a per-vehicle override (₹500) taking precedence over the
+company rate, a vehicle with no override correctly falling through to the company rate, and the
+tracker's `detentionCost` math exactly matching `(hoursInParking/24) × rate` for both — including
+reflecting the **updated** company rate for a vehicle that gated in before the `PATCH`, confirming
+it's computed live at read time, never a stored snapshot. Then re-verified live in the actual
+browser (logged in via the API+localStorage token trick): Company Settings page loaded and
+pre-filled the real 20000/4/8 values; Vehicle & Driver Master's table showed "₹500/day" for the
+override vehicle and "—" for the other; Gate & Yard's tracker showed "₹0.81" vs "₹32.29" for the
+two open entries — a ~1:40 ratio matching the 500:20000 rate ratio exactly.
+
+**One real, pre-existing bug surfaced during test cleanup, not caused by this pass**: `DELETE
+/warehouses/all` throws a 500 instead of gracefully reporting "blocked" once a warehouse has linked
+`VehicleGateEntry`/`YardSlot` rows — `WarehousesService.removeAll()`'s relation-count check (built
+during the original Warehouse Master pass, before Yard & Gate existed) doesn't account for those
+two relations. Flagged, not fixed — out of scope for detention. The throwaway company (`DTCO28`)
+was left behind with 2 vehicles/1 driver/1 warehouse still linked to gate entries as a result (no
+company-delete endpoint exists to fully clean it up either, same limitation as every other
+throwaway-company session).
+
+### Detention cost: correction — a real free-time window after all (2026-08-27, same day)
+The client reversed the earlier "charge from hour 1, no grace period" call from the same day's
+first detention pass: **"one mistake, you were right"**. Real rule now: free for the first
+`Company.detentionFreeHours` (default 4 — "~4 hours," the client's own approximation), then the
+full daily rate applies per 24-hour period measured **from the end of that free window**, not from
+Gate In — so the full `detentionCostPerDay` amount is reached at `detentionFreeHours + 24` hours
+after Gate In (28 hours by default), not at the 24-hour mark itself, and keeps scaling per
+additional day beyond that. `YardService.tracker()`: `chargeableHours = max(0, totalHours -
+freeHours)`, `cost = rate × (chargeableHours / 24)`. `detentionFreeHours` is the one detention
+field on `Company` that legitimately allows `0` (a company that genuinely wants no grace period) —
+validated as "not negative," not "must be positive," unlike the cost/alert/escalation fields.
+Migration `20260827130000_add_company_detention_free_hours`; wired through `CompaniesService`
+(`GET`/`PATCH /companies/settings`) and a new "Free hours" field on `CompanySettingsPage.tsx`,
+same page as the other three detention settings.
+
+Verified with backdated timestamps against the same throwaway gate entry (direct SQL `UPDATE
+"VehicleGateEntry" SET "gateInAt" = NOW() - INTERVAL '...'`, company rate ₹20000/day, free hours
+4): 2 hours elapsed → `detentionCost: 0` (within the free window); 10 hours elapsed (6 chargeable)
+→ `₹5000.15` (expected exactly 5000); 28 hours elapsed (24 chargeable, the free-window-adjusted
+"full day" mark) → `₹20000.15` (expected exactly the full 20000) — confirming the formula lands
+precisely where the client specified. Then re-verified live in the browser: Company Settings' new
+"Free hours" field loaded the real value (4) alongside the other three.
+
+**Second correction, minutes later: not prorated — a flat step per full day.** "Don't keep a
+proportional logic for now, just keep it simple, every 24 hours after the first 4 hours, 15k would
+be added." Replaced `cost = rate × (chargeableHours / 24)` with `cost = floor(chargeableHours / 24)
+× rate` — a vehicle owes nothing until it's completed a full 24-hour chargeable block, then the
+full rate lands all at once, stays flat until the next full block completes, and so on. Re-verified
+with the same backdating technique at four checkpoints on the same entry: 27 hours elapsed (23
+chargeable, not yet a full day) → `₹0`; 28 hours (exactly 1 full day) → `₹20000` (the full rate,
+landing all at once, not gradually); 51 hours (still short of a 2nd full day) → `₹20000` unchanged;
+52 hours (2 full days) → `₹40000`. Confirms no partial credit anywhere between step boundaries.
+
+### Dock assignment → automated driver notification (2026-08-27, same day)
+Closes a real gap the client raised directly: nothing told a driver which dock to go to once
+parked. This is the missing half of **Dock Scheduling** (still fully deferred as a real system —
+see below) — a Security Supervisor manually types in the dock number they've been told, standing
+in for that future system's output, and that single action fires an SMS + automated voice call to
+the **driver's own phone** (not staff — a genuinely different recipient than every other
+notification built earlier this session).
+
+**Schema**: `VehicleGateEntry.assignedDockNumber` (free text — deliberately NOT a link to the
+existing `DockDoor` records; it's capturing the Dock Scheduler's future output, not building real
+dock-selection logic now) + `dockAssignedAt` (drives the warning timer, resets on every
+reassignment). `NotificationChannel` gained `VOICE_CALL` (`ALTER TYPE ... ADD VALUE`, same pattern
+as `SECURITY_SUPERVISOR`) — a genuinely different capability than SMS/Email/WhatsApp (telephony,
+not messaging). New `DriverDockNotification` model — the audit trail, deliberately separate from
+`NotificationLog` (that one's for `User` recipients only; a `Driver` has no login, is reached by
+phone). `driverPhone` is snapshotted at send time, not read live from `Driver.phone` later, so this
+stays real proof of what number was actually contacted even if it changes afterward.
+
+**Backend, all inside `yard-gate/` (not a cross-module import into `notifications/`, keeping the
+existing "every module owns its own `PrismaService`" self-contained convention)**:
+`driver-channels/` (`DriverSmsAdapter`, `DriverVoiceCallAdapter` — both stubs, same "log what would
+be sent" pattern as the staff-facing adapters; Exotel was the research lead for a real voice
+provider, India-first, not chosen/wired up), `DriverNotificationService.sendDockAssignment()` (logs
+one `DriverDockNotification` row per channel — SMS **and** the call, always both, not a choice
+between them — and gracefully logs `FAILED` rows with a clear reason when a Driver has no phone on
+file, rather than silently skipping), `DockAssignmentScheduler` (`@Cron(EVERY_5_MINUTES)`, checks
+open entries 15+ minutes past `dockAssignedAt` with no `dockedInAt` yet and fires a `FINAL_WARNING`
+— correctly scoped to the CURRENT assignment cycle only, comparing the last `FINAL_WARNING`'s
+timestamp against `dockAssignedAt` so a stale warning from before a reassignment doesn't wrongly
+suppress a new one). `GateEntriesService.assignDock()` (`PATCH /gate-entries/:id/assign-dock`) sets
+the field and fires the `INITIAL` notification synchronously, in the same request — not queued.
+
+**Explicitly NOT built, per the client's own scoping** ("in the dock scheduler this will be built
+in"): nothing automatically reassigns the dock to the next vehicle after the 30-minute mark (15 min
+initial + 15 min final warning) — that's the real Dock Scheduler's job, still fully deferred, not
+this pass's. Also not built: whether a call was actually *answered* (vs just dialed) — the client's
+own call, "a good valid suggestion" but "a later upgrade"; today's proof is only "dialed/sent at
+this time," matching exactly what was asked for now.
+
+**A real process note**: framing the free-text-vs-`DockDoor`-link question as if it reopened Dock
+Scheduling's design drew direct pushback — "the output of the dock scheduler should be the input to
+the security, i have told 10000 times we will do it!" The actual dock-selection system is the
+already-settled placeholder; a field just capturing what a human would type in standing in for that
+system's eventual output isn't a new instance of the same open question. See
+[[wms-align-before-coding]] in memory — updated with this exact example so it isn't repeated again.
+
+Verified end-to-end via a throwaway-company API test plus a direct DB check (no endpoint exists to
+read `DriverDockNotification` — deliberately not built, this session only needed schema + the
+trigger logic): assigning Dock 7 to a vehicle with a driver who has a phone on file produced exactly
+two rows (`SMS`/`VOICE_CALL`, both `SENT`, `driverPhone` correctly snapshotted, message text
+correct) with real timestamps; `assignedDockNumber`/`dockAssignedAt` both showed correctly on the
+entry response and on `/yard/tracker`. Then re-verified live in the actual browser: the tracker
+table's new "Dock" column showed "Assign" for unassigned rows and "Update" + "since <time>" for the
+one just assigned via the API, with the input pre-filled with the real saved value ("7"). **Not yet
+verified**: the 15-minute `FINAL_WARNING` cron path itself (would need either a real 15-minute wait
+or the job invoked manually against a backdated `dockAssignedAt`), and the no-phone-on-file `FAILED`
+path (exercised implicitly via an earlier driver with no phone registered, not directly asserted).
+
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
 record could plausibly have more than one of (barcodes, storage units, customer ship-to
@@ -1362,6 +1630,30 @@ to a future Dispatch Policy stage once Outbound/Dispatch exist to enforce it), r
 integration, and — per the module build order above — Inbound, Putaway, Inventory, Outbound,
 Picking, Dispatch, Analytics. Cloud/production deployment hasn't happened; this is local Docker
 Compose (Postgres) only.
+
+Also worth knowing (2026-08-27) — see "Detention, multi-channel notifications, and self-service
+check-in", "Detention alerting: cron job + notification logic", and "Detention cost: company-wide
+default rate + Company Settings page" above for full detail: **detention cost is now fully built
+and live-verified end-to-end** — a company-wide default rate (`Company.detentionCostPerDay`,
+defaults ₹15000/day) with optional Vehicle/VehicleType overrides, a real input UI (Company
+Settings page + Vehicle register/edit forms), and the computed cost showing on the Gate & Yard
+tracker table. **Detention alerting** (the cron job that notifies a Manager/escalates to the
+Company Admin) also has real logic — but **every notification channel is still a stub** (logs
+only, no real SMS/Email/WhatsApp provider chosen or wired up, no API keys exist anywhere) and
+`User` has no `phone` field, so SMS/WhatsApp can never actually deliver yet regardless of provider.
+**Self-service driver check-in** is still schema-only (`SelfCheckInRequest` exists, no endpoint, no
+UI). ASN stays fully deferred until Inbound starts — no schema for it at all yet. A real,
+pre-existing bug was also surfaced (not fixed) while testing this: `WarehousesService.removeAll()`
+throws a 500 instead of gracefully blocking when a warehouse has linked `VehicleGateEntry`/
+`YardSlot` rows — its relation-count check predates Yard & Gate and was never extended to cover
+them. **Dock assignment → driver notification** (see its own section above) is also now built and
+live-verified — a Security Supervisor types a dock number against an open gate entry, which
+immediately SMS's + calls the driver (`DriverSmsAdapter`/`DriverVoiceCallAdapter`, both stubs — no
+real provider chosen, Exotel was the research lead for voice) and logs proof of the attempt
+(`DriverDockNotification`). A 15-minute final-warning follow-up is automated
+(`DockAssignmentScheduler`); actually reassigning the dock to the next vehicle after that stays
+fully deferred to the real Dock Scheduler, which itself still has no schema/design work done at all
+— only its eventual OUTPUT (a dock number) has anywhere to land now.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
