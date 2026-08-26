@@ -12,6 +12,7 @@ type Vehicle = {
   vehicleNumber: string;
   vehicleType: VehicleType;
   maxTonnage?: number;
+  detentionCostPerDay?: number;
   lengthFt?: number;
   widthFt?: number;
   heightFt?: number;
@@ -76,9 +77,14 @@ type TrackerRow = {
   transporterName?: string;
   gateInAt: string;
   dockedInAt?: string;
+  assignedDockNumber?: string;
+  dockAssignedAt?: string;
   status: 'IN_YARD' | 'DOCKED';
   hoursInParking: number;
   hoursInDock: number | null;
+  // Live-computed, never stored — null when neither the vehicle nor its
+  // VehicleType has a detentionCostPerDay rate configured (2026-08-27).
+  detentionCost: number | null;
 };
 
 function authHeaders() {
@@ -125,7 +131,7 @@ const emptyGateInForm = {
   warehouseId: '', vehicleId: '', driverId: '', purpose: '', transporterName: '', referenceNo: '', destinationCity: '', grossWeightKg: '',
 };
 const emptyVehicleForm = {
-  vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '',
+  vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '', detentionCostPerDay: '',
   rcNumber: '', rcExpiry: '', insuranceNumber: '', insuranceExpiry: '', pucNumber: '', pucExpiry: '', fitnessNumber: '', fitnessExpiry: '',
   isBlacklisted: false, blacklistReason: '',
 };
@@ -140,6 +146,10 @@ function GateYardPage() {
   const [yardSummary, setYardSummary] = useState<YardSummaryRow[]>([]);
   const [tracker, setTracker] = useState<TrackerRow[]>([]);
   const [history, setHistory] = useState<GateEntry[]>([]);
+  // Keyed by gateEntryId — what the Security Supervisor is currently typing
+  // into that row's Dock field, independent of the last-saved
+  // assignedDockNumber until they hit Assign (2026-08-27).
+  const [dockInputs, setDockInputs] = useState<Record<string, string>>({});
 
   const [showGateInForm, setShowGateInForm] = useState(false);
   const [gateInForm, setGateInForm] = useState(emptyGateInForm);
@@ -247,6 +257,7 @@ function GateYardPage() {
       widthFt: vehicleForm.widthFt || undefined,
       heightFt: vehicleForm.heightFt || undefined,
       maxTonnage: vehicleForm.maxTonnage || undefined,
+      detentionCostPerDay: vehicleForm.detentionCostPerDay || undefined,
       rcExpiry: vehicleForm.rcExpiry || undefined,
       insuranceExpiry: vehicleForm.insuranceExpiry || undefined,
       pucExpiry: vehicleForm.pucExpiry || undefined,
@@ -318,6 +329,22 @@ function GateYardPage() {
       return;
     }
     loadTracker(); loadYardSummary();
+  };
+
+  // Fires the driver's SMS + automated call immediately server-side
+  // (GateEntriesService.assignDock) — see CLAUDE.md's dock-assignment
+  // section. Re-assigning to a different number re-notifies and resets the
+  // warning timer.
+  const handleAssignDock = async (id: string) => {
+    const dockNumber = (dockInputs[id] || '').trim();
+    if (!dockNumber) { alert('Enter a dock number first.'); return; }
+    const res = await fetch(`http://localhost:3000/gate-entries/${id}/assign-dock`, { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ dockNumber }) });
+    if (!res.ok) {
+      const data = await res.json();
+      alert(errorText(data, 'Could not assign this dock.'));
+      return;
+    }
+    loadTracker();
   };
 
   const handleExport = () => {
@@ -487,6 +514,7 @@ function GateYardPage() {
               <p style={{ marginTop: 0, marginBottom: 4, fontSize: 13, color: '#666' }}>Actual capacity/dimensions for THIS truck (optional — overrides the Vehicle Type's generic values when known):</p>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
                 <input placeholder="Max Capacity (Ton)" value={vehicleForm.maxTonnage} onChange={(e) => setVehicleForm({ ...vehicleForm, maxTonnage: e.target.value })} style={{ width: 130 }} />
+                <input placeholder="Detention Cost/Day (₹)" value={vehicleForm.detentionCostPerDay} onChange={(e) => setVehicleForm({ ...vehicleForm, detentionCostPerDay: e.target.value })} style={{ width: 150 }} />
                 <input placeholder="Length (ft)" value={vehicleForm.lengthFt} onChange={(e) => setVehicleForm({ ...vehicleForm, lengthFt: e.target.value })} style={{ width: 100 }} />
                 <input placeholder="Width (ft)" value={vehicleForm.widthFt} onChange={(e) => setVehicleForm({ ...vehicleForm, widthFt: e.target.value })} style={{ width: 100 }} />
                 <input placeholder="Height (ft)" value={vehicleForm.heightFt} onChange={(e) => setVehicleForm({ ...vehicleForm, heightFt: e.target.value })} style={{ width: 100 }} />
@@ -642,6 +670,7 @@ function GateYardPage() {
             <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
               <th style={{ padding: 8 }}>Status</th>
               <th style={{ padding: 8 }}>Slot</th>
+              <th style={{ padding: 8 }}>Dock</th>
               <th style={{ padding: 8 }}>Warehouse</th>
               <th style={{ padding: 8 }}>Vehicle</th>
               <th style={{ padding: 8 }}>Destination</th>
@@ -649,6 +678,7 @@ function GateYardPage() {
               <th style={{ padding: 8 }}>Gate In At</th>
               <th style={{ padding: 8 }}>Hrs in Parking</th>
               <th style={{ padding: 8 }}>Hrs in Dock</th>
+              <th style={{ padding: 8 }}>Detention Cost</th>
               <th style={{ padding: 8 }}>Actions</th>
             </tr>
           </thead>
@@ -659,6 +689,20 @@ function GateYardPage() {
                 <tr key={r.gateEntryId} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                   <td style={{ padding: 8 }}>{r.status === 'DOCKED' ? 'Docked' : 'In Yard'}</td>
                   <td style={{ padding: 8 }}>{r.slotCode || '—'}</td>
+                  <td style={{ padding: 8 }}>
+                    <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
+                      <input
+                        value={dockInputs[r.gateEntryId] ?? r.assignedDockNumber ?? ''}
+                        onChange={(e) => setDockInputs({ ...dockInputs, [r.gateEntryId]: e.target.value })}
+                        placeholder="Dock #"
+                        style={{ width: 55 }}
+                      />
+                      <button onClick={() => handleAssignDock(r.gateEntryId)}>{r.assignedDockNumber ? 'Update' : 'Assign'}</button>
+                    </div>
+                    {r.assignedDockNumber && (
+                      <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>since {fmtDateTime(r.dockAssignedAt)}</div>
+                    )}
+                  </td>
                   <td style={{ padding: 8 }}>{r.warehouse.code}</td>
                   <td style={{ padding: 8, fontWeight: 'bold' }}>{r.vehicleNumber}</td>
                   <td style={{ padding: 8 }}>{r.destinationCity || '—'}</td>
@@ -666,6 +710,7 @@ function GateYardPage() {
                   <td style={{ padding: 8 }}>{fmtDateTime(r.gateInAt)}</td>
                   <td style={{ padding: 8 }}>{fmtHours(r.hoursInParking)}</td>
                   <td style={{ padding: 8 }}>{fmtHours(r.hoursInDock)}</td>
+                  <td style={{ padding: 8 }}>{r.detentionCost != null ? `₹${r.detentionCost.toFixed(2)}` : '—'}</td>
                   <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
                     {r.status === 'IN_YARD' && <button onClick={() => handleDockIn(r.gateEntryId)}>Mark Docked In</button>}
                     {fullEntry && <button onClick={() => openGateOut(fullEntry)} style={{ marginLeft: 6 }}>Gate Out</button>}

@@ -13,12 +13,13 @@ import { useEffect, useState } from 'react';
 // popup. No bulk Excel import either (confirmed) — registering a
 // vehicle/driver is a one-time-per-record manual step, export only.
 
-type VehicleType = { id: string; name: string; segment: string; maxTonnage: number };
+type VehicleType = { id: string; name: string; segment: string; maxTonnage: number; detentionCostPerDay?: number };
 type Vehicle = {
   id: string;
   vehicleNumber: string;
   vehicleType: VehicleType;
   maxTonnage?: number;
+  detentionCostPerDay?: number;
   lengthFt?: number;
   widthFt?: number;
   heightFt?: number;
@@ -60,7 +61,7 @@ function fmtDate(d?: string) {
 }
 
 const emptyVehicleForm = {
-  vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '',
+  vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '', detentionCostPerDay: '',
   rcNumber: '', rcExpiry: '', insuranceNumber: '', insuranceExpiry: '', pucNumber: '', pucExpiry: '', fitnessNumber: '', fitnessExpiry: '',
   isBlacklisted: false, blacklistReason: '',
 };
@@ -132,6 +133,7 @@ function VehicleDriverPage() {
       widthFt: v.widthFt != null ? String(v.widthFt) : '',
       heightFt: v.heightFt != null ? String(v.heightFt) : '',
       maxTonnage: v.maxTonnage != null ? String(v.maxTonnage) : '',
+      detentionCostPerDay: v.detentionCostPerDay != null ? String(v.detentionCostPerDay) : '',
       rcNumber: v.rcNumber || '',
       rcExpiry: v.rcExpiry ? v.rcExpiry.slice(0, 10) : '',
       insuranceNumber: v.insuranceNumber || '',
@@ -165,6 +167,7 @@ function VehicleDriverPage() {
       widthFt: vehicleForm.widthFt || undefined,
       heightFt: vehicleForm.heightFt || undefined,
       maxTonnage: vehicleForm.maxTonnage || undefined,
+      detentionCostPerDay: vehicleForm.detentionCostPerDay || undefined,
       rcExpiry: vehicleForm.rcExpiry || undefined,
       insuranceExpiry: vehicleForm.insuranceExpiry || undefined,
       pucExpiry: vehicleForm.pucExpiry || undefined,
@@ -349,6 +352,7 @@ function VehicleDriverPage() {
             <p style={{ marginTop: 0, marginBottom: 4, fontSize: 13, color: '#666' }}>Actual capacity/dimensions for THIS truck (optional — overrides the Vehicle Type's generic values when known):</p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
               <input placeholder="Max Capacity (Ton)" value={vehicleForm.maxTonnage} onChange={(e) => setVehicleForm({ ...vehicleForm, maxTonnage: e.target.value })} style={{ width: 130 }} />
+              <input placeholder="Detention Cost/Day (₹)" value={vehicleForm.detentionCostPerDay} onChange={(e) => setVehicleForm({ ...vehicleForm, detentionCostPerDay: e.target.value })} style={{ width: 150 }} />
               <input placeholder="Length (ft)" value={vehicleForm.lengthFt} onChange={(e) => setVehicleForm({ ...vehicleForm, lengthFt: e.target.value })} style={{ width: 100 }} />
               <input placeholder="Width (ft)" value={vehicleForm.widthFt} onChange={(e) => setVehicleForm({ ...vehicleForm, widthFt: e.target.value })} style={{ width: 100 }} />
               <input placeholder="Height (ft)" value={vehicleForm.heightFt} onChange={(e) => setVehicleForm({ ...vehicleForm, heightFt: e.target.value })} style={{ width: 100 }} />
@@ -424,6 +428,7 @@ function VehicleDriverPage() {
                 <th style={{ padding: 8 }}>Vehicle Number</th>
                 <th style={{ padding: 8 }}>Type</th>
                 <th style={{ padding: 8 }}>Max Capacity</th>
+                <th style={{ padding: 8 }}>Detention Rate</th>
                 <th style={{ padding: 8 }}>Blacklisted</th>
                 <th style={{ padding: 8 }}>Status</th>
                 <th style={{ padding: 8 }}>Actions</th>
@@ -435,6 +440,7 @@ function VehicleDriverPage() {
                   <td style={{ padding: 8, fontWeight: 'bold' }}>{v.vehicleNumber}</td>
                   <td style={{ padding: 8 }}>{v.vehicleType.name} ({v.vehicleType.segment})</td>
                   <td style={{ padding: 8 }}>{v.maxTonnage ?? v.vehicleType.maxTonnage} T</td>
+                  <td style={{ padding: 8 }}>{v.detentionCostPerDay ?? v.vehicleType.detentionCostPerDay ? `₹${v.detentionCostPerDay ?? v.vehicleType.detentionCostPerDay}/day` : '—'}</td>
                   <td style={{ padding: 8, color: v.isBlacklisted ? 'crimson' : undefined }}>{v.isBlacklisted ? `Yes — ${v.blacklistReason}` : 'No'}</td>
                   <td style={{ padding: 8 }}>{v.isActive ? 'Active' : 'Inactive'}</td>
                   <td style={{ padding: 8, whiteSpace: 'nowrap' }}>

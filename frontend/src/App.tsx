@@ -7,6 +7,7 @@ import UsersPage from './UsersPage';
 import LocationsPage from './LocationsPage';
 import GateYardPage from './GateYardPage';
 import VehicleDriverPage from './VehicleDriverPage';
+import CompanySettingsPage from './CompanySettingsPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -16,7 +17,7 @@ import VehicleDriverPage from './VehicleDriverPage';
 const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR'];
 
 function App() {
-  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver'>('warehouses');
+  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings'>('warehouses');
   const [user, setUser] = useState<any>(
     localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
   );
@@ -63,6 +64,11 @@ function App() {
             Users
           </button>
         )}
+        {user?.role === 'COMPANY_ADMIN' && (
+          <button onClick={() => setTab('companysettings')} style={{ fontWeight: tab === 'companysettings' ? 'bold' : 'normal' }}>
+            Company Settings
+          </button>
+        )}
         <span style={{ marginLeft: 'auto', fontSize: 14 }}>
           {user?.email} ({user?.role})
         </span>
@@ -80,6 +86,8 @@ function App() {
         <GateYardPage />
       ) : tab === 'vehicledriver' ? (
         <VehicleDriverPage />
+      ) : tab === 'companysettings' ? (
+        <CompanySettingsPage />
       ) : (
         <UsersPage />
       )}
