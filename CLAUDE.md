@@ -1532,12 +1532,28 @@ master-data module, not as an afterthought. Pattern: scope to `companyFilter(use
 each record count linked child/transaction records via a Prisma `_count.select` across every
 relation that would otherwise block a raw delete (see `WarehousesService.removeAll` — checks
 `assignedUsers`, `shipToAssignments`, `locations`, `inboundReceipts`, `outboundOrders`,
-`stockMovements`), skip (and report as "blocked") any record with links, bulk-delete the rest.
-Entities with only cascade-safe children and no real downstream FK (e.g. `Customer` → only
-`CustomerShipTo`) skip the blocking check and just delete children-then-parents in a
+`stockMovements`, `gateEntries`), skip (and report as "blocked") any record with links, bulk-delete
+the rest. Entities with only cascade-safe children and no real downstream FK (e.g. `Customer` →
+only `CustomerShipTo`) skip the blocking check and just delete children-then-parents in a
 `$transaction`, matching their single-record `remove()`. **Route order matters**: `@Delete('all')`
 must be declared before `@Delete(':id')` in the controller, or Nest matches `all` as an `:id`
 param and the literal route never fires.
+
+**A real bug lived here for two full modules' worth of time, caught 2026-08-27**:
+`WarehousesService.removeAll()`/`remove()`'s blocking check was written before Yard & Gate existed
+and never learned about it — `gateEntries` wasn't in the `_count.select`, so a warehouse with real
+gate-entry history got wrongly marked "deletable," and the raw `DELETE` hit Postgres's actual FK
+constraint, surfacing as an unhandled 500 instead of the intended graceful "blocked" result.
+**Lesson for any future relation added to an entity that already has a `removeAll`/`remove`**: go
+back and add it to that entity's blocking check too — it doesn't happen automatically just because
+the FK exists. Fixed by adding `gateEntries` to the count (real transaction history, blocks like
+`stockMovements` does) and adding `yardSlots`/`dockDoors`/`gatePassSequences` as cascade-deleted
+child rows in the transaction (config with nothing else referencing them via FK, same tier as
+`storageTypes`/`dispatchFlows` — safe once `gateEntries` is confirmed zero, since no
+`VehicleGateEntry` could then be pointing at any of that warehouse's `YardSlot`s either). Verified
+against both the exact bug scenario (a warehouse with linked gate entries → now a clean `200`
+`blocked` response, not a 500) and the happy path (a warehouse with real `YardSlot` rows and a
+`DockDoor` but no gate entries → still deletes cleanly with the new cascade cleanup).
 
 **Never smoke-test a `DELETE .../all` endpoint against real/seed data, even to verify a fix** —
 create disposable throwaway records, exercise the endpoint against those, and clean up
@@ -1547,6 +1563,37 @@ request — mid-restart requests have run against a stale in-memory build of the
 bypassed logic that was actually correct in the saved source. This wiped a real test company's
 warehouses and a customer during development (2026-08-23); see git history / conversation if you
 need the details. This applies doubly once real per-warehouse Inventory/Location data exists.
+
+### User.phone, and proving the detention alert cron actually fires (2026-08-27, same day)
+Two small follow-ups, picked directly off the "what's left" list from earlier in the session.
+
+**`User.phone`** — closes the gap flagged when notifications were first built: only `Driver` had a
+phone field, so a staff-facing SMS/WhatsApp alert had nowhere to send to. Purely a contact field,
+no login/identity impact (`email` stays the login ID either way) — same nullable, no-uniqueness
+shape as `Driver.phone`. Wired through the same places `functionTag` already was: `SELECT_SAFE` in
+`users.service.ts`, manual create/edit, bulk import (both the row-mapping in `users.controller.ts`
+and the actual `User_Master_Import_Template.xlsx`, updated in both `templates/` and
+`frontend/public/templates/` copies via a script — a new "Phone" column between Function Tag and
+Warehouse Code(s), plus a Legend & Rules row), export, `UsersPage.tsx`'s form/table/search.
+`NotificationsService.sendAndLog()` now actually selects and passes `phone` to the channel adapter,
+so SMS/WhatsApp to staff will work the moment a real provider exists — previously it silently only
+ever had an email to work with. Migration `20260827140000_add_user_phone`.
+
+**Proving the cron fires** — `DetentionAlertScheduler` had logic but had never been exercised
+against real data. Verified for real (not just reasoned about): registered a `WAREHOUSE_MANAGER`
+with a phone, assigned to the throwaway warehouse; set `Company.detentionAlertHours = 2`; backdated
+an open gate entry's `gateInAt` to 3 hours ago (same SQL-backdating technique as the detention-cost
+verification); then genuinely waited for the real `@Cron(EVERY_5_MINUTES)` to hit its next
+wall-clock mark (fires on `:00/:05/:10...`, not "5 minutes after setup" — worth remembering when
+timing a wait for this specific job). It fired exactly on schedule: a real `NotificationLog` row
+appeared — `DETENTION_ALERT`, `EMAIL` (the fallback channel, since this throwaway company never
+enabled any `CompanyNotificationChannel`), `status: SENT`, correct recipient (the Manager just
+registered), correct message text. First genuine end-to-end proof of the whole pipeline: cron
+detection → recipient resolution → `NotificationsService.sendAndLog()` → stub adapter →
+`NotificationLog` persisted. Escalation (`detentionEscalationHours`) was configured but not
+separately re-verified live — it's keyed off the alert's own timestamp being old enough
+unacknowledged, which would take a real hour-plus wait to observe firsthand; traced through the
+code instead rather than spending that time.
 
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
@@ -1638,15 +1685,17 @@ and live-verified end-to-end** — a company-wide default rate (`Company.detenti
 defaults ₹15000/day) with optional Vehicle/VehicleType overrides, a real input UI (Company
 Settings page + Vehicle register/edit forms), and the computed cost showing on the Gate & Yard
 tracker table. **Detention alerting** (the cron job that notifies a Manager/escalates to the
-Company Admin) also has real logic — but **every notification channel is still a stub** (logs
-only, no real SMS/Email/WhatsApp provider chosen or wired up, no API keys exist anywhere) and
-`User` has no `phone` field, so SMS/WhatsApp can never actually deliver yet regardless of provider.
-**Self-service driver check-in** is still schema-only (`SelfCheckInRequest` exists, no endpoint, no
-UI). ASN stays fully deferred until Inbound starts — no schema for it at all yet. A real,
-pre-existing bug was also surfaced (not fixed) while testing this: `WarehousesService.removeAll()`
-throws a 500 instead of gracefully blocking when a warehouse has linked `VehicleGateEntry`/
-`YardSlot` rows — its relation-count check predates Yard & Gate and was never extended to cover
-them. **Dock assignment → driver notification** (see its own section above) is also now built and
+Company Admin) also has real logic, and has now been **proven to actually fire against real data**
+(see "User.phone, and proving the detention alert cron actually fires" below) — but **every
+notification channel is still a stub** (logs only, no real SMS/Email/WhatsApp provider chosen or
+wired up, no API keys exist anywhere). `User` now has a `phone` field (added same day, closing what
+used to be a hard blocker here) so staff SMS/WhatsApp has somewhere to send to once a provider
+exists. **Self-service driver check-in** is still schema-only (`SelfCheckInRequest` exists, no
+endpoint, no UI). ASN stays fully deferred until Inbound starts — no schema for it at all yet. A
+real, pre-existing bug was also found and **fixed** the same day: `WarehousesService.removeAll()`/
+`remove()` used to throw a 500 instead of gracefully blocking when a warehouse had linked
+`VehicleGateEntry`/`YardSlot` rows — see "Every master-data entity gets a Delete All" above for the
+fix. **Dock assignment → driver notification** (see its own section above) is also now built and
 live-verified — a Security Supervisor types a dock number against an open gate entry, which
 immediately SMS's + calls the driver (`DriverSmsAdapter`/`DriverVoiceCallAdapter`, both stubs — no
 real provider chosen, Exotel was the research lead for voice) and logs proof of the attempt
