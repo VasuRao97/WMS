@@ -9,6 +9,7 @@ type UserRow = {
   role: string;
   isActive: boolean;
   functionTag?: string;
+  phone?: string;
   createdAt: string;
   lastLoginAt?: string | null;
   assignedWarehouses: WarehouseRef[];
@@ -61,6 +62,7 @@ const emptyForm = {
   password: '',
   role: '',
   functionTag: '',
+  phone: '',
   assignedWarehouseIds: [] as string[],
 };
 
@@ -137,6 +139,7 @@ function UsersPage() {
       password: '',
       role: u.role,
       functionTag: u.functionTag || '',
+      phone: u.phone || '',
       assignedWarehouseIds: editableAssigned,
     });
     setFormError('');
@@ -161,6 +164,7 @@ function UsersPage() {
       email: form.email,
       role: form.role,
       functionTag: form.functionTag || undefined,
+      phone: form.phone || undefined,
       assignedWarehouseIds: form.assignedWarehouseIds,
     };
     // Password required on create; on edit, blank means "leave unchanged".
@@ -236,7 +240,8 @@ function UsersPage() {
     (u) =>
       u.name.toLowerCase().includes(search.toLowerCase()) ||
       u.email.toLowerCase().includes(search.toLowerCase()) ||
-      (u.functionTag || '').toLowerCase().includes(search.toLowerCase()),
+      (u.functionTag || '').toLowerCase().includes(search.toLowerCase()) ||
+      (u.phone || '').toLowerCase().includes(search.toLowerCase()),
   );
 
   const userStats = {
@@ -256,7 +261,7 @@ function UsersPage() {
           <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, color: '#888', textAlign: 'center' }}>
             For onboarding many users at once (e.g. a batch of Operators) — same rules apply as adding one by hand:
             you can only import roles you're allowed to create, into warehouses you yourself have access to.
-            Columns: Name, Login ID, Password, Role, Function Tag, Warehouse Code(s) (comma-separated).
+            Columns: Name, Login ID, Password, Role, Function Tag, Phone, Warehouse Code(s) (comma-separated).
           </p>
           <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
             <a href="/templates/User_Master_Import_Template.xlsx" download>Download Template</a>
@@ -348,6 +353,12 @@ function UsersPage() {
                 onChange={(e) => setForm({ ...form, functionTag: e.target.value })}
                 style={{ width: 220 }}
               />
+              <input
+                placeholder="Phone"
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                style={{ width: 150 }}
+              />
             </div>
 
             <div style={{ marginBottom: 12 }}>
@@ -421,6 +432,7 @@ function UsersPage() {
             <th style={{ padding: 8 }}>Login ID</th>
             <th style={{ padding: 8 }}>Role</th>
             <th style={{ padding: 8 }}>Function Tag</th>
+            <th style={{ padding: 8 }}>Phone</th>
             <th style={{ padding: 8 }}>Assigned Warehouses</th>
             <th style={{ padding: 8 }}>Days Active</th>
             <th style={{ padding: 8 }}>Last Login</th>
@@ -436,6 +448,7 @@ function UsersPage() {
                 <td style={{ padding: 8 }}>{u.email}</td>
                 <td style={{ padding: 8 }}>{ROLE_LABELS[u.role] || u.role}</td>
                 <td style={{ padding: 8 }}>{u.functionTag || '—'}</td>
+                <td style={{ padding: 8 }}>{u.phone || '—'}</td>
                 <td style={{ padding: 8 }}>
                   {u.assignedWarehouses.length > 0 ? u.assignedWarehouses.map((w) => w.code).join(', ') : '—'}
                 </td>
