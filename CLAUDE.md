@@ -883,6 +883,163 @@ the API+localStorage token trick, not the login form) — registered one real Ve
 Driver by actually filling and submitting the real forms, confirmed both stat boxes and table rows
 updated correctly. Both throwaway companies cleaned up afterward.
 
+### Gate In/Out screen build, backend half (2026-08-27)
+Design conversation before this pass settled: one combined page for both Gate In and Gate Out (not
+built yet — frontend is next); a new `SECURITY_SUPERVISOR` role restricting who can access it;
+Vehicle/Driver registration moving onto that same page as two buttons, replacing the standalone
+`Vehicles`/`Drivers` nav tabs entirely (not built yet either); and an Outbound overweight check
+against the invoice. This section covers what's actually built and verified — the backend half.
+
+**`SECURITY_SUPERVISOR`** — a genuinely new `Role` enum value, confirmed explicitly as sitting at the
+**same hierarchy level as `WAREHOUSE_SUPERVISOR`** (a peer, not a sub-role), just with a different
+access surface (gate/yard duty instead of general warehouse oversight). Postgres can't remove an enum
+value without the swap-a-new-type dance (see the Yard & Gate schema section above), but CAN add one
+directly via `ALTER TYPE ... ADD VALUE` as long as the new value isn't used in the same migration —
+confirmed working here. Ripple effects handled:
+- `CREATABLE_ROLES` (`users.service.ts`, mirrored client-side in `UsersPage.tsx`): `WAREHOUSE_MANAGER`
+  can create both Supervisor peers; neither peer can create the other (only `COMPANY_ADMIN` creates
+  peers of itself); both can create `OPERATOR`.
+- Excluded from `MASTER_DATA_READ_ROLES` — same "zero visibility, surface is a task screen" reasoning
+  as `OPERATOR`, just for gate/yard duty. **Except Users itself** — `UsersController`'s
+  `CAN_MANAGE_USERS` (and its `App.tsx` mirror) explicitly add `SECURITY_SUPERVISOR` back in, since
+  `CREATABLE_ROLES` lets it manage `OPERATOR` accounts under it; this was a real gap caught by the
+  verification script (a 403 at the controller layer even though the service logic was already
+  correct) before being fixed. `WAREHOUSE_SCOPED_ROLES` also gained `SECURITY_SUPERVISOR` for the same
+  reason (their Users-page visibility needs to be warehouse-scoped) — harmless for the other three
+  master-data services, which never reach that scoping check for this role anyway (blocked earlier by
+  their own controllers' `MASTER_DATA_READ_ROLES` gate).
+- `GATE_YARD_READ_ROLES`/`GATE_YARD_OPERATE_ROLES`/`GATE_YARD_SCOPED_ROLES` all include it — this is
+  the role the whole page exists for.
+- ID-based login (not in `EMAIL_REQUIRED_ROLES`), same as Supervisor/Operator.
+
+**`Company.restrictGateAccessToSecuritySupervisor`** (default `false`) — the "easily removable" part.
+When on, `SECURITY_SUPERVISOR` and above (`WAREHOUSE_MANAGER`/`COMPANY_ADMIN`/`SUPER_ADMIN`) keep Gate
+In/Out access; `WAREHOUSE_SUPERVISOR`/`OPERATOR` lose it. Defaults off (today's broad access
+unchanged) since no company has any `SECURITY_SUPERVISOR` accounts the moment this ships — turning it
+on is a deliberate per-company opt-in once those accounts exist, not a day-one default that would
+otherwise lock every existing company out of a page that already works. Enforced by a new
+`assertGateAccessAllowed()` helper in `tenant.util.ts`, called at the top of every public method on
+`GateEntriesService`, `YardService`, `VehiclesService`, and `DriversService` — all four now live only
+on the Gate page, so all four respect the same toggle (not just a static `@Roles()` decorator, since
+this needs a live per-company DB read, not a fixed role list).
+
+**Overweight check (Outbound Dispatch only, unconditional — the client's own KPI, not a toggle like
+E-Way Bill)**: `Vehicle.maxTonnage` — a new per-vehicle override, same "override when known, fall back
+to `VehicleType`'s generic ceiling otherwise" pattern already used for the dimension fields.
+`VehicleGateEntry.invoiceWeightKg` — a manual placeholder for now (required to close Outbound Gate
+Out), standing in for the real total the client described: `SUM(SKU weight × quantity in invoice)`.
+**No further schema was needed for that real computation** — `Sku.grossWeight`/`weightUom` and
+`OutboundOrderLine.orderedQty` already exist from the original schema design, so once a real
+Outbound/Invoice module gets built, wiring in the actual computed total is a service-layer change
+only. `gateOut()` compares `invoiceWeightKg` against `(vehicle.maxTonnage ?? vehicleType.maxTonnage) *
+1000` — over that ceiling throws a `BadRequestException` naming the vehicle and both numbers; Gate Out
+is hard-blocked, not just flagged.
+
+**`YardService.parked()` renamed to `tracker()`** (`GET /yard/tracker`, was `/yard/parked`) — now
+covers docked-but-not-yet-gated-out vehicles too, not just ones still waiting in the yard, per the
+client's request for both "hours in parking" and "hours in dock" columns on the working table. Both
+are computed at read time, never stored: `hoursInParking` is `gateInAt -> dockedInAt` (fixed, once
+docked) or `gateInAt -> NOW` (still climbing, while waiting); `hoursInDock` is `null` until
+`dockedInAt` is set, then `dockedInAt -> NOW` (the row disappears from the table entirely once Gate
+Out closes it, so this only ever measures an open dock stay). A `status` field (`IN_YARD`/`DOCKED`)
+is included as a convenience so the frontend doesn't have to infer it from `dockedInAt` itself.
+
+Verified via a throwaway-company test script, 21/21 checks passing (after catching and fixing the
+`CAN_MANAGE_USERS` gap above): the full role hierarchy (Manager creates both Supervisor peers,
+neither peer creates the other, both create Operator), the toggle's exact before/after behavior for
+all four roles, the overweight block at exactly the registered ceiling, a missing-invoice-weight
+block, a successful under-ceiling Gate Out, and the tracker's `status`/`hoursInDock` flipping
+correctly after Dock In. Cleaned up afterward. **Not yet built**: the actual Gate In/Out frontend
+page, the two Vehicle/Driver quick-registration buttons (and removing the standalone nav tabs to
+match), and the document-check auto-pull-and-confirm UI.
+
+### Gate In/Out screen build, frontend half (2026-08-27)
+Completes the pass above. One new page, `GateYardPage.tsx`, replaces the standalone `Vehicles`/
+`Drivers` tabs entirely (both files deleted) — the client's explicit call: Yard Management and Gate
+In/Out share one page ("security should have visibility together"), and Vehicle/Driver registration
+moved onto it as two buttons ("Register Vehicle"/"Register Driver") opening modals, not separate
+pages. Wired into `App.tsx` as a single "Gate & Yard" tab, visible to every logged-in role like the
+other master-data tabs (no client-side role hiding — the backend's `assertGateAccessAllowed`/
+`@Roles()` gates are the real enforcement).
+
+**Page layout, top to bottom**: title → button row (+ Gate In / Register Vehicle / Register Driver)
+→ Yard Status stat boxes (one per warehouse — real Total/Occupied/Available for a `yardConfigured`
+one, a plain "No parking configured" line otherwise) → **Currently Open** collapsible section (the
+working table, defaults expanded) → **List of All Gate Entries** collapsible section (history,
+defaults collapsed, with a text search, a From/To date filter, and an Export button). This deviates
+from the standard 5-master-data-page template in `[[wms-frontend-styling-conventions]]` on purpose —
+a transaction log doesn't have an Active/Inactive-style default state, so stat boxes came from the
+Yard summary instead, and there are two collapsible sections (open vs. history) rather than one list.
+
+**Gate In form**: Warehouse defaults to the user's only entry when `GET /warehouses` (already
+tenant/warehouse-scoped server-side) returns exactly one. Vehicle/Driver pickers are plain `<input
+list>` + `<datalist>` — a native HTML searchable-dropdown, no extra library — matching text against
+`vehicleNumber` / `"name (phone)"` to resolve the real id; no exact match leaves the id unresolved
+(caught server-side as "Vehicle is required" if submitted anyway) rather than silently guessing. The
+document-check table appears once a Vehicle or Driver is selected, pulling each of the 5 documents'
+number+expiry live from the record (`RC`/`Insurance`/`PUC`/`Fitness` from Vehicle, `License` from
+Driver) with an expired date shown in red — exactly the "the security needs to get that info" ask.
+Each row is a single "Confirmed OK" checkbox (unticked → `MISSING`), not a 3-way selector, per the
+client's direct confirmation. Blacklisted Vehicle/Driver shows an inline warning (not a hard block —
+that wasn't asked for). The yard-full banner is inline on the form, computed reactively from the
+already-loaded `/yard/summary` the moment a warehouse is picked — not a popup after submit.
+
+**Gate Out modal**: fields shown depend on the entry's `purpose` — Tare Weight always; Invoice
+Weight (required) + E-Way Bill No for Outbound; a "material received" checkbox for Inbound. Any
+backend validation error (overweight, missing E-Way Bill, missing confirmation) surfaces inline in
+the modal, not a toast — same "show it where the mistake was made" idea as every other form in this
+codebase.
+
+**Register Vehicle/Driver modals** reuse the exact form fields the old standalone pages had (nothing
+lost in the move) — on success they close, reload their list, and (2026-08-27 convenience) auto-fill
+the newly-registered record straight into whatever Gate In form is open, so a guard who hits "not
+found" while typing doesn't lose their place.
+
+Verified live through the actual rendered UI (logged in via the API+localStorage token trick): `tsc
+-b` and a full `vite build` both came back clean; registered one real Vehicle (with a `maxTonnage`
+override) and one real Driver through the real modals, confirmed via a direct API check the vehicle
+saved correctly; ran a complete Gate In (warehouse auto-selected, vehicle/driver resolved via the
+datalist pickers, document table correctly showed the driver's license and "Not on file" for the
+vehicle's unset documents) and watched the yard stat boxes and working table update live (slot `Y1`
+assigned, 3→1 occupied); clicked "Mark Docked In" and watched the row flip to `Docked` with
+`hoursInDock` starting to count and the slot free again (3→0 occupied); opened Gate Out and confirmed
+the exact overweight block message (`1500 kg exceeds ... 1200 kg`) rendering inline, then completed a
+real Gate Out with a valid weight and watched the row disappear from the open table and land
+correctly in history as `Gated Out`; confirmed `GET /gate-entries/export` returns a real non-empty
+`.xlsx`. Throwaway company cleaned up afterward.
+
+**Still not built**: Gate Pass Number (no UI needed yet, since the generation logic itself doesn't
+exist), blacklist *enforcement* (the warning shown is informational only, doesn't block Gate In), and
+Dock Scheduling / Weight Bridge, same as noted throughout this whole topic.
+
+### Gate & Yard live-testing fixes (2026-08-27, same day)
+The client tested the built page against a real use case and found three things:
+
+1. **Vehicle registration modal's document dates were unclear** — RC/Insurance and PUC/Fitness were
+   packed two-per-row (Number, Date, Number, Date), and a bare `<input type="date">` shows no label
+   of its own, so it wasn't obvious which date belonged to which document. Fixed: each document
+   (RC/Insurance/PUC/Fitness) now gets its own labeled row (`GateYardPage.tsx`'s Register Vehicle
+   modal) with an explicit "Expiry" label next to its date field; the Driver modal's single License
+   Expiry field got the same label added for consistency even though it wasn't ambiguous on its own.
+2. **No way to blacklist an already-registered Vehicle/Driver** — removing the standalone `Vehicles`/
+   `Drivers` pages (per the client's own "remove and add buttons" instruction) also removed the only
+   edit path, and the two new "Register" modals only ever create, never edit. **Flagged, not fixed —
+   the client explicitly said they want to think about the right shape first** (a dedicated edit
+   page? inline edit from a list? a blacklist-only quick-toggle view?) before anything gets built.
+   Don't assume a solution here without checking back.
+3. **Real cross-warehouse visibility bug, caught by the client's own use-case test**:
+   `YardService.tracker()`'s `?warehouseId=` query param let a warehouse-scoped role (Supervisor,
+   Security Supervisor, Operator, Manager) bypass their own `ownWarehouseIds()` restriction entirely
+   by just passing a different warehouse's id — confirmed and reproduced via a throwaway two-warehouse
+   test before fixing. Fixed: an explicit `warehouseId` is now checked against the caller's own
+   accessible set first (`ForbiddenException` if outside it) rather than blindly overriding the scope
+   filter. `GateEntriesService.findAll()`/`YardService.summary()` were already safe (neither accepts
+   a client-supplied warehouse override) — this was specifically a `tracker()` bug. Verified via a
+   throwaway two-warehouse test, 12/12 checks passing (a Supervisor scoped to WH1 sees only WH1 across
+   `/warehouses`, `/yard/summary`, `/yard/tracker`, `/gate-entries`, and `/gate-entries/export`, is
+   rejected with 403 when forcing `?warehouseId=<WH2>`, while an unscoped Admin can still legitimately
+   use that same param to filter between warehouses they do have access to).
+
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
 record could plausibly have more than one of (barcodes, storage units, customer ship-to
