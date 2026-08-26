@@ -301,6 +301,15 @@ export class WarehousesService {
             inboundReceipts: true,
             outboundOrders: true,
             stockMovements: true,
+            // gateEntries added 2026-08-27 — a real, pre-existing bug found
+            // while testing detention cost: this check predates Yard & Gate
+            // and never learned about it, so a warehouse with real gate-entry
+            // history was wrongly marked "deletable" and the raw DELETE hit a
+            // live FK constraint (surfaced as a raw 500, not a clean
+            // "blocked" result). Real transaction history, same tier as
+            // stockMovements/inboundReceipts/outboundOrders — blocks
+            // deletion the same way those do.
+            gateEntries: true,
           },
         },
       },
@@ -309,7 +318,7 @@ export class WarehousesService {
     const blocked: string[] = [];
     for (const wh of warehouses) {
       const c = wh._count;
-      const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements;
+      const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries;
       if (totalLinked > 0) blocked.push(wh.code);
       else deletable.push(wh.id);
     }
@@ -317,9 +326,19 @@ export class WarehousesService {
       // storageTypes/dispatchFlows are inherent detail of the warehouse (like
       // SkuStorageUnit/SkuBarcode for a SKU) — not "linked data" that blocks
       // deletion, just child rows that must go first (FK is ON DELETE RESTRICT).
+      // yardSlots/dockDoors/gatePassSequences (2026-08-27) are the same kind
+      // of child config, not real linked data — nothing else references a
+      // DockDoor or GatePassSequence via FK, and gateEntries is already
+      // confirmed zero above for every id in `deletable`, so no
+      // VehicleGateEntry can be pointing at any of these warehouses' YardSlot
+      // rows either. Safe to just clean them up alongside storageTypes/
+      // dispatchFlows rather than blocking on them.
       await this.prisma.$transaction([
         this.prisma.warehouseStorageType.deleteMany({ where: { warehouseId: { in: deletable } } }),
         this.prisma.warehouseDispatchFlow.deleteMany({ where: { warehouseId: { in: deletable } } }),
+        this.prisma.yardSlot.deleteMany({ where: { warehouseId: { in: deletable } } }),
+        this.prisma.dockDoor.deleteMany({ where: { warehouseId: { in: deletable } } }),
+        this.prisma.gatePassSequence.deleteMany({ where: { warehouseId: { in: deletable } } }),
         this.prisma.warehouse.deleteMany({ where: { id: { in: deletable } } }),
       ]);
     }
@@ -344,21 +363,25 @@ export class WarehousesService {
             inboundReceipts: true,
             outboundOrders: true,
             stockMovements: true,
+            gateEntries: true, // see removeAll()'s comment — same 2026-08-27 fix
           },
         },
       },
     });
     if (!warehouse) throw new NotFoundException('Warehouse not found.');
     const c = warehouse._count;
-    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements;
+    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries;
     if (totalLinked > 0) {
       throw new BadRequestException(
-        `Cannot permanently delete "${warehouse.code}" — it has ${totalLinked} linked record(s) (users, ship-tos, locations, or transactions). Deactivate it instead.`,
+        `Cannot permanently delete "${warehouse.code}" — it has ${totalLinked} linked record(s) (users, ship-tos, locations, gate entries, or transactions). Deactivate it instead.`,
       );
     }
     await this.prisma.$transaction([
       this.prisma.warehouseStorageType.deleteMany({ where: { warehouseId: id } }),
       this.prisma.warehouseDispatchFlow.deleteMany({ where: { warehouseId: id } }),
+      this.prisma.yardSlot.deleteMany({ where: { warehouseId: id } }),
+      this.prisma.dockDoor.deleteMany({ where: { warehouseId: id } }),
+      this.prisma.gatePassSequence.deleteMany({ where: { warehouseId: id } }),
       this.prisma.warehouse.delete({ where: { id } }),
     ]);
     return { deleted: true, code: warehouse.code };

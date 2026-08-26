@@ -140,6 +140,15 @@ model User {
   // reporting. Not read by any permission check; the real access rules run purely
   // off `role` + `assignedWarehouses`.
   functionTag        String?
+  // Contact number, added 2026-08-27 specifically so staff (Managers/
+  // Admins) can actually receive SMS/WhatsApp notifications — a real gap
+  // found while building detention alerting: only Driver had a phone
+  // field, so a staff-facing alert could only ever go out by email. Purely
+  // a contact field, no login/identity meaning — email stays the login ID
+  // either way, same as before this field existed. No uniqueness
+  // constraint (same reasoning as Driver.phone — not a reliable natural
+  // key to enforce).
+  phone              String?
   isActive           Boolean      @default(true)
   createdAt          DateTime     @default(now())
   // Fast "last seen" lookup — a cached/derived convenience, same relationship

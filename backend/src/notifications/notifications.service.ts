@@ -49,7 +49,7 @@ export class NotificationsService {
     channel: string;
     message: string;
   }) {
-    const recipient = await this.prisma.user.findUnique({ where: { id: params.recipientUserId }, select: { email: true } });
+    const recipient = await this.prisma.user.findUnique({ where: { id: params.recipientUserId }, select: { email: true, phone: true } });
     const log = await this.prisma.notificationLog.create({
       data: {
         companyId: params.companyId,
@@ -64,7 +64,7 @@ export class NotificationsService {
       },
     });
 
-    const result = await this.adapterFor(params.channel).send({ email: recipient?.email || '' }, params.message);
+    const result = await this.adapterFor(params.channel).send({ email: recipient?.email || '', phone: recipient?.phone }, params.message);
 
     return this.prisma.notificationLog.update({
       where: { id: log.id },

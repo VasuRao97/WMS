@@ -40,6 +40,7 @@ const SELECT_SAFE = {
   role: true,
   isActive: true,
   functionTag: true,
+  phone: true,
   createdAt: true,
   lastLoginAt: true,
   assignedWarehouses: { select: { id: true, code: true, name: true } },
@@ -121,6 +122,7 @@ export class UsersService {
         name: data.name.trim(),
         role: targetRole,
         functionTag: data.functionTag || undefined,
+        phone: data.phone || undefined,
         company: { connect: { id: creator.companyId } },
         assignedWarehouses: warehouseIds.length ? { connect: warehouseIds.map((id) => ({ id })) } : undefined,
       },
@@ -201,6 +203,7 @@ export class UsersService {
             name: row.name.trim(),
             role: targetRole as any,
             functionTag: row.functionTag || undefined,
+            phone: row.phone || undefined,
             company: { connect: { id: creator.companyId } },
             assignedWarehouses: warehouseIds.length ? { connect: warehouseIds.map((wid) => ({ id: wid })) } : undefined,
           },
@@ -349,6 +352,7 @@ export class UsersService {
     if (data.name !== undefined) updateData.name = data.name.trim();
     if (!isSelfEdit && data.role !== undefined) updateData.role = data.role;
     if (data.functionTag !== undefined) updateData.functionTag = data.functionTag || null;
+    if (data.phone !== undefined) updateData.phone = data.phone || null;
     if (data.password) updateData.passwordHash = await bcrypt.hash(data.password, 10);
     if (warehouseIds !== undefined) {
       updateData.assignedWarehouses = { set: warehouseIds.map((wid) => ({ id: wid })) };
@@ -380,6 +384,7 @@ export class UsersService {
       'Name': u.name,
       'Role': u.role,
       'Function Tag': u.functionTag || '',
+      'Phone': u.phone || '',
       'Warehouse Code(s)': u.assignedWarehouses.map((w: any) => w.code).join(', '),
       'Active': u.isActive ? 'TRUE' : 'FALSE',
       'Last Login At': u.lastLoginAt ? u.lastLoginAt.toISOString() : '',

@@ -106,6 +106,7 @@ export class UsersController {
         password: r['Password'] ? String(r['Password']) : '',
         role: r['Role'] ? String(r['Role']).trim() : '',
         functionTag: r['Function Tag'] ? String(r['Function Tag']).trim() : undefined,
+        phone: r['Phone'] ? String(r['Phone']).trim() : undefined,
         warehouseCodes: r['Warehouse Code(s)'] ? String(r['Warehouse Code(s)']).trim() : '',
       }));
 

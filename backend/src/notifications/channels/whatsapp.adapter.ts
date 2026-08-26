@@ -12,7 +12,7 @@ export class WhatsappAdapter implements NotificationChannelAdapter {
 
   async send(recipient: NotificationRecipient, message: string): Promise<NotificationSendResult> {
     if (!recipient.phone) {
-      this.logger.warn(`[STUB] Cannot WhatsApp ${recipient.email} — no phone number on file (User has no phone field yet).`);
+      this.logger.warn(`[STUB] Cannot WhatsApp ${recipient.email} — this user has no phone number on file.`);
       return { success: false, error: 'No phone number on file for this user.' };
     }
     this.logger.log(`[STUB] Would WhatsApp ${recipient.phone}: ${message}`);
