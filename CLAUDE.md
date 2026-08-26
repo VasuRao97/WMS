@@ -1040,6 +1040,75 @@ The client tested the built page against a real use case and found three things:
    rejected with 403 when forcing `?warehouseId=<WH2>`, while an unscoped Admin can still legitimately
    use that same param to filter between warehouses they do have access to).
 
+### Vehicle & Driver Master page (2026-08-27)
+Follow-up to the "no way to edit/blacklist" gap flagged in the live-testing pass above. The client
+was explicit they wanted to think about the shape before anything got built — this is what they
+landed on, confirmed in conversation before coding:
+
+**A new standalone "Vehicle & Driver Master" tab, next to Gate & Yard in the nav** — one page, two
+separate tables (Vehicles, Drivers), not merged into one. **No create button on this page** —
+registration stays exactly where it already was, the "Register Vehicle"/"Register Driver" buttons
+on `GateYardPage.tsx`; this page exists purely to browse/search/edit/blacklist/deactivate/delete
+what's already on file, populated continuously as gate staff register vehicles and drivers. Editing
+opens a **normal on-page form, not a modal** — same "form doubles as edit form" pattern
+`LocationsPage.tsx` already uses (`editingVehicleId`/`editingDriverId` state, `startEdit` pre-fills,
+`handleSubmit` always PATCHes since there's no create path on this page). Blacklist
+(`isBlacklisted`/`blacklistReason`) is just two fields inside that same edit form — no separate
+blacklist-only view, per the client's own call ("blacklist in the page we are making"). **Export
+only, no bulk import** — confirmed explicitly ("it has to be manual add, will be one time for every
+driver/vehicle"), unlike every other master-data entity.
+
+New `frontend/src/VehicleDriverPage.tsx`, wired into `App.tsx` as a `vehicledriver` tab. Backend
+reused the existing Vehicle/Driver CRUD (update/deactivate/reactivate/delete/Delete All) built in
+the 2026-08-26 pass wholesale — the only new backend work was `GET /vehicles/export` and
+`GET /drivers/export` (`exportRows()` on each service, same `json_to_sheet` shape as every other
+export endpoint, gated `GATE_YARD_READ_ROLES` matching `findAll`'s own gate).
+
+Verified: `tsc --noEmit` (backend) and `tsc -b` (frontend) both clean, and the client confirmed it
+working live in their own browser session. **Not independently re-verified via a throwaway-company
+script or a live browser pass from this session** — the dev server was owned by a different session
+at the time, so this pass relied on the client's own check rather than the usual two-part
+verification. Worth a proper throwaway-company pass (Edit/blacklist round-trip, Export producing a
+real non-empty file, role gating) the next time this area is touched, rather than assuming it's
+fully proven.
+
+### Yard Management: candidate next features, researched not built (2026-08-27)
+A web-research pass (not a design conversation yet) surveyed what typical Yard Management Systems
+include, to sanity-check what this module might still be missing. Findings, for reference — **none
+of this is built, and most of it isn't even schema'd yet**:
+
+- **ASN (Advance Shipment Notice)** — real finding: `InboundReceipt.referenceNo`'s existing comment
+  already says "e.g. supplier ASN / PO number," meaning ASN was always meant to live in the
+  (unbuilt) Inbound module, not Yard/Gate. `InboundReceipt`/`InboundReceiptLine` have the SKU/qty
+  shape already but no pre-arrival timing fields (expected date/time, expected vehicle/transporter)
+  and no FK from `VehicleGateEntry` back to a receipt — both needed before Gate In could match an
+  arriving truck against a pre-created ASN. **Open question for the client to resolve first**:
+  ASN entered manually by warehouse staff ahead of arrival, or received electronically from a
+  supplier (EDI/API) — a real scope fork, the latter overlapping with the WMS/TMS integration item
+  below.
+- **Detention/demurrage alerting** — cheap: `hoursInParking`/`hoursInDock` are already computed at
+  read time in `YardService.tracker()`, nothing new to store there except a per-company threshold
+  (open question: one combined threshold, or separate yard-wait vs dock-wait thresholds). "Alert"
+  itself is cheapest as a visual flag on the tracker row — an actual push/SMS/email alert needs
+  notification infrastructure this project doesn't have at all yet.
+- **Blacklist enforcement at Gate In** (hard block, not just the current warning) — explicitly
+  parked by the client for a later conversation.
+- **Analytics dashboard** (turnaround/dwell trends, dock utilization) — explicitly parked; no schema
+  gap, everything it would report on already exists as raw gate-entry/yard-slot data.
+- **Self-service driver check-in** (kiosk/QR/app) — client confirmed wanting this eventually, but
+  flagged here as needing its **own** align-before-coding pass before any schema: drivers have no
+  login/User account in this system at all today, so this is a real new-workflow design question
+  (QR-linked no-login form? physical kiosk? what can a driver self-report vs what stays
+  security-verified?), not a field-adding one.
+- **WMS/TMS integration** — client wants to study this themselves first; deliberately not scoped.
+  Worth knowing when they get there: `erpCode` fields on Sku/Warehouse/Customer already establish
+  a "landing spot field, no real wiring yet" convention this would likely extend.
+
+Client's direction after seeing this list: build all six eventually, starting with ASN and
+detention alerting; explicitly wants schema-now/logic-later separated for each rather than
+building either in one shot. Two open questions above (ASN sourcing, detention threshold shape)
+block writing schema for either — resolve those before touching `schema.prisma`.
+
 ### Field modeling: core vs. non-core
 A field stays flat on the main table only if a record can have exactly *one* of it. Anything a
 record could plausibly have more than one of (barcodes, storage units, customer ship-to
