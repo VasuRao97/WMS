@@ -106,6 +106,14 @@ when Inventory gets designed, not before.
 receiving works end-to-end) with nowhere further to go — the real, felt gap the module build order
 was always pointing at anyway.
 
+**First thing to close before Putaway itself, your own call**: confirm whether the real company's
+Dock Doors actually have default staging locations configured. The capability was built and
+live-verified this session (Dock Doors page under Masters, a Default Staging Location field per
+dock, Match Order pre-fills from it) — but every verification pass used a throwaway company, so
+it's unconfirmed whether the real warehouse has any real Dock Door records at all, let alone ones
+with staging assigned. That's real data entry, not a code gap — check the Dock Doors page for the
+real company first.
+
 The first three candidates below are the module-level options (unchanged from before); the rest
 are smaller items raised in earlier sessions — pick any of them, not a forced order.
 
