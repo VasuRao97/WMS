@@ -443,10 +443,17 @@ export class GateEntriesService {
     return this.attachNetWeight(updated);
   }
 
-  // Inbound receiving, step 2 (2026-08-27) — the REAL, authoritative order
-  // match. Distinct from Gate In's loose free-text `referenceNo`: this is a
-  // deliberate second entry, after Dock In, that resolves against a real
-  // InboundReceipt and locks it to this gate entry. Only Inbound, only
+  // Inbound receiving, step 2 (2026-08-27, revised same day in a follow-up
+  // conversation) — the REAL, authoritative order match. Used to trust a
+  // typed PO/Invoice number with NO check it was even the right vehicle — a
+  // real gap the client caught: "let's bring in the consideration of the
+  // vehicle also... so that we have a 1v1 mapping of vehicle and order,
+  // then only we should be able to match order." Now auto-finds the one
+  // InboundReceipt whose own declared `vehicleId` equals this gate entry's
+  // vehicle and that has no gateEntry yet — no typed reference number at
+  // all. InboundReceiptsService enforces the "one open order per vehicle"
+  // half of the 1:1 mapping at order-creation time, so at most one such
+  // receipt should ever exist; this just looks it up. Only Inbound, only
   // after Dock In (matches the client's described flow — the driver hands
   // over the PO/invoice once actually at the dock), and only once per
   // receipt (@unique on inboundReceiptId) and once per gate entry.
@@ -465,16 +472,17 @@ export class GateEntriesService {
     if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
     if ((existing as any).inboundReceiptId) throw new BadRequestException('This vehicle is already matched to an order.');
 
-    const trimmed = data?.referenceNo != null ? String(data.referenceNo).trim() : '';
-    if (!trimmed) throw new BadRequestException('PO/Invoice number is required.');
     const stagingLocationId = data?.stagingLocationId || undefined;
     if (!stagingLocationId) throw new BadRequestException('A staging location is required — where is this delivery being unloaded to?');
 
     const [receipt, stagingLocation] = await Promise.all([
-      this.prisma.inboundReceipt.findFirst({ where: { warehouseId: existing.warehouseId, referenceNo: trimmed } }),
+      this.prisma.inboundReceipt.findFirst({ where: { vehicleId: (existing as any).vehicleId, gateEntry: null } }),
       this.prisma.location.findUnique({ where: { id: stagingLocationId } }),
     ]);
-    if (!receipt) throw new BadRequestException(`No expected order found for "${trimmed}" at this warehouse.`);
+    if (!receipt) throw new BadRequestException(`No pending order found for vehicle "${(existing as any).vehicle?.vehicleNumber}" — create one first.`);
+    if (receipt.warehouseId !== existing.warehouseId) {
+      throw new BadRequestException(`Order "${receipt.referenceNo}" for this vehicle was created for a different warehouse.`);
+    }
     if (receipt.status === 'RECEIVED' || receipt.status === 'PUTAWAY_COMPLETE') {
       throw new BadRequestException('This order has already been fully received.');
     }

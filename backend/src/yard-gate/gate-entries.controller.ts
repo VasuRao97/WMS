@@ -79,7 +79,7 @@ export class GateEntriesController {
   // itself, since physically scanning is floor work, not planning work).
   @Patch(':id/match-receipt')
   @Roles(...INBOUND_SCAN_ROLES)
-  matchReceipt(@Param('id') id: string, @Body() body: { referenceNo: string; stagingLocationId: string }, @CurrentUser() user: any) {
+  matchReceipt(@Param('id') id: string, @Body() body: { stagingLocationId: string }, @CurrentUser() user: any) {
     return this.gateEntriesService.matchReceipt(id, body, user);
   }
 

@@ -58,6 +58,10 @@ export class InboundReceiptsController {
           warehouseCode,
           referenceNo,
           supplierName: r['Supplier Name'] ? String(r['Supplier Name']).trim() : undefined,
+          // 1:1 vehicle<->order mapping (2026-08-27 follow-up) — same
+          // "only the first row's value is used" convention as Supplier
+          // Name, since every row in a group is the same order.
+          vehicleNumber: r['Vehicle Number'] ? String(r['Vehicle Number']).trim() : undefined,
           lines: [] as any[],
         });
       }

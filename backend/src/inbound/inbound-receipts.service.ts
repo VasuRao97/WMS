@@ -7,6 +7,12 @@ const RECEIPT_INCLUDE = {
   createdBy: { select: { id: true, name: true } },
   lines: { include: { sku: { select: { id: true, code: true, description: true } }, stagingLocation: { select: { id: true, code: true } } } },
   stagingLocation: { select: { id: true, code: true } },
+  // The order's own expected vehicle (2026-08-27, the 1:1-mapping
+  // follow-up) — distinct from gateEntry.vehicle below, which is whichever
+  // real gate visit ended up matched to this receipt (should always be the
+  // same vehicle once matched, but this is the order's own declared intent,
+  // visible even before any vehicle has arrived).
+  vehicle: { select: { id: true, vehicleNumber: true } },
   gateEntry: { select: { id: true, vehicle: { select: { vehicleNumber: true } }, dockedInAt: true, gateOutAt: true } },
 };
 
@@ -115,6 +121,57 @@ export class InboundReceiptsService {
     return result;
   }
 
+  // Enforces the real 1:1 vehicle<->order mapping (2026-08-27, a follow-up
+  // gap the client caught: Match Order used to trust a typed PO/Invoice
+  // number with no check it was even the right vehicle). Every new order —
+  // manual or imported — must name a real, company-owned Vehicle, and that
+  // Vehicle must not already have another unmatched order sitting open. A
+  // vehicle can make many trips over its life, just never two open orders
+  // at once — an order stops being "open" the moment GateEntriesService.
+  // matchReceipt() claims it (gateEntry becomes non-null), so a finished or
+  // already-matched trip never blocks the vehicle's next one. Scoped
+  // company-wide, not per-warehouse: a vehicle can only physically be in
+  // one place at a time, so a second open order for it at a DIFFERENT
+  // warehouse is exactly as invalid as one at the same warehouse.
+  private async resolveVehicleForReceipt(vehicleId: any, user: any, errors: string[]): Promise<string | undefined> {
+    if (!vehicleId) {
+      errors.push('Vehicle is required.');
+      return undefined;
+    }
+    const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
+    if (!vehicle) {
+      errors.push('Vehicle not found.');
+      return undefined;
+    }
+    if (user.role !== 'SUPER_ADMIN' && vehicle.companyId !== user.companyId) {
+      errors.push('You do not have access to this vehicle.');
+      return undefined;
+    }
+    const openOrder = await this.prisma.inboundReceipt.findFirst({ where: { vehicleId: vehicle.id, gateEntry: null } });
+    if (openOrder) {
+      errors.push(`Vehicle "${vehicle.vehicleNumber}" already has an unmatched order ("${openOrder.referenceNo}") — match or resolve it before creating another.`);
+      return undefined;
+    }
+    return vehicle.id;
+  }
+
+  // Same shape as resolveWarehouseCodeToId/resolveSkuCodeToId — used only
+  // by the Excel import path (the manual order maker gets a real vehicleId
+  // from a dropdown, not a typed Vehicle Number).
+  private async resolveVehicleNumberToId(vehicleNumber: any, user: any, errors: string[]): Promise<string | undefined> {
+    const numStr = vehicleNumber ? String(vehicleNumber).trim().toUpperCase() : '';
+    if (!numStr) {
+      errors.push('Vehicle Number is required.');
+      return undefined;
+    }
+    const vehicle = await this.prisma.vehicle.findUnique({ where: { companyId_vehicleNumber: { companyId: user.companyId, vehicleNumber: numStr } } });
+    if (!vehicle) {
+      errors.push(`Vehicle Number "${numStr}" not found — register it first.`);
+      return undefined;
+    }
+    return vehicle.id;
+  }
+
   // Shared by the manual order maker (create()) and the Excel bulk import
   // below — same "one function, two callers" convention as
   // SkusService.validateSkuData, so the two paths can't drift apart. Returns
@@ -132,9 +189,11 @@ export class InboundReceiptsService {
       if (existing) errors.push(`An order with reference "${referenceNo}" already exists for this warehouse.`);
     }
 
+    const vehicleId = await this.resolveVehicleForReceipt(data.vehicleId, user, errors);
+
     const lines = warehouseId ? await this.validateLines(warehouseId, data.lines, errors) : [];
 
-    return { warehouseId, referenceNo, supplierName: data.supplierName ? String(data.supplierName).trim() : undefined, lines };
+    return { warehouseId, referenceNo, vehicleId, supplierName: data.supplierName ? String(data.supplierName).trim() : undefined, lines };
   }
 
   async create(data: any, user: any) {
@@ -148,6 +207,7 @@ export class InboundReceiptsService {
         warehouse: { connect: { id: prepared.warehouseId } },
         referenceNo: prepared.referenceNo,
         supplierName: prepared.supplierName,
+        vehicle: { connect: { id: prepared.vehicleId! } },
         createdBy: { connect: { id: user.userId } },
         lines: { create: prepared.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty, stagingLocationId: l.stagingLocationId })) },
       },
@@ -186,6 +246,7 @@ export class InboundReceiptsService {
     for (const row of rows) {
       const errors: string[] = [];
       const warehouseId = await this.resolveWarehouseCodeToId(row.warehouseCode, user, errors);
+      const vehicleId = await this.resolveVehicleNumberToId(row.vehicleNumber, user, errors);
 
       const skuLines: { skuId: string; expectedQty: number }[] = [];
       if (warehouseId) {
@@ -202,7 +263,7 @@ export class InboundReceiptsService {
       if (skuLines.length === 0 && errors.length === 0) errors.push('At least one SKU line is required.');
 
       const prepared = warehouseId
-        ? await this.prepareReceipt({ warehouseId, referenceNo: row.referenceNo, supplierName: row.supplierName, lines: skuLines }, user, errors)
+        ? await this.prepareReceipt({ warehouseId, referenceNo: row.referenceNo, supplierName: row.supplierName, vehicleId, lines: skuLines }, user, errors)
         : null;
 
       if (errors.length > 0) {
@@ -215,6 +276,7 @@ export class InboundReceiptsService {
           warehouse: { connect: { id: prepared!.warehouseId } },
           referenceNo: prepared!.referenceNo,
           supplierName: prepared!.supplierName,
+          vehicle: { connect: { id: prepared!.vehicleId! } },
           createdBy: { connect: { id: user.userId } },
           lines: { create: prepared!.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty })) },
         },

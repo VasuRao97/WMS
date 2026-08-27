@@ -1948,6 +1948,66 @@ distance-suggestion algorithm itself (Putaway/Picking's job, later), any data-en
 visible (no new workflow logic for a "vehicles to load" stream — that's the real Outbound module,
 still not started).
 
+### Inbound order ↔ Vehicle 1:1 mapping (2026-08-27, same session, follow-up)
+A real gap the client caught immediately after the deep-dive pass above shipped: "let's bring in
+the consideration of the vehicle also... so that we have a 1v1 mapping of vehicle and order, then
+only we should be able to match order." Match Order used to trust a typed PO/Invoice number with
+**no check it was even the right vehicle** — a Security Supervisor mistyping a reference could
+match an entirely unrelated vehicle to someone else's order. Three decisions confirmed before
+building: Vehicle is **required** on every new order (not optional-if-set); the 1:1 rule blocks
+**one open (unmatched) order per vehicle at a time**, company-wide not per-warehouse (a vehicle can
+only physically be in one place, but can make many separate trips over its life — a finished or
+already-matched order never blocks the vehicle's next one); and Match Order **auto-finds by
+vehicle** — the typed PO/Invoice number field was removed entirely, not just cross-checked.
+
+**Schema**: `InboundReceipt.vehicleId` (nullable at the DB level only for the handful of
+pre-existing throwaway-company receipts created before this field existed — never left null by
+either creation path going forward; required by the service layer, same "no DTO/class-validator
+layer, validate by hand" convention as everywhere else in this codebase) + the `Vehicle.
+inboundReceipts` back-relation. Migration `20260827200000_add_inbound_receipt_vehicle`.
+
+**Backend**: `InboundReceiptsService.resolveVehicleForReceipt()` — the real enforcement, called
+from `prepareReceipt()` so both `create()` and `bulkImport()` share it (same "one function, two
+callers" convention as `validateLines`/`resolveWarehouseCodeToId`): confirms the Vehicle exists,
+belongs to the caller's company, and has no other `InboundReceipt` with `gateEntry: null` already
+open. A new `resolveVehicleNumberToId()` (same shape as the warehouse/SKU code resolvers) lets
+Excel import resolve a typed Vehicle Number the same way. `GateEntriesService.matchReceipt()` no
+longer accepts `referenceNo` at all — it looks up `InboundReceipt.findFirst({ vehicleId:
+existing.vehicleId, gateEntry: null })` for the gate entry's own vehicle, with a clear "No pending
+order found for vehicle ..." error when none exists. **A real, pre-existing bug pattern this
+codebase already learned once (see "Every master-data entity gets a Delete All") got proactively
+avoided this time**: `VehiclesService.removeAll()`/`remove()` were updated to also count
+`inboundReceipts` in their delete-blocking check — without this, a Vehicle named on an order but
+with zero gate entries would have been wrongly reported deletable, then hit Postgres's real FK
+constraint as an unhandled 500 instead of a graceful "blocked" result, exactly the same class of
+bug `WarehousesService` had with `gateEntries` before.
+
+**Frontend**: `InboundOrdersPage.tsx`'s order form gained a required Vehicle Number field (same
+plain `<input list>`+`<datalist>` pattern as Gate & Yard's own Vehicle/Driver pickers) with an
+inline note about the 1:1 rule. The Match Order modal dropped its PO/Invoice Number input entirely
+— it now shows a preview ("This will match order X — the one order on file for this vehicle...")
+computed client-side from the already-loaded receipts list, with the Match button disabled if none
+is found; the real enforcement is still server-side regardless, this is purely a confidence preview.
+"All Orders"' "Matched Vehicle" column was renamed to "Vehicle" and now shows the order's own
+declared vehicle (falling back to the gate-entry's vehicle for old data). The Excel import template
+gained a required "Vehicle Number" column (`templates/`+`frontend/public/templates/` copies of
+`Inbound_Order_Import_Template.xlsx` regenerated, plus its Legend & Rules/How To Use sheets).
+
+Verified via a throwaway-company API script, 21/21: order creation rejected with no vehicle;
+succeeds with one and the response includes it; a second order for the same open vehicle blocked
+with the exact "already has an unmatched order" message; a different vehicle unaffected; Excel
+import with a valid registered vehicle succeeding, an unregistered Vehicle Number blocked, and a
+second import row for a vehicle that already has one pending order blocked; a full Gate In → Dock
+In → Match Order cycle correctly auto-finding the right order with no `referenceNo` in the request
+body at all; a second vehicle correctly matching its OWN order, not the first vehicle's; and a
+vehicle with no pending order getting the clear "No pending order found" error. Then re-verified
+live through the actual rendered UI (logged in via the API+localStorage token trick): created a
+real order through the real form typing a Vehicle Number, confirmed a second order for that same
+vehicle was blocked by the real form with the exact server message, then ran a real Gate In/Dock
+In (via API) and confirmed the Match Order modal — through the actual rendered UI — showed "This
+will match order PO-UI-TEST-1..." with no reference-number field anywhere, selected a real staging
+location, submitted, and landed correctly in the Receiving modal for that exact order.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2095,7 +2155,10 @@ is schema-only (Dock × Location × distance in meters, the client's own choice 
 option) — no logic/UI, deliberately deferred until Putaway/Picking exist to consume it. **Gate &
 Yard's "Currently Open" table now visibly splits into Unload (Inbound Delivery) vs. Load (Outbound
 Dispatch/Returns)** — a visibility change over already-existing purpose-based logic, not new
-workflow.
+workflow. **Inbound orders now require a Vehicle at creation, one open order per vehicle at a
+time, and Match Order auto-finds by vehicle with no typed reference number at all** (see "Inbound
+order ↔ Vehicle 1:1 mapping" above) — closes a real gap where Match Order used to trust a typed
+PO/Invoice number with no check it was even the right vehicle.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

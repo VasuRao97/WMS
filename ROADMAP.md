@@ -33,8 +33,16 @@ meters, your own call to go with the most granular option; the actual "which doc
 movement" algorithm is deliberately deferred until Putaway/Picking exist to consume it), and
 **Gate & Yard's "Currently Open" table now visibly splits into Unload vs. Load** (a visibility
 change over already-existing purpose-based logic, not new workflow — the real Outbound module
-itself is still not started). Full detail in `CLAUDE.md`'s "Inbound deep-dive" section. The three
-candidates below are unchanged and still the live options for the next module-level session.
+itself is still not started). Full detail in `CLAUDE.md`'s "Inbound deep-dive" section.
+
+**Same-day follow-up**: closed a real gap you caught right after — Match Order used to trust a
+typed PO/Invoice number with no check it was even the right vehicle. Every order now **requires a
+Vehicle** at creation (manual + Excel import), a vehicle can only have **one open order at a
+time**, and Match Order **auto-finds by vehicle** — no typed reference number at all anymore. See
+CLAUDE.md's "Inbound order ↔ Vehicle 1:1 mapping" section.
+
+The three candidates below are unchanged and still the live options for the next module-level
+session.
 
 ## Immediate candidates for the next session
 

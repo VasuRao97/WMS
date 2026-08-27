@@ -14,12 +14,17 @@ import { useEffect, useRef, useState } from 'react';
 type Warehouse = { id: string; code: string; name: string };
 type Sku = { id: string; code: string; description: string };
 type Location = { id: string; code: string; warehouseId: string };
+type Vehicle = { id: string; vehicleNumber: string };
 type ReceiptLine = { id: string; sku: Sku; expectedQty: number; receivedQty: number; stagingLocation?: Location };
 type Receipt = {
   id: string;
   warehouse: Warehouse;
   referenceNo: string;
   supplierName?: string;
+  // The order's own expected vehicle (2026-08-27, the 1:1-mapping
+  // follow-up) — required on every order now, distinct from gateEntry.
+  // vehicle below (whichever real gate visit ended up matched).
+  vehicle?: Vehicle;
   status: 'PENDING' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'PUTAWAY_COMPLETE';
   stagingLocation?: Location;
   createdBy?: { name: string };
@@ -88,7 +93,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const emptyLine = { skuId: '', skuText: '', expectedQty: '', stagingLocationId: '' };
-const emptyForm = { warehouseId: '', referenceNo: '', supplierName: '' };
+const emptyForm = { warehouseId: '', referenceNo: '', supplierName: '', vehicleId: '', vehicleText: '' };
 // physicalConditionOk stays `null` until picked — distinct from "left
 // unset," same reasoning as the schema field itself.
 const emptyDockInForm = { physicalConditionOk: null as boolean | null, physicalConditionRemarks: '', sealNumber: '', sealSignatureData: '' };
@@ -161,6 +166,7 @@ function InboundOrdersPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [skus, setSkus] = useState<Sku[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [gateEntries, setGateEntries] = useState<GateEntry[]>([]);
 
@@ -184,10 +190,10 @@ function InboundOrdersPage() {
   const [dockInForm, setDockInForm] = useState(emptyDockInForm);
   const [dockInError, setDockInError] = useState('');
 
-  // Match Order — the real, authoritative PO/invoice match, entered after
+  // Match Order — auto-found by vehicle (2026-08-27, the 1:1-mapping
+  // follow-up; no PO/Invoice number typed here anymore), entered after
   // Dock In, plus the staging location for this whole delivery.
   const [matchOrderFor, setMatchOrderFor] = useState<GateEntry | null>(null);
-  const [matchOrderRef, setMatchOrderRef] = useState('');
   const [matchOrderStagingLocationId, setMatchOrderStagingLocationId] = useState('');
   const [matchOrderError, setMatchOrderError] = useState('');
 
@@ -208,6 +214,7 @@ function InboundOrdersPage() {
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setWarehouses(Array.isArray(d) ? d : []));
     fetch('http://localhost:3000/skus', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setSkus(Array.isArray(d) ? d : []));
     fetch('http://localhost:3000/locations', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setLocations(Array.isArray(d) ? d : []));
+    fetch('http://localhost:3000/vehicles', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setVehicles(Array.isArray(d) ? d : []));
     fetch('http://localhost:3000/inbound-receipts', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setReceipts(Array.isArray(d) ? d : []));
     loadGateEntries();
   };
@@ -228,6 +235,14 @@ function InboundOrdersPage() {
   const handleSkuTextChange = (i: number, text: string) => {
     const match = skus.find((s) => `${s.code} — ${s.description}` === text);
     updateLine(i, { skuText: text, skuId: match ? match.id : '' });
+  };
+  // Same plain <input list>+<datalist> pattern as GateYardPage.tsx's
+  // Vehicle/Driver pickers — no exact match leaves vehicleId unresolved
+  // rather than silently guessing (caught server-side as "Vehicle is
+  // required" if submitted anyway).
+  const handleVehicleTextChange = (text: string) => {
+    const match = vehicles.find((v) => v.vehicleNumber === text);
+    setForm({ ...form, vehicleText: text, vehicleId: match ? match.id : '' });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -299,16 +314,22 @@ function InboundOrdersPage() {
 
   const openMatchOrder = (entry: GateEntry) => {
     setMatchOrderFor(entry);
-    setMatchOrderRef('');
     setMatchOrderStagingLocationId('');
     setMatchOrderError('');
   };
+  // Auto-found by vehicle (2026-08-27) — no PO/Invoice number typed at all
+  // anymore, since every order now names exactly one vehicle at creation
+  // (the 1:1 mapping) and the backend looks up the one unmatched order for
+  // this gate entry's own vehicle. This lookup here is purely a preview so
+  // staff can see what's about to be matched before confirming — the real
+  // enforcement happens server-side regardless.
+  const matchingReceipt = matchOrderFor ? receipts.find((r) => r.vehicle?.id === matchOrderFor.vehicle.id && !r.gateEntry) : undefined;
   const handleMatchOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!matchOrderFor) return;
     setMatchOrderError('');
     const res = await fetch(`http://localhost:3000/gate-entries/${matchOrderFor.id}/match-receipt`, {
-      method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ referenceNo: matchOrderRef, stagingLocationId: matchOrderStagingLocationId }),
+      method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ stagingLocationId: matchOrderStagingLocationId }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -430,7 +451,25 @@ function InboundOrdersPage() {
               </select>
               <input placeholder="PO / Reference No *" value={form.referenceNo} onChange={(e) => setForm({ ...form, referenceNo: e.target.value })} required style={{ width: 180 }} />
               <input placeholder="Supplier Name" value={form.supplierName} onChange={(e) => setForm({ ...form, supplierName: e.target.value })} style={{ width: 200 }} />
+              <input
+                list="vehicle-options"
+                placeholder="Vehicle Number *"
+                value={form.vehicleText}
+                onChange={(e) => handleVehicleTextChange(e.target.value)}
+                required
+                style={{ width: 180 }}
+              />
+              <datalist id="vehicle-options">
+                {vehicles.map((v) => (
+                  <option key={v.id} value={v.vehicleNumber} />
+                ))}
+              </datalist>
             </div>
+            <p style={{ marginTop: -8, marginBottom: 12, fontSize: 13, color: '#666' }}>
+              This order will only ever match the gate entry for this exact vehicle (2026-08-27) —
+              a vehicle can't have two orders open at once, so make sure it's not already on one.
+              Register the vehicle from Gate & Yard first if it isn't in the list.
+            </p>
 
             <p style={{ marginBottom: 4, fontWeight: 'bold' }}>Expected SKU / Quantity lines:</p>
             <p style={{ marginTop: 0, marginBottom: 8, fontSize: 13, color: '#666' }}>
@@ -533,14 +572,26 @@ function InboundOrdersPage() {
         </div>
       )}
 
-      {/* Match Order modal. */}
+      {/* Match Order modal — auto-found by vehicle (2026-08-27), no
+          PO/Invoice number typed here anymore: every order names exactly
+          one vehicle at creation, so the backend just looks up the one
+          unmatched order for this gate entry's own vehicle. */}
       {matchOrderFor && (
         <div style={overlayStyle}>
           <div style={modalStyle}>
             <h3 style={{ marginTop: 0 }}>Match Order — {matchOrderFor.vehicle.vehicleNumber}</h3>
-            <p style={{ marginTop: -8, color: '#666' }}>Enter the PO/Invoice number from the driver — this is the real match, separate from any reference typed at Gate In.</p>
+            {matchingReceipt ? (
+              <p style={{ marginTop: -8, color: '#666' }}>
+                This will match order <strong>{matchingReceipt.referenceNo}</strong> — the one order on file for this
+                vehicle that hasn't been matched yet.
+              </p>
+            ) : (
+              <p style={{ marginTop: -8, color: 'crimson' }}>
+                No pending order found for this vehicle — create one on Inbound Orders first (naming this exact
+                vehicle), then come back here.
+              </p>
+            )}
             <form onSubmit={handleMatchOrderSubmit}>
-              <input placeholder="PO / Invoice Number *" value={matchOrderRef} onChange={(e) => setMatchOrderRef(e.target.value)} required style={{ width: '100%', marginBottom: 12, boxSizing: 'border-box' }} />
               <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 4 }}>Staging Location — where is this being unloaded to? *</label>
               <select
                 value={matchOrderStagingLocationId}
@@ -555,7 +606,7 @@ function InboundOrdersPage() {
               </select>
               {matchOrderError && <p style={{ color: 'crimson' }}>{matchOrderError}</p>}
               <div>
-                <button type="submit">Match &amp; Start Receiving</button>
+                <button type="submit" disabled={!matchingReceipt}>Match &amp; Start Receiving</button>
                 <button type="button" onClick={() => setMatchOrderFor(null)} style={{ marginLeft: 8 }}>Cancel</button>
               </div>
             </form>
@@ -756,7 +807,7 @@ function InboundOrdersPage() {
             <th style={{ padding: 8 }}>Supplier</th>
             <th style={{ padding: 8 }}>Lines</th>
             <th style={{ padding: 8 }}>Status</th>
-            <th style={{ padding: 8 }}>Matched Vehicle</th>
+            <th style={{ padding: 8 }}>Vehicle</th>
             <th style={{ padding: 8 }}>Created</th>
           </tr>
         </thead>
@@ -771,7 +822,7 @@ function InboundOrdersPage() {
                 <td style={{ padding: 8 }}>{r.supplierName || '—'}</td>
                 <td style={{ padding: 8 }}>{r.lines.length} SKU{r.lines.length !== 1 ? 's' : ''} ({totalReceived}/{totalExpected})</td>
                 <td style={{ padding: 8 }}>{STATUS_LABELS[r.status] || r.status}</td>
-                <td style={{ padding: 8 }}>{r.gateEntry?.vehicle.vehicleNumber || '—'}</td>
+                <td style={{ padding: 8 }}>{r.vehicle?.vehicleNumber || r.gateEntry?.vehicle.vehicleNumber || '—'}</td>
                 <td style={{ padding: 8 }}>{new Date(r.createdAt).toLocaleDateString()}</td>
               </tr>
             );

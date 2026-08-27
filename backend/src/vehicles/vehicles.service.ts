@@ -191,10 +191,19 @@ export class VehiclesService {
     await assertGateAccessAllowed(this.prisma, user);
     const vehicles = await this.prisma.vehicle.findMany({
       where: companyFilter(user),
-      select: { id: true, vehicleNumber: true, _count: { select: { gateEntries: true } } },
+      // inboundReceipts added 2026-08-27 (the vehicle<->order 1:1 mapping
+      // follow-up) — a real lesson this codebase already learned once with
+      // Warehouse's own removeAll/remove (see CLAUDE.md's "Every master-data
+      // entity gets a Delete All"): a new relation must be added to an
+      // existing entity's blocking check by hand, it doesn't happen
+      // automatically just because the FK exists. Without this, a Vehicle
+      // named on an order but with zero gate entries would be wrongly
+      // reported deletable, then hit Postgres's real FK constraint as an
+      // unhandled 500 instead of a graceful "blocked" result.
+      select: { id: true, vehicleNumber: true, _count: { select: { gateEntries: true, inboundReceipts: true } } },
     });
-    const deletable = vehicles.filter((v) => v._count.gateEntries === 0).map((v) => v.id);
-    const blocked = vehicles.filter((v) => v._count.gateEntries > 0).map((v) => v.vehicleNumber);
+    const deletable = vehicles.filter((v) => v._count.gateEntries === 0 && v._count.inboundReceipts === 0).map((v) => v.id);
+    const blocked = vehicles.filter((v) => v._count.gateEntries > 0 || v._count.inboundReceipts > 0).map((v) => v.vehicleNumber);
     if (deletable.length > 0) await this.prisma.vehicle.deleteMany({ where: { id: { in: deletable } } });
     return { deletedCount: deletable.length, blockedCount: blocked.length, blockedCodes: blocked };
   }
@@ -202,9 +211,13 @@ export class VehiclesService {
   async remove(id: string, user: any) {
     await assertGateAccessAllowed(this.prisma, user);
     const vehicle = await this.assertAccess(id, user);
-    const count = await this.prisma.vehicleGateEntry.count({ where: { vehicleId: id } });
-    if (count > 0) {
-      throw new BadRequestException(`Cannot permanently delete "${vehicle.vehicleNumber}" — it has ${count} linked gate entry record(s). Deactivate it instead.`);
+    const [gateEntryCount, receiptCount] = await Promise.all([
+      this.prisma.vehicleGateEntry.count({ where: { vehicleId: id } }),
+      this.prisma.inboundReceipt.count({ where: { vehicleId: id } }),
+    ]);
+    if (gateEntryCount > 0 || receiptCount > 0) {
+      const parts = [gateEntryCount > 0 ? `${gateEntryCount} linked gate entry record(s)` : null, receiptCount > 0 ? `${receiptCount} linked inbound order(s)` : null].filter(Boolean);
+      throw new BadRequestException(`Cannot permanently delete "${vehicle.vehicleNumber}" — it has ${parts.join(' and ')}. Deactivate it instead.`);
     }
     await this.prisma.vehicle.delete({ where: { id } });
     return { deleted: true, code: vehicle.vehicleNumber };

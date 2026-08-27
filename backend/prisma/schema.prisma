@@ -790,7 +790,8 @@ model Vehicle {
   isBlacklisted   Boolean @default(false)
   blacklistReason String?
 
-  gateEntries VehicleGateEntry[]
+  gateEntries     VehicleGateEntry[]
+  inboundReceipts InboundReceipt[]
 
   @@unique([companyId, vehicleNumber])
 }
@@ -1303,6 +1304,25 @@ model InboundReceipt {
   createdById  String
   createdBy    User          @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
   createdAt    DateTime      @default(now())
+
+  // The one registered Vehicle this order is expected to arrive on
+  // (2026-08-27, Inbound deep-dive follow-up) — required by the service
+  // layer on every NEW order (both the manual maker and Excel import), same
+  // "no DB constraint layer for business rules" convention as everywhere
+  // else in this codebase (see CLAUDE.md's note on the missing DTO/
+  // class-validator layer). Nullable here only so the handful of pre-
+  // existing throwaway-company receipts created before this field existed
+  // don't break — never left null by either creation path going forward.
+  // Enforces a real 1:1 mapping: GateEntriesService.matchReceipt() no
+  // longer takes a typed PO/Invoice number at all — it looks up the one
+  // InboundReceipt for the gate entry's own vehicle that has no gateEntry
+  // yet. InboundReceiptsService's create()/bulkImport() block creating a
+  // second order for a vehicle that already has one such unmatched order
+  // (a vehicle can make many trips over its life, just never two open
+  // orders at once — enforced company-wide, not per-warehouse, since a
+  // vehicle can only physically be in one place).
+  vehicleId String?
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
 
   lines InboundReceiptLine[]
   scans InboundReceiptScan[]
