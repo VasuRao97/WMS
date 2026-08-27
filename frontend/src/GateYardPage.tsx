@@ -42,7 +42,9 @@ type Warehouse = { id: string; code: string; name: string };
 type GateEntry = {
   id: string;
   warehouse: { id: string; code: string; name: string };
-  vehicle: { id: string; vehicleNumber: string };
+  // vehicleType added 2026-08-27 — "practical recall" ask: truck type
+  // shown alongside plate number wherever a gate entry is listed.
+  vehicle: { id: string; vehicleNumber: string; vehicleType?: { name: string; segment: string } };
   driver: { id: string; name: string };
   purpose: string;
   transporterName?: string;
@@ -97,6 +99,7 @@ type TrackerRow = {
   warehouse: { id: string; code: string; name: string };
   slotCode?: string;
   vehicleNumber: string;
+  vehicleType?: { name: string; segment: string } | null;
   destinationCity?: string;
   transporterName?: string;
   gateInAt: string;
@@ -285,6 +288,9 @@ function GateYardPage() {
   const [historySearch, setHistorySearch] = useState('');
   const [historyFrom, setHistoryFrom] = useState('');
   const [historyTo, setHistoryTo] = useState('');
+  // Signature callout (2026-08-27) — the captured signature was write-only
+  // until now, no way to ever see it again.
+  const [viewingSignature, setViewingSignature] = useState<GateEntry | null>(null);
 
   const loadWarehouses = () => fetch('http://localhost:3000/warehouses', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setWarehouses(Array.isArray(d) ? d : []));
   const loadVehicles = () => fetch('http://localhost:3000/vehicles', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setVehicles(Array.isArray(d) ? d : []));
@@ -512,6 +518,7 @@ function GateYardPage() {
             <th style={{ padding: 8 }}>Dock</th>
             <th style={{ padding: 8 }}>Warehouse</th>
             <th style={{ padding: 8 }}>Vehicle</th>
+            <th style={{ padding: 8 }}>Truck Type</th>
             <th style={{ padding: 8 }}>Destination</th>
             <th style={{ padding: 8 }}>Transporter</th>
             <th style={{ padding: 8 }}>Gate In At</th>
@@ -544,6 +551,7 @@ function GateYardPage() {
                 </td>
                 <td style={{ padding: 8 }}>{r.warehouse.code}</td>
                 <td style={{ padding: 8, fontWeight: 'bold' }}>{r.vehicleNumber}</td>
+                <td style={{ padding: 8 }}>{r.vehicleType?.name || '—'}</td>
                 <td style={{ padding: 8 }}>{r.destinationCity || '—'}</td>
                 <td style={{ padding: 8 }}>{r.transporterName || '—'}</td>
                 <td style={{ padding: 8 }}>{fmtDateTime(r.gateInAt)}</td>
@@ -959,30 +967,67 @@ function GateYardPage() {
             <thead>
               <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
                 <th style={{ padding: 8 }}>Vehicle</th>
+                <th style={{ padding: 8 }}>Truck Type</th>
                 <th style={{ padding: 8 }}>Driver</th>
+                <th style={{ padding: 8 }}>Transporter</th>
                 <th style={{ padding: 8 }}>Purpose</th>
                 <th style={{ padding: 8 }}>Warehouse</th>
                 <th style={{ padding: 8 }}>Gate In At</th>
                 <th style={{ padding: 8 }}>Gate Out At</th>
                 <th style={{ padding: 8 }}>Status</th>
+                <th style={{ padding: 8 }}>Signature</th>
               </tr>
             </thead>
             <tbody>
               {filteredHistory.map((e) => (
                 <tr key={e.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                   <td style={{ padding: 8, fontWeight: 'bold' }}>{e.vehicle.vehicleNumber}</td>
+                  <td style={{ padding: 8 }}>{e.vehicle.vehicleType?.name || '—'}</td>
                   <td style={{ padding: 8 }}>{e.driver.name}</td>
+                  <td style={{ padding: 8 }}>{e.transporterName || '—'}</td>
                   <td style={{ padding: 8 }}>{PURPOSE_LABELS[e.purpose] || e.purpose}</td>
                   <td style={{ padding: 8 }}>{e.warehouse.code}</td>
                   <td style={{ padding: 8 }}>{fmtDateTime(e.gateInAt)}</td>
                   <td style={{ padding: 8 }}>{e.gateOutAt ? fmtDateTime(e.gateOutAt) : '—'}</td>
                   <td style={{ padding: 8 }}>{e.gateOutAt ? 'Gated Out' : e.dockedInAt ? 'Docked' : 'In Yard'}</td>
+                  {/* Signature callout (2026-08-27) — was captured (Dock In
+                      for Inbound, Gate Out for Outbound) but had no way to
+                      ever be seen again until now. */}
+                  <td style={{ padding: 8 }}>
+                    {e.sealSignatureData ? <button onClick={() => setViewingSignature(e)}>View</button> : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
           {filteredHistory.length === 0 && <p style={{ marginTop: -16 }}>No gate entries found.</p>}
         </>
+      )}
+
+      {/* Signature view modal (2026-08-27) — the captured drawing was
+          write-only until now. */}
+      {viewingSignature && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <h3 style={{ marginTop: 0 }}>Signature — {viewingSignature.vehicle.vehicleNumber}</h3>
+            <p style={{ marginTop: -8, color: '#666' }}>
+              Seal Number: {viewingSignature.sealNumber || '—'}
+              {viewingSignature.sealCapturedAt && <> · Captured {fmtDateTime(viewingSignature.sealCapturedAt)}</>}
+            </p>
+            {viewingSignature.sealSignatureData ? (
+              <img
+                src={viewingSignature.sealSignatureData}
+                alt="Captured signature"
+                style={{ border: '1px solid #ccc', borderRadius: 4, maxWidth: '100%', background: '#fff' }}
+              />
+            ) : (
+              <p>No signature on file.</p>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <button type="button" onClick={() => setViewingSignature(null)}>Close</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

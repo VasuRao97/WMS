@@ -2151,6 +2151,37 @@ correctly in Inbound Orders with the "via ERP" tag and an inline Assign control,
 real vehicle assignment through that exact control — confirming the row updated to show the
 assigned vehicle number.
 
+### Signature retrieval + Truck Type/Transporter recall columns (2026-08-27, same session)
+Two small, real gaps caught by the client asking direct questions after everything above shipped.
+
+**Signature was write-only.** `VehicleGateEntry.sealSignatureData` (the canvas-captured signature,
+built the same day as seal/physical-condition capture) had no retrieval path anywhere — not the
+gate entry history table, not the Excel export (which deliberately captures `sealNumber` as text
+but skips the image, "too large/not spreadsheet-appropriate"). Checked before answering rather than
+guessing. Fixed with a **Signature column on Gate & Yard's "List of All Gate Entries"** — a "View"
+button (shown only when `sealSignatureData` exists) opens a small modal rendering the stored base64
+PNG directly (`<img src={sealSignatureData}>`, no decoding needed — a data URI works as-is as an
+`<img>` `src`) alongside the seal number and capture timestamp.
+
+**Truck Type and Transporter for "practical recall."** The client's own framing — staff scanning a
+list of vehicles want to recall the truck type and transporter at a glance, not just the plate
+number. `Transporter` already existed on the "Currently Open" tracker table (from `VehicleGateEntry.
+transporterName`, always been there) but was missing from the history table entirely; `Truck Type`
+existed nowhere at all. `YardService.tracker()`'s vehicle include gained `vehicleType: {name,
+segment}` (previously only selected `detentionCostPerDay` for the rate-resolution chain) — a pure
+code change, no schema/migration needed, since `VehicleType.name`/`segment` already existed and
+`GateEntriesService`'s own `GATE_ENTRY_INCLUDE` already returned it for the history table (that one
+just needed the frontend type extended to actually read it, `GateEntry.vehicle.vehicleType`). Both
+columns now appear on the Currently Open (Unload + Load) tables and the full history table.
+
+Verified live in the actual browser (no throwaway-company API script needed — this was a pure
+read/display change, nothing to validate beyond "does the right value show up where it should"):
+registered a real Vehicle Type-bearing vehicle, ran a full Outbound trip through the real API with
+a transporter name and a real captured seal/signature, and confirmed the history table showed
+"20 ft Closed Container" and "Speedy Transporters" in their new columns, then clicked the real
+"View" button and confirmed the modal rendered the actual signature image (not just a placeholder)
+with the correct vehicle number and seal metadata.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2321,6 +2352,12 @@ API key (not a JWT), resolved by Warehouse/SKU's own internal Code (not the stil
 "ERP will never know about vehicle type etc"); a new `assignVehicle()` action completes the order
 in WMS once staff know which truck it's actually coming on. `Company Settings` gained an "ERP
 Integration" section to generate/regenerate the key and toggle `allowErpInboundPush`.
+
+**The captured gate-entry signature can now actually be seen again** (2026-08-27, see "Signature
+retrieval + Truck Type/Transporter recall columns" above) — it was write-only before, no retrieval
+path anywhere. Gate & Yard's full history table also gained **Truck Type** and **Transporter**
+columns (the Currently Open tracker already had Transporter; both tables now have both), per the
+client's own "practical recall" framing.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

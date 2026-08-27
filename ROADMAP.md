@@ -3,7 +3,7 @@
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
 what to pick up next. Updated as priorities shift — last updated 2026-08-27 (Inbound deep-dive +
-ERP push).
+ERP push + Putaway kickoff).
 
 Stated direction: cover the basics of every module first (module build order below), then come
 back and deepen each one — rather than gold-plating one module before the rest exist at all.
@@ -95,17 +95,30 @@ pushed to this order maker where the vehicle details are then added" — so a ne
 action on Inbound Orders' "All Orders" table completes a vehicle-less order once staff know which
 truck it's on. Full detail in `CLAUDE.md`'s "ERP push" section.
 
+## Session note (2026-08-27, picking up Putaway)
+Two Inbound-adjacent items from the research pass got resolved: **closing a short receipt** stays
+deferred (noted below), and **batch/lot + expiry capture** isn't dropped, just relocated — your own
+call: this system has no concept of inventory *age* anywhere yet, and that's really an Inventory
+master-file design question, not something to bolt onto Inbound scanning in isolation. Revisit it
+when Inventory gets designed, not before.
+
+**Putaway is next**, picked directly off the current state: material has reached staging (Inbound
+receiving works end-to-end) with nowhere further to go — the real, felt gap the module build order
+was always pointing at anyway.
+
 The first three candidates below are the module-level options (unchanged from before); the rest
-are smaller items raised this same session — pick any of them, not a forced order.
+are smaller items raised in earlier sessions — pick any of them, not a forced order.
 
 ## Immediate candidates for the next session
 
 Pick one — these are the live options on the table, not a forced order:
 
-1. **Putaway** — the natural next module. Moves received stock from its staging location to a real
-   final storage bin. This is also what would let received Inbound stock actually go somewhere
-   instead of sitting at staging indefinitely. Also the first real consumer of the new
-   `DockLocationDistance` data (dock-suggestion logic was explicitly deferred to land here).
+1. **Putaway — picked, in progress.** The natural next module. Moves received stock from its
+   staging location to a real final storage bin. This is also what would let received Inbound
+   stock actually go somewhere instead of sitting at staging indefinitely. Also the first real
+   consumer of the new `DockLocationDistance` data (dock-suggestion logic was explicitly deferred
+   to land here). `PutawayTask` schema already exists (receiptLine/sku/from/to Location/quantity/
+   status PENDING|COMPLETED) — no logic/UI built yet, workflow conversation to happen first.
 2. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now (Inbound receiving
    writes to it), but nothing renders it. Even a read-only view would close a real, felt gap.
@@ -123,13 +136,6 @@ Pick one — these are the live options on the table, not a forced order:
    decisions were made. Same spirit as the Locations Plan View. Needs a real spatial-data pass
    first (Dock Doors/Yard Slots have no position/sequence data today) — see the four open questions
    in the session note above before building anything.
-6. **Closing a short receipt** — a partially-received order has no way to leave
-   `PARTIALLY_RECEIVED` today if the shipment was genuinely short. Flagged in this session's own
-   "list down all features" round and again independently by a web-research pass on other WMS
-   platforms' Inbound modules — every vendor treats a formal discrepancy close-out as standard.
-7. **Batch/Lot + expiry capture at receiving** — same double-flagging as #6 (this session's
-   feature list, then independently by the WMS research pass) — feeds a future FEFO policy, cheap
-   to capture now even before FIFO/FEFO logic itself exists.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 
@@ -137,6 +143,14 @@ Pick one — these are the live options on the table, not a forced order:
   gap in competitor research, still "later we do it."
 - **Yard Plan View** — needs a small spatial-layout design pass first (Yard Slots have no
   row/aisle data today).
+- **Closing a short receipt** — a partially-received order has no way to leave
+  `PARTIALLY_RECEIVED` today if the shipment was genuinely short. Flagged by both this project's
+  own feature list and independently by web research on other WMS platforms — every vendor treats
+  a formal discrepancy close-out as standard. Explicitly deferred, 2026-08-27.
+- **Batch/Lot + expiry capture** — this system has no concept of inventory *age* anywhere yet.
+  Deliberately NOT tackled as an Inbound-scanning add-on — your own call: revisit this when the
+  Inventory master file gets designed, since age/lot tracking is really an Inventory-level concern
+  that picking (FEFO) logic will need, not something to bolt on in isolation now.
 - **`erpCode`-based resolution for ERP push** — ERP push (built 2026-08-27) resolves orders by
   Warehouse/SKU's own internal Code for now, since `erpCode` is completely unwired anywhere (no
   form sets it, not even for Sku/Warehouse). A real fast-follow once erpCode actually gets a UI —

@@ -81,7 +81,10 @@ export class YardService {
       where,
       include: {
         yardSlot: { select: { code: true } },
-        vehicle: { select: { vehicleNumber: true, detentionCostPerDay: true, vehicleType: { select: { detentionCostPerDay: true } } } },
+        // vehicleType.name/segment added 2026-08-27 (a real "practical
+        // recall" ask — staff scanning this table want to know the truck
+        // type at a glance, not just its plate number).
+        vehicle: { select: { vehicleNumber: true, detentionCostPerDay: true, vehicleType: { select: { name: true, segment: true, detentionCostPerDay: true } } } },
         warehouse: { select: { id: true, code: true, name: true, company: { select: { detentionCostPerDay: true, detentionFreeHours: true } } } },
       },
       orderBy: { gateInAt: 'asc' },
@@ -124,6 +127,7 @@ export class YardService {
         warehouse: { id: e.warehouse.id, code: e.warehouse.code, name: e.warehouse.name },
         slotCode: e.yardSlot?.code,
         vehicleNumber: e.vehicle.vehicleNumber,
+        vehicleType: e.vehicle.vehicleType ? { name: e.vehicle.vehicleType.name, segment: e.vehicle.vehicleType.segment } : null,
         destinationCity: e.destinationCity,
         transporterName: e.transporterName,
         gateInAt: e.gateInAt,
