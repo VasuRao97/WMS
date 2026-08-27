@@ -341,6 +341,20 @@ export class InboundReceiptsService {
   // live: the Receiving UI's approve form only ever collects a line +
   // quantity, so skuId was always missing from the request body and every
   // approval 400'd until this was fixed, 2026-08-27).
+  //
+  // Barcode-vs-approval hard block (2026-08-27, live-testing follow-up) —
+  // a real gap caught testing: a barcode already registered to SKU A (e.g.
+  // it kept auto-ACCEPTING as CHOC-017 until that line filled up, then
+  // correctly BLOCKED) could be approved against a totally unrelated SKU B
+  // with zero cross-check. Now: if the scanned barcode has ANY registered
+  // SkuBarcode row(s) at all, the chosen line's SKU must be one of them —
+  // hard block otherwise. A barcode with ZERO registered rows (a genuinely
+  // unrecognized code — composite GS1, a unique per-item serial, "Reading
+  // B" territory) still allows a free Supervisor override, unrestricted,
+  // exactly as before — that's the one case this override tier exists for.
+  // The client's own call, "hard block, we will make a policy about this
+  // in next session" — a fuller policy (e.g. requiring a reason code, or a
+  // softer warn-not-block mode) is still open for a future pass.
   async approveScan(scanId: string, data: any, user: any) {
     const scan = await this.assertScanAccess(scanId, user);
     if (scan.status !== 'BLOCKED') throw new BadRequestException('Only a blocked scan can be approved.');
@@ -350,9 +364,18 @@ export class InboundReceiptsService {
     if (!receiptLineId || quantity === undefined || !Number.isFinite(quantity) || quantity <= 0) {
       throw new BadRequestException('An expected line and a positive quantity are required to approve this scan.');
     }
-    const line = await this.prisma.inboundReceiptLine.findUnique({ where: { id: receiptLineId } });
+    const line = await this.prisma.inboundReceiptLine.findUnique({ where: { id: receiptLineId }, include: { sku: { select: { code: true } } } });
     if (!line || line.receiptId !== scan.receiptId) throw new BadRequestException('That line does not belong to this order.');
     const skuId = line.skuId;
+
+    const registeredBarcodes = await this.prisma.skuBarcode.findMany({
+      where: { barcode: scan.barcodeScanned, sku: { companyId: scan.receipt.warehouse.companyId } },
+      include: { sku: { select: { code: true } } },
+    });
+    if (registeredBarcodes.length > 0 && !registeredBarcodes.some((bc) => bc.skuId === skuId)) {
+      const knownFor = registeredBarcodes.map((bc) => bc.sku.code).join(', ');
+      throw new BadRequestException(`Barcode "${scan.barcodeScanned}" is already registered to ${knownFor}, not ${line.sku.code} — cannot approve this scan against a different SKU.`);
+    }
     // Line override first, falling back to the receipt's own staging spot
     // (set at Match Order) — see schema.prisma's comment on
     // InboundReceipt.stagingLocationId.

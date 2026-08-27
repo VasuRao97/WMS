@@ -41,6 +41,16 @@ Vehicle** at creation (manual + Excel import), a vehicle can only have **one ope
 time**, and Match Order **auto-finds by vehicle** — no typed reference number at all anymore. See
 CLAUDE.md's "Inbound order ↔ Vehicle 1:1 mapping" section.
 
+**Second same-day follow-up, from your own live testing**: three more real gaps fixed — **Dock In
+now requires an assigned dock** (was practically impossible before, now blocked with a clear
+error), **each Dock Door can carry its own default staging Location** (new "Dock Doors" page under
+Masters — the first frontend this ever had — Match Order pre-fills from it), and **approving a
+blocked scan against a barcode that's registered to a DIFFERENT SKU is now hard-blocked** (a
+genuinely unrecognized barcode's override still works exactly as before). A fourth item — an
+active notification telling security it's time to Gate Out — is flagged but **NOT built**; you
+asked to think through the fuller logic (documentation/paperwork time after dock-out, before gate
+out is actually allowed) next session. See CLAUDE.md's "Live-testing follow-up" section.
+
 The three candidates below are unchanged and still the live options for the next module-level
 session.
 
@@ -60,6 +70,11 @@ Pick one — these are the live options on the table, not a forced order:
    need, but benefits from Inventory existing first so a "can this order be fulfilled" check means
    something. Would also be the first real user of the Gate & Yard "Vehicles to Load" queue added
    this session.
+4. **Dock-out → Gate-out signal** — your own explicit ask, promised for "next session": an active
+   notification telling security a vehicle is ready to Gate Out, plus real logic for the fact that
+   paperwork/documentation still takes time after dock-out before Gate Out can actually happen.
+   Needs a real design conversation first (touches similar territory to the still-fully-deferred
+   Dock Scheduler) — not a quick toggle.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 

@@ -32,6 +32,24 @@ export class DockDoorsService {
     }
   }
 
+  // defaultStagingLocationId resolution lives here (not just a plain
+  // scalar assignment) since it needs both a same-warehouse check and the
+  // company/role scoping — same reasoning as
+  // InboundReceiptsService.validateLines's stagingLocationId handling.
+  private async resolveDefaultStagingLocationId(warehouseId: string, locationId: any, errors: string[]): Promise<string | undefined> {
+    if (!locationId) return undefined;
+    const location = await this.prisma.location.findUnique({ where: { id: locationId } });
+    if (!location) {
+      errors.push('Default Staging Location not found.');
+      return undefined;
+    }
+    if (location.warehouseId !== warehouseId) {
+      errors.push('Default Staging Location does not belong to this dock\'s warehouse.');
+      return undefined;
+    }
+    return location.id;
+  }
+
   private validate(data: any, errors: string[]): { code: string; name?: string; dockType: string } {
     const code = data.code ? String(data.code).trim().toUpperCase() : '';
     if (!code) errors.push('Dock Door code is required.');
@@ -54,14 +72,21 @@ export class DockDoorsService {
     if (!warehouseId) errors.push('Warehouse is required.');
     else await this.assertWarehouseAccess(warehouseId, user, errors);
     const { code, name, dockType } = this.validate(data, errors);
+    const defaultStagingLocationId = warehouseId ? await this.resolveDefaultStagingLocationId(warehouseId, data.defaultStagingLocationId, errors) : undefined;
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const existing = await this.prisma.dockDoor.findUnique({ where: { warehouseId_code: { warehouseId, code } } });
     if (existing) throw new BadRequestException(`A dock door with code "${code}" already exists in this warehouse.`);
 
     return this.prisma.dockDoor.create({
-      data: { warehouse: { connect: { id: warehouseId } }, code, name, dockType: dockType as any },
-      include: { warehouse: { select: { id: true, code: true, name: true } } },
+      data: {
+        warehouse: { connect: { id: warehouseId } },
+        code,
+        name,
+        dockType: dockType as any,
+        defaultStagingLocation: defaultStagingLocationId ? { connect: { id: defaultStagingLocationId } } : undefined,
+      },
+      include: { warehouse: { select: { id: true, code: true, name: true } }, defaultStagingLocation: { select: { id: true, code: true } } },
     });
   }
 
@@ -72,7 +97,7 @@ export class DockDoorsService {
     }
     return this.prisma.dockDoor.findMany({
       where,
-      include: { warehouse: { select: { id: true, code: true, name: true } } },
+      include: { warehouse: { select: { id: true, code: true, name: true } }, defaultStagingLocation: { select: { id: true, code: true } } },
       orderBy: [{ warehouse: { code: 'asc' } }, { code: 'asc' }],
     });
   }
@@ -94,15 +119,28 @@ export class DockDoorsService {
     const existingDoor = await this.assertAccess(id, user);
     const errors: string[] = [];
     const { code, name, dockType } = this.validate(data, errors);
+    // 'defaultStagingLocationId' explicitly present but empty means "clear
+    // it" — distinguished from the key being absent entirely (leave
+    // unchanged), same convention as Company Settings' blank-clears-a-
+    // setting behavior.
+    const clearingStaging = Object.prototype.hasOwnProperty.call(data, 'defaultStagingLocationId') && !data.defaultStagingLocationId;
+    const defaultStagingLocationId = clearingStaging
+      ? null
+      : Object.prototype.hasOwnProperty.call(data, 'defaultStagingLocationId')
+        ? await this.resolveDefaultStagingLocationId(existingDoor.warehouseId, data.defaultStagingLocationId, errors)
+        : undefined;
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const duplicate = await this.prisma.dockDoor.findUnique({ where: { warehouseId_code: { warehouseId: existingDoor.warehouseId, code } } });
     if (duplicate && duplicate.id !== id) throw new BadRequestException(`A dock door with code "${code}" already exists in this warehouse.`);
 
+    const defaultStagingLocation =
+      defaultStagingLocationId === null ? { disconnect: true } : defaultStagingLocationId ? { connect: { id: defaultStagingLocationId } } : undefined;
+
     return this.prisma.dockDoor.update({
       where: { id },
-      data: { code, name, dockType: dockType as any },
-      include: { warehouse: { select: { id: true, code: true, name: true } } },
+      data: { code, name, dockType: dockType as any, defaultStagingLocation },
+      include: { warehouse: { select: { id: true, code: true, name: true } }, defaultStagingLocation: { select: { id: true, code: true } } },
     });
   }
 

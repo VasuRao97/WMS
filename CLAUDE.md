@@ -2008,6 +2008,75 @@ In (via API) and confirmed the Match Order modal — through the actual rendered
 will match order PO-UI-TEST-1..." with no reference-number field anywhere, selected a real staging
 location, submitted, and landed correctly in the Receiving modal for that exact order.
 
+### Live-testing follow-up: dock-in gating, dock default staging, barcode-approve hard block (2026-08-27, same session)
+The client tested the whole Inbound flow themselves and reported five things. Three were real,
+confirmed, fixable gaps — built this pass; one ("dock-out timing signal for security") was
+explicitly deferred to next session pending more design; the fifth was a direct question, answered
+without any code change.
+
+**1. Dock In no longer possible without an assigned dock.** A real gap — physically impossible in
+practice, caught live: `dockIn()` had no check at all for `assignedDockNumber`. Now blocks with
+"Assign a dock to this vehicle before marking it Docked In." if unset, on both directions (Inbound
+via `InboundOrdersPage.tsx`, Outbound/Returns via `GateYardPage.tsx` — both call the same backend
+method, so one fix covers both).
+
+**2. `DockDoor.defaultStagingLocationId`** — a real, working answer to "we still need to set the
+staging area against each dock." Revisits the dock→staging mapping idea originally rejected as
+premature when Inbound receiving first shipped; the client confirmed it now, explicitly choosing
+to key it off real `DockDoor` records rather than reopening `VehicleGateEntry.
+assignedDockNumber`'s free-text nature (that stays exactly as it was — still a placeholder for the
+undeferred Dock Scheduler). One optional default Location per dock, not a candidate list.
+`InboundOrdersPage.tsx`'s Match Order modal pre-fills its staging dropdown by string-matching the
+gate entry's free-text `assignedDockNumber` against a `DockDoor.code` in the same warehouse — a
+pure convenience default, always still editable, never enforced. **New `DockDoorsPage.tsx`** — the
+first frontend DockDoor has ever had (full CRUD already existed on the backend since 2026-08-25,
+nothing called it) — added under the Masters dropdown, since it's genuine occasional-edit master
+data, not a daily workflow. Migration `20260827210000_add_dockdoor_default_staging`.
+
+**3. Barcode-approval hard block.** A real gap the client caught testing: barcode `...0017` was
+correctly auto-ACCEPTED against CHOC-017 repeatedly (registered, working as designed) until that
+line filled up, at which point a further scan of the same code correctly BLOCKED — but the
+Supervisor could then approve that blocked scan against a totally unrelated SKU (BISC-013) with
+zero cross-check against what the barcode is actually registered to. Client's call: "hard block,
+we will make a policy about this in next session" (a fuller policy — e.g. a required override
+reason — is explicitly still open). `InboundReceiptsService.approveScan()` now checks: if the
+scanned barcode has ANY registered `SkuBarcode` row(s) at all, the chosen line's SKU must be one of
+them, or the approval is rejected outright naming what the barcode is really registered to. A
+barcode with ZERO registered rows (a genuinely unrecognized code — composite GS1, a unique
+per-item serial, "Reading B" territory) still allows a free, unrestricted Supervisor override —
+that's the one legitimate case this override tier exists for, and closing #3 must not have broken
+it (verified explicitly, see below).
+
+**4. Dock-out / "time to gate out" signal — explicitly NOT built this pass.** The client's own
+framing: an active notification is wanted (not just a passive timestamp), but "we also need to
+think about some logic, as after dock out also, documentation takes time and then only gate out
+can be done — we will complete this in next session." Flagged, not built — needs its own
+align-before-coding pass (this touches the same territory as the still-fully-deferred Dock
+Scheduler, so treat it with the same care `[[wms-align-before-coding]]` already documents for that
+area).
+
+**5. Answered directly, no code change**: whether outbound testing is blocked by #4 — no. The full
+Outbound module (pick lists, capacity checks) doesn't exist at all yet regardless of #4, so that
+was never testable this session either way. What's already testable today — Gate In → Dock In →
+Gate Out for an Outbound Dispatch vehicle (E-Way Bill, overweight check) — doesn't depend on #4 at
+all; #4 would only add a nicer signal for *when* to check, not unblock anything technically.
+
+Verified via a throwaway-company API script, 22/22: dock door creation with a default staging
+location, clearing it, re-setting it, a cross-warehouse location correctly rejected; Dock In
+blocked with no assigned dock, succeeding once one's assigned; Match Order response carrying
+`assignedDockNumber` for the frontend to key its pre-fill off; a barcode correctly auto-accepting
+until its line filled, then correctly blocking on over-scan; approving that blocked scan against a
+genuinely different, barcode-mismatched SKU hard-blocked with the exact "already registered to"
+message; and — the case that mattered most to get right — approving a genuinely UNREGISTERED
+barcode against any SKU still succeeding, confirming the real override capability wasn't
+collateral damage. Then re-verified live through the actual rendered UI (logged in via the
+API+localStorage token trick): created a real Dock Door with a real default staging Location
+through the real `DockDoorsPage.tsx` form; attempted a real Dock In with no dock assigned and
+watched the exact server error surface inline in the real modal; assigned a dock, retried, and
+watched Dock In succeed; opened Match Order and confirmed — via the actual rendered `<select>`'s
+live DOM value, not just displayed text — that the staging dropdown was genuinely pre-selected to
+the dock's real default Location.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2024,16 +2093,18 @@ No CSS framework/component library is installed despite being mentioned in `READ
 list tables is deliberately deferred until more list pages exist, so it can be built once as a
 reusable pattern rather than per-page.
 
-**Nav bar: a "Masters" dropdown groups the six master-data pages** (2026-08-27, the client's own
+**Nav bar: a "Masters" dropdown groups the master-data pages** (2026-08-27, the client's own
 simplicity call — the top-level nav was getting crowded as more pages got added). Warehouses/SKUs/
 Customers/Locations/Vehicle & Driver Master/Users now live under one `App.tsx` dropdown (`Masters ▾`,
 closes on an outside click via a plain `document.addEventListener('mousedown', ...)` — no library),
-bolded when the active tab is one of the six. Gate & Yard, Inbound Orders, and Company Settings stay
+bolded when the active tab is one of them. Gate & Yard, Inbound Orders, and Company Settings stay
 as standalone top-level buttons, unchanged — the client's explicit "rest you can keep as it is for
 now." `Users` is still filtered out of the dropdown for a role outside `CAN_MANAGE_USERS`, same gate
 as before. Apply this same "operational workflows stay top-level, master-data lists go in the
 dropdown" split to any new page — a page that's mostly CRUD over a list belongs in Masters, a page
-that's a daily task/workflow (like Gate & Yard or Inbound Orders) stays top-level.
+that's a daily task/workflow (like Gate & Yard or Inbound Orders) stays top-level. **`Dock Doors`
+joined the dropdown 2026-08-27** (live-testing follow-up) — same reasoning, occasional-edit master
+data, not a daily workflow.
 
 ## Status: what's built vs. what's next
 
@@ -2159,6 +2230,15 @@ workflow. **Inbound orders now require a Vehicle at creation, one open order per
 time, and Match Order auto-finds by vehicle with no typed reference number at all** (see "Inbound
 order ↔ Vehicle 1:1 mapping" above) — closes a real gap where Match Order used to trust a typed
 PO/Invoice number with no check it was even the right vehicle.
+
+The client then live-tested the whole flow and reported five things (see "Live-testing follow-up:
+dock-in gating, dock default staging, barcode-approve hard block" above) — three real, confirmed
+gaps got fixed: **Dock In now requires an assigned dock**, **each Dock Door can carry its own
+default staging Location** (new `DockDoorsPage.tsx` — the first frontend DockDoor has ever had,
+under Masters) which Match Order pre-fills from, and **approving a blocked scan against a
+barcode-mismatched SKU is now hard-blocked** (a genuinely unrecognized barcode's override stays
+fully open, unaffected). A fourth item — an active notification signaling security it's time to
+Gate Out — is explicitly flagged, not built, pending a fuller design pass next session.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

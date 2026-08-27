@@ -488,6 +488,7 @@ model Location {
   allocations        Allocation[]
   returns            Return[]
   dockDistances       DockLocationDistance[]
+  defaultStagingForDocks DockDoor[]
 
   @@unique([warehouseId, code])
 }
@@ -656,6 +657,20 @@ model DockDoor {
   status      DockDoorStatus @default(AVAILABLE)
   isActive    Boolean        @default(true)
   createdAt   DateTime       @default(now())
+
+  // A dock's own default unloading spot (2026-08-27, live-testing follow-up
+  // — "we still need to set the staging area against each dock"). Revisits
+  // the dock-to-staging mapping idea originally rejected as premature back
+  // when Inbound receiving first shipped (assignedDockNumber on
+  // VehicleGateEntry was, and still is, free text, not a real DockDoor
+  // link — that decision is untouched by this field). This is deliberately
+  // ONE default Location per dock, not a candidate list — a simple
+  // suggestion Match Order pre-fills client-side (by string-matching the
+  // gate entry's free-text assignedDockNumber against this DockDoor's own
+  // code) but staff can still override. Optional — an unmapped dock just
+  // leaves Match Order's staging field blank, exactly like today.
+  defaultStagingLocationId String?
+  defaultStagingLocation   Location? @relation(fields: [defaultStagingLocationId], references: [id])
 
   distances DockLocationDistance[]
 

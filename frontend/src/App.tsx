@@ -9,6 +9,7 @@ import GateYardPage from './GateYardPage';
 import VehicleDriverPage from './VehicleDriverPage';
 import CompanySettingsPage from './CompanySettingsPage';
 import InboundOrdersPage from './InboundOrdersPage';
+import DockDoorsPage from './DockDoorsPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -17,7 +18,7 @@ import InboundOrdersPage from './InboundOrdersPage';
 // manage the OPERATOR accounts under it.
 const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -31,6 +32,7 @@ const MASTER_TABS: { tab: Tab; label: string }[] = [
   { tab: 'skus', label: 'SKUs' },
   { tab: 'customers', label: 'Customers' },
   { tab: 'locations', label: 'Locations' },
+  { tab: 'dockdoors', label: 'Dock Doors' },
   { tab: 'vehicledriver', label: 'Vehicle & Driver Master' },
   { tab: 'users', label: 'Users' },
 ];
@@ -130,6 +132,8 @@ function App() {
         <GateYardPage />
       ) : tab === 'vehicledriver' ? (
         <VehicleDriverPage />
+      ) : tab === 'dockdoors' ? (
+        <DockDoorsPage />
       ) : tab === 'companysettings' ? (
         <CompanySettingsPage />
       ) : tab === 'inboundorders' ? (

@@ -15,6 +15,7 @@ type Warehouse = { id: string; code: string; name: string };
 type Sku = { id: string; code: string; description: string };
 type Location = { id: string; code: string; warehouseId: string };
 type Vehicle = { id: string; vehicleNumber: string };
+type DockDoor = { id: string; warehouseId: string; code: string; defaultStagingLocation?: { id: string; code: string } };
 type ReceiptLine = { id: string; sku: Sku; expectedQty: number; receivedQty: number; stagingLocation?: Location };
 type Receipt = {
   id: string;
@@ -54,6 +55,10 @@ type GateEntry = {
   gateInAt: string;
   gateOutAt?: string;
   dockedInAt?: string;
+  // Used to pre-fill Match Order's staging location from the dock's own
+  // default (2026-08-27, live-testing follow-up) — string-matched against
+  // DockDoor.code, not a real FK (assignedDockNumber stays free text).
+  assignedDockNumber?: string;
   physicalConditionOk?: boolean | null;
   physicalConditionRemarks?: string;
   sealNumber?: string;
@@ -167,6 +172,7 @@ function InboundOrdersPage() {
   const [skus, setSkus] = useState<Sku[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [dockDoors, setDockDoors] = useState<DockDoor[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [gateEntries, setGateEntries] = useState<GateEntry[]>([]);
 
@@ -215,6 +221,7 @@ function InboundOrdersPage() {
     fetch('http://localhost:3000/skus', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setSkus(Array.isArray(d) ? d : []));
     fetch('http://localhost:3000/locations', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setLocations(Array.isArray(d) ? d : []));
     fetch('http://localhost:3000/vehicles', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setVehicles(Array.isArray(d) ? d : []));
+    fetch('http://localhost:3000/dock-doors', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setDockDoors(Array.isArray(d) ? d : []));
     fetch('http://localhost:3000/inbound-receipts', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setReceipts(Array.isArray(d) ? d : []));
     loadGateEntries();
   };
@@ -312,9 +319,16 @@ function InboundOrdersPage() {
     loadGateEntries();
   };
 
+  // Pre-fills from the assigned dock's own default staging Location
+  // (2026-08-27, live-testing follow-up: "we still need to set the
+  // staging area against each dock") — a plain string match between the
+  // gate entry's free-text assignedDockNumber and a registered DockDoor's
+  // code in the same warehouse. Purely a convenience default: still just
+  // sets the same editable dropdown, no different from typing it by hand.
   const openMatchOrder = (entry: GateEntry) => {
     setMatchOrderFor(entry);
-    setMatchOrderStagingLocationId('');
+    const dock = dockDoors.find((d) => d.warehouseId === entry.warehouse.id && d.code.toUpperCase() === (entry.assignedDockNumber || '').trim().toUpperCase());
+    setMatchOrderStagingLocationId(dock?.defaultStagingLocation?.id || '');
     setMatchOrderError('');
   };
   // Auto-found by vehicle (2026-08-27) — no PO/Invoice number typed at all
@@ -593,6 +607,11 @@ function InboundOrdersPage() {
             )}
             <form onSubmit={handleMatchOrderSubmit}>
               <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 4 }}>Staging Location — where is this being unloaded to? *</label>
+              {matchOrderStagingLocationId && (
+                <p style={{ marginTop: -2, marginBottom: 4, fontSize: 12, color: '#888' }}>
+                  Pre-filled from Dock {matchOrderFor.assignedDockNumber}'s default staging spot — change it if this delivery needs somewhere else.
+                </p>
+              )}
               <select
                 value={matchOrderStagingLocationId}
                 onChange={(e) => setMatchOrderStagingLocationId(e.target.value)}

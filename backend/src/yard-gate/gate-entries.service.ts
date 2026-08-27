@@ -412,6 +412,12 @@ export class GateEntriesService {
     const existing = await this.assertAccess(id, user);
     if (existing.dockedInAt) throw new BadRequestException('This vehicle has already been marked docked in.');
     if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+    // A vehicle can't physically be docked in without a dock to dock in AT
+    // — real gap caught live-testing, 2026-08-27 follow-up: this used to
+    // let a vehicle be marked Docked In with no assignedDockNumber at all.
+    if (!existing.assignedDockNumber) {
+      throw new BadRequestException('Assign a dock to this vehicle before marking it Docked In.');
+    }
 
     const physicalConditionOk = data?.physicalConditionOk !== undefined && data.physicalConditionOk !== null ? !!data.physicalConditionOk : undefined;
     const physicalConditionRemarks = data?.physicalConditionRemarks ? String(data.physicalConditionRemarks).trim() : undefined;
