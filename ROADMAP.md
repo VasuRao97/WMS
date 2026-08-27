@@ -51,8 +51,37 @@ active notification telling security it's time to Gate Out — is flagged but **
 asked to think through the fuller logic (documentation/paperwork time after dock-out, before gate
 out is actually allowed) next session. See CLAUDE.md's "Live-testing follow-up" section.
 
-The three candidates below are unchanged and still the live options for the next module-level
-session.
+**Third same-day follow-up**: a design conversation about a Dock + Staging + Yard visualizer
+(same spirit as the Locations Plan View) got started, then explicitly paused mid-conversation —
+"no more joining in depth for now." **Nothing decided, nothing built.** Pick this up by re-asking
+these exact four questions before touching anything:
+1. Dock Doors and Yard Slots have zero positional data today (just a code string, no row/sequence)
+   — add a simple staff-typed position number to each (cheap, matches this project's flankNumber/
+   Section convention), or something fuller?
+2. Should the diagram show live occupancy (which vehicle is at which dock/slot right now — all the
+   data for this already exists) or just a static structural layout (mirroring the Locations Plan
+   View's original v1 scope)?
+3. Where should it live — on Gate & Yard near Yard Status (where the live tracker data already is),
+   or a new standalone page?
+4. Should a dock's default staging location (built this session) be visually connected to the
+   existing Locations Plan View, or just shown as a text label?
+
+Also researched (not built, not decided) this same session: a web-research pass on other WMS
+platforms' Inbound modules (Blue Yonder, Manhattan Associates, general industry sources) surfaced
+two gaps that keep resurfacing independently across sources — **closing a short receipt** (a
+partially-received order has no way to leave `PARTIALLY_RECEIVED` today if the shipment was
+genuinely short — every vendor treats a formal discrepancy close-out as standard) and **batch/lot
++ expiry capture at receiving** (feeds a future FEFO policy). Both were already on the very first
+"list down all features" round of this Inbound deep-dive and weren't picked then — they're showing
+up again on their own, worth a real look next time Inbound comes up. Sources, for reference:
+[Cleverence — WMS Receiving](https://www.cleverence.com/articles/business-blogs/wms-receiving-3846/),
+[Blue Yonder WMS — Concentrus](https://concentrus.com/blue-yonder-wms/),
+[Manhattan Active WMS — ERP Research](https://www.erpresearch.com/erp-add-ons/wms/manhattan-active-wms),
+[S2B Analytics — Dock-to-Stock](https://s2bianalytics.com/warehouse-receiving-process/). Nothing
+from this research pass is written into `CLAUDE.md` — this note here is the only record of it.
+
+The first three candidates below are the module-level options (unchanged from before); the rest
+are smaller items raised this same session — pick any of them, not a forced order.
 
 ## Immediate candidates for the next session
 
@@ -75,6 +104,17 @@ Pick one — these are the live options on the table, not a forced order:
    paperwork/documentation still takes time after dock-out before Gate Out can actually happen.
    Needs a real design conversation first (touches similar territory to the still-fully-deferred
    Dock Scheduler) — not a quick toggle.
+5. **Dock + Staging + Yard visualizer** — raised this session, paused mid-conversation before any
+   decisions were made. Same spirit as the Locations Plan View. Needs a real spatial-data pass
+   first (Dock Doors/Yard Slots have no position/sequence data today) — see the four open questions
+   in the session note above before building anything.
+6. **Closing a short receipt** — a partially-received order has no way to leave
+   `PARTIALLY_RECEIVED` today if the shipment was genuinely short. Flagged in this session's own
+   "list down all features" round and again independently by a web-research pass on other WMS
+   platforms' Inbound modules — every vendor treats a formal discrepancy close-out as standard.
+7. **Batch/Lot + expiry capture at receiving** — same double-flagging as #6 (this session's
+   feature list, then independently by the WMS research pass) — feeds a future FEFO policy, cheap
+   to capture now even before FIFO/FEFO logic itself exists.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 
