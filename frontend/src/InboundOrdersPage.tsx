@@ -645,7 +645,12 @@ function InboundOrdersPage() {
                       style={{ width: '100%', boxSizing: 'border-box', minHeight: 60, marginBottom: 8 }}
                     />
                     {completeInwardError && <p style={{ color: 'crimson' }}>{completeInwardError}</p>}
-                    <button type="button" onClick={handleCompleteInward}>Complete Inward Process</button>
+                    {/* Labeled "Complete Dock Out" rather than repeating the
+                        section header — the client's own call, 2026-08-27:
+                        the button itself should make clear to the
+                        supervisor that clicking it is what lets the vehicle
+                        leave the dock, not just log a remark. */}
+                    <button type="button" onClick={handleCompleteInward}>Complete Dock Out</button>
                   </>
                 )}
               </div>
