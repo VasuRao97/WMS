@@ -181,6 +181,7 @@ model User {
   gateEntriesSealedBy   VehicleGateEntry[]   @relation("SealCapturedBy")
   inboundScansPerformed InboundReceiptScan[] @relation("InboundScannedBy")
   inboundScansReviewed  InboundReceiptScan[] @relation("InboundScanReviewedBy")
+  inwardCompletions     VehicleGateEntry[]   @relation("InwardCompletedBy")
 
   notificationsReceived       NotificationLog[]    @relation("NotificationRecipient")
   notificationsEscalatedTo    NotificationLog[]    @relation("NotificationEscalatedTo")
@@ -1031,6 +1032,19 @@ model VehicleGateEntry {
   inboundReceiptId String?              @unique
   inboundReceipt   InboundReceipt?      @relation(fields: [inboundReceiptId], references: [id])
   inboundScans     InboundReceiptScan[]
+
+  // A deliberate human close-out, distinct from the receipt simply reaching
+  // RECEIVED status (2026-08-27, a real gap the client caught testing the
+  // flow themselves: reaching RECEIVED was auto-unlocking Gate Out with no
+  // explicit sign-off). "Complete Inward Process" — enabled only once the
+  // matched order is fully RECEIVED — stamps who/when and captures an
+  // optional remarks note (e.g. "one case damaged, noted separately").
+  // gateOut() for INBOUND_DELIVERY now requires THIS to be set, not just
+  // the receipt's own status.
+  inwardCompletedAt       DateTime?
+  inwardCompletedById     String?
+  inwardCompletedBy       User?     @relation("InwardCompletedBy", fields: [inwardCompletedById], references: [id])
+  inwardCompletionRemarks String?
 
   createdAt DateTime @default(now())
 

@@ -75,6 +75,10 @@ type GateEntry = {
   // whether Gate Out is blocked on a still-in-progress order.
   inboundReceiptId?: string;
   inboundReceipt?: { referenceNo: string; status: string };
+  // "Complete Inward Process" (2026-08-27) — the real Gate Out gate for
+  // Inbound now, not just the receipt reaching RECEIVED. Set on Inbound
+  // Orders, read-only here.
+  inwardCompletedAt?: string;
 };
 type YardSummaryRow = {
   warehouseId: string;
@@ -768,10 +772,16 @@ function GateYardPage() {
                   </label>
                 </div>
               )}
+              {/* The real gate is inwardCompletedAt now, not just receipt
+                  status (2026-08-27) — "Complete Inward Process" on Inbound
+                  Orders is a deliberate sign-off, not an automatic unlock
+                  the moment quantities happen to match. */}
               {gateOutFor.purpose === 'INBOUND_DELIVERY' && gateOutFor.inboundReceiptId && (
-                <p style={{ color: gateOutFor.inboundReceipt?.status === 'RECEIVED' ? 'green' : 'crimson', marginBottom: 12 }}>
+                <p style={{ color: gateOutFor.inwardCompletedAt ? 'green' : 'crimson', marginBottom: 12 }}>
                   Order {gateOutFor.inboundReceipt?.referenceNo}: {STATUS_LABELS_RECEIPT[gateOutFor.inboundReceipt?.status || ''] || gateOutFor.inboundReceipt?.status}
-                  {gateOutFor.inboundReceipt?.status === 'RECEIVED' ? ' ✓' : ' — Gate Out will be blocked until fully received.'}
+                  {gateOutFor.inwardCompletedAt
+                    ? ' — Inward process completed ✓'
+                    : ' — Gate Out will be blocked until the inward process is completed (on Inbound Orders).'}
                 </p>
               )}
               {gateOutError && <p style={{ color: 'crimson' }}>{gateOutError}</p>}

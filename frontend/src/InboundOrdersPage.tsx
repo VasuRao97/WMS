@@ -62,6 +62,12 @@ type GateEntry = {
     lines: { id: string; sku: { id: string; code: string; description: string }; expectedQty: number; receivedQty: number }[];
   };
   inboundScans?: InboundScan[];
+  // "Complete Inward Process" (2026-08-27) — the deliberate close-out
+  // sign-off, distinct from the receipt simply reaching RECEIVED. This is
+  // the real Gate Out gate now, not just receipt status.
+  inwardCompletedAt?: string;
+  inwardCompletedBy?: { name: string };
+  inwardCompletionRemarks?: string;
 };
 
 function authHeaders() {
@@ -183,6 +189,11 @@ function InboundOrdersPage() {
   const [scanError, setScanError] = useState('');
   const [approveForms, setApproveForms] = useState<Record<string, { receiptLineId: string; quantity: string }>>({});
 
+  // "Complete Inward Process" (2026-08-27) — the deliberate close-out,
+  // enabled only once the matched order is fully RECEIVED.
+  const [completeInwardRemarks, setCompleteInwardRemarks] = useState('');
+  const [completeInwardError, setCompleteInwardError] = useState('');
+
   const loadGateEntries = () => fetch('http://localhost:3000/gate-entries', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setGateEntries(Array.isArray(d) ? d : []));
 
   const load = () => {
@@ -284,7 +295,13 @@ function InboundOrdersPage() {
     }
     setMatchOrderFor(null);
     loadGateEntries(); load();
-    setReceivingFor(data); // jump straight into receiving once matched
+    openReceiving(data); // jump straight into receiving once matched
+  };
+
+  const openReceiving = (entry: GateEntry) => {
+    setReceivingFor(entry);
+    setCompleteInwardRemarks('');
+    setCompleteInwardError('');
   };
 
   const handleScanSubmit = async (e: React.FormEvent) => {
@@ -326,6 +343,24 @@ function InboundOrdersPage() {
   const handleRejectScan = async (scan: InboundScan) => {
     const res = await fetch(`http://localhost:3000/inbound-receipts/scans/${scan.id}/reject`, { method: 'PATCH', headers: authHeaders() });
     if (!res.ok) { const data = await res.json(); alert(errorText(data, 'Could not reject this scan.')); return; }
+    await refreshReceiving();
+  };
+
+  // "Complete Inward Process" — the deliberate close-out, enabled only once
+  // the matched order is fully RECEIVED (2026-08-27). This, not receipt
+  // status alone, is what Gate Out actually checks now.
+  const handleCompleteInward = async () => {
+    if (!receivingFor) return;
+    setCompleteInwardError('');
+    const res = await fetch(`http://localhost:3000/gate-entries/${receivingFor.id}/complete-inward`, {
+      method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ remarks: completeInwardRemarks }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setCompleteInwardError(errorText(data, 'Could not complete the inward process.'));
+      return;
+    }
+    setCompleteInwardRemarks('');
     await refreshReceiving();
   };
 
@@ -590,7 +625,35 @@ function InboundOrdersPage() {
               </table>
             </div>
 
-            <button type="button" onClick={() => setReceivingFor(null)}>Close</button>
+            {/* "Complete Inward Process" (2026-08-27) — the deliberate
+                close-out, enabled only once every line is fully received.
+                This, not receipt status alone, is what Gate Out checks. */}
+            {(receivingFor.inboundReceipt.status === 'RECEIVED' || receivingFor.inboundReceipt.status === 'PUTAWAY_COMPLETE') && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #eee' }}>
+                {receivingFor.inwardCompletedAt ? (
+                  <p style={{ color: 'green' }}>
+                    ✓ Inward process completed{receivingFor.inwardCompletedBy ? ` by ${receivingFor.inwardCompletedBy.name}` : ''} at {new Date(receivingFor.inwardCompletedAt).toLocaleString()}.
+                    {receivingFor.inwardCompletionRemarks ? ` Remarks: ${receivingFor.inwardCompletionRemarks}` : ''}
+                  </p>
+                ) : (
+                  <>
+                    <p style={{ marginBottom: 4, fontWeight: 'bold' }}>Complete Inward Process</p>
+                    <textarea
+                      placeholder="Remarks (optional) — e.g. anything worth flagging about this delivery"
+                      value={completeInwardRemarks}
+                      onChange={(e) => setCompleteInwardRemarks(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', minHeight: 60, marginBottom: 8 }}
+                    />
+                    {completeInwardError && <p style={{ color: 'crimson' }}>{completeInwardError}</p>}
+                    <button type="button" onClick={handleCompleteInward}>Complete Inward Process</button>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div style={{ marginTop: 12 }}>
+              <button type="button" onClick={() => setReceivingFor(null)}>Close</button>
+            </div>
           </div>
         </div>
       )}
@@ -616,8 +679,10 @@ function InboundOrdersPage() {
               statusLabel = 'Docked — awaiting order match';
               action = <button onClick={() => openMatchOrder(entry)}>Match Order</button>;
             } else if (entry.inboundReceiptId) {
-              statusLabel = `Order ${entry.inboundReceipt?.referenceNo || ''} — ${STATUS_LABELS[entry.inboundReceipt?.status || ''] || entry.inboundReceipt?.status || ''}`;
-              action = <button onClick={() => setReceivingFor(entry)}>Receive</button>;
+              statusLabel = entry.inwardCompletedAt
+                ? `Order ${entry.inboundReceipt?.referenceNo || ''} — Inward Completed ✓`
+                : `Order ${entry.inboundReceipt?.referenceNo || ''} — ${STATUS_LABELS[entry.inboundReceipt?.status || ''] || entry.inboundReceipt?.status || ''}`;
+              action = <button onClick={() => openReceiving(entry)}>{entry.inwardCompletedAt ? 'View' : 'Receive'}</button>;
             }
             return (
               <tr key={entry.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>

@@ -25,6 +25,7 @@ const GATE_ENTRY_INCLUDE = {
   gateInBy: { select: { id: true, name: true } },
   gateOutBy: { select: { id: true, name: true } },
   dockedInBy: { select: { id: true, name: true } },
+  inwardCompletedBy: { select: { id: true, name: true } },
   documentChecks: true,
   // Inbound receiving (2026-08-27) — the matched order (if any) with its
   // expected lines, and the full scan log for this visit.
@@ -334,6 +335,9 @@ export class GateEntriesService {
       'Physical Condition OK': e.physicalConditionOk === true ? 'TRUE' : e.physicalConditionOk === false ? 'FALSE' : '',
       'Physical Condition Remarks': e.physicalConditionRemarks || '',
       'Seal Number': e.sealNumber || '',
+      'Inward Completed At': e.inwardCompletedAt ? e.inwardCompletedAt.toISOString() : '',
+      'Inward Completed By': e.inwardCompletedBy?.name || '',
+      'Inward Completion Remarks': e.inwardCompletionRemarks || '',
       'Gate Out At': e.gateOutAt ? e.gateOutAt.toISOString() : '',
       'Gate Out By': e.gateOutBy?.name || '',
       'E-Way Bill No': e.eWayBillNo || '',
@@ -588,6 +592,39 @@ export class GateEntriesService {
     await tx.inboundReceipt.update({ where: { id: receiptId }, data: { status } });
   }
 
+  // "Complete Inward Process" (2026-08-27) — a deliberate human close-out,
+  // distinct from the matched order simply reaching RECEIVED status. A real
+  // gap the client caught testing the flow themselves: reaching RECEIVED
+  // was auto-unlocking Gate Out with no explicit sign-off. Only enabled
+  // once every expected line is actually fully received; captures an
+  // optional remarks note. gateOut() now requires this to be set for
+  // Inbound, not just the receipt's own status — see schema.prisma's
+  // comment on inwardCompletedAt.
+  async completeInward(id: string, remarks: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
+    const existing = await this.assertAccess(id, user);
+    if (existing.purpose !== 'INBOUND_DELIVERY') throw new BadRequestException('Only Inbound Delivery vehicles have an inward process to complete.');
+    if (!(existing as any).inboundReceiptId) throw new BadRequestException('This vehicle has not been matched to an order yet.');
+    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+    if ((existing as any).inwardCompletedAt) throw new BadRequestException('The inward process has already been completed for this vehicle.');
+
+    const receipt = await this.prisma.inboundReceipt.findUnique({ where: { id: (existing as any).inboundReceiptId }, select: { status: true } });
+    if (receipt?.status !== 'RECEIVED' && receipt?.status !== 'PUTAWAY_COMPLETE') {
+      throw new BadRequestException('This order has not been fully received yet — every expected SKU/quantity must be scanned (or supervisor-approved) first.');
+    }
+
+    const updated = await this.prisma.vehicleGateEntry.update({
+      where: { id },
+      data: {
+        inwardCompletedAt: new Date(),
+        inwardCompletedBy: { connect: { id: user.userId } },
+        inwardCompletionRemarks: remarks ? String(remarks).trim() : undefined,
+      },
+      include: GATE_ENTRY_INCLUDE,
+    });
+    return this.attachNetWeight(updated);
+  }
+
   // "Which dock does the driver go to" (2026-08-27) — a Security Supervisor
   // types in the dock number they've been told (the output of the future
   // Dock Scheduler, standing in for it manually for now — see
@@ -690,11 +727,15 @@ export class GateEntriesService {
       // for an Inbound entry that never went through the order-maker/scan
       // flow at all (e.g. a company not using it yet), so this doesn't
       // regress anything for entries with no inboundReceiptId.
+      //
+      // Requires the deliberate "Complete Inward Process" sign-off, not
+      // just the receipt reaching RECEIVED (2026-08-27, a real gap the
+      // client caught — reaching RECEIVED alone used to auto-unlock this
+      // with no explicit close-out step). See completeInward()'s comment.
       const receiptId = (existing as any).inboundReceiptId as string | null;
       if (receiptId) {
-        const receipt = await this.prisma.inboundReceipt.findUnique({ where: { id: receiptId }, select: { status: true } });
-        if (receipt?.status !== 'RECEIVED' && receipt?.status !== 'PUTAWAY_COMPLETE') {
-          errors.push('This order has not been fully received yet — every expected SKU/quantity must be scanned (or supervisor-approved) before gate out.');
+        if (!(existing as any).inwardCompletedAt) {
+          errors.push('Complete the inward process (on Inbound Orders) before this vehicle can gate out.');
         }
       } else if (!materialReceivedConfirmed) {
         errors.push('Confirm that all material has been received/scanned before this vehicle can gate out.');

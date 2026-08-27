@@ -6,7 +6,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { GATE_YARD_OPERATE_ROLES, GATE_YARD_READ_ROLES, INBOUND_SCAN_ROLES } from '../common/tenant.util';
+import { GATE_YARD_OPERATE_ROLES, GATE_YARD_READ_ROLES, INBOUND_SCAN_ROLES, INBOUND_APPROVE_ROLES } from '../common/tenant.util';
 
 @Controller('gate-entries')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -87,5 +87,15 @@ export class GateEntriesController {
   @Roles(...INBOUND_SCAN_ROLES)
   scan(@Param('id') id: string, @Body() body: { barcode: string }, @CurrentUser() user: any) {
     return this.gateEntriesService.scan(id, body?.barcode, user);
+  }
+
+  // "Complete Inward Process" (2026-08-27) — the deliberate close-out sign-
+  // off, gated the same tier as approving a blocked scan (Supervisor and
+  // up) rather than the broader scanning roles — see
+  // GateEntriesService.completeInward's comment.
+  @Patch(':id/complete-inward')
+  @Roles(...INBOUND_APPROVE_ROLES)
+  completeInward(@Param('id') id: string, @Body() body: { remarks?: string }, @CurrentUser() user: any) {
+    return this.gateEntriesService.completeInward(id, body?.remarks, user);
   }
 }
