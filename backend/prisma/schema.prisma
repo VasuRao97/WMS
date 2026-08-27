@@ -121,6 +121,13 @@ model Company {
   notificationChannels CompanyNotificationChannel[]
   notificationLogs     NotificationLog[]
   selfCheckInRequests  SelfCheckInRequest[]
+
+  // Whether this company's ERP can push Inbound orders directly into this
+  // system (2026-08-27) — schema-ready toggle only; the manual order maker
+  // is what's actually built this pass, ERP push is a later pass reusing
+  // the same underlying creation logic with a company API key instead of a
+  // JWT and SKU/Warehouse resolved by erpCode instead of an internal pick.
+  allowErpInboundPush Boolean @default(false)
 }
 
 enum GatePassResetPeriod {
@@ -162,16 +169,18 @@ model User {
   assignedWarehouses Warehouse[]
   loginEvents        LoginEvent[]
 
-  receiptsCreated     InboundReceipt[]   @relation("ReceiptCreatedBy")
-  putawaysCompleted   PutawayTask[]      @relation("PutawayCompletedBy")
-  ordersCreated       OutboundOrder[]    @relation("OrderCreatedBy")
-  picksCompleted      PickTask[]         @relation("PickedBy")
-  dispatches          Dispatch[]         @relation("DispatchedBy")
-  movements           StockMovement[]    @relation("MovementCreatedBy")
-  gateEntriesIn       VehicleGateEntry[] @relation("GateInBy")
-  gateEntriesOut      VehicleGateEntry[] @relation("GateOutBy")
-  gateEntriesDocked   VehicleGateEntry[] @relation("DockedInBy")
-  gateEntriesSealedBy VehicleGateEntry[] @relation("SealCapturedBy")
+  receiptsCreated       InboundReceipt[]     @relation("ReceiptCreatedBy")
+  putawaysCompleted     PutawayTask[]        @relation("PutawayCompletedBy")
+  ordersCreated         OutboundOrder[]      @relation("OrderCreatedBy")
+  picksCompleted        PickTask[]           @relation("PickedBy")
+  dispatches            Dispatch[]           @relation("DispatchedBy")
+  movements             StockMovement[]      @relation("MovementCreatedBy")
+  gateEntriesIn         VehicleGateEntry[]   @relation("GateInBy")
+  gateEntriesOut        VehicleGateEntry[]   @relation("GateOutBy")
+  gateEntriesDocked     VehicleGateEntry[]   @relation("DockedInBy")
+  gateEntriesSealedBy   VehicleGateEntry[]   @relation("SealCapturedBy")
+  inboundScansPerformed InboundReceiptScan[] @relation("InboundScannedBy")
+  inboundScansReviewed  InboundReceiptScan[] @relation("InboundScanReviewedBy")
 
   notificationsReceived       NotificationLog[]    @relation("NotificationRecipient")
   notificationsEscalatedTo    NotificationLog[]    @relation("NotificationEscalatedTo")
@@ -470,6 +479,11 @@ model Location {
   putawayFrom        PutawayTask[]        @relation("PutawayFromLocation")
   putawayTo          PutawayTask[]        @relation("PutawayToLocation")
   receiptLinesStaged InboundReceiptLine[]
+  // A receipt-level default staging spot, chosen once the vehicle is
+  // actually at the dock (2026-08-27 — see InboundReceipt.stagingLocationId's
+  // comment for why this replaced requiring a location per-line at
+  // order-creation time).
+  receiptsStaged     InboundReceipt[]
   allocations        Allocation[]
   returns            Return[]
 
@@ -516,6 +530,7 @@ model Sku {
   asChild            SkuRelationship[]    @relation("ChildSku")
   stockMovements     StockMovement[]
   receiptLines       InboundReceiptLine[]
+  inboundScans       InboundReceiptScan[]
   putawayTasks       PutawayTask[]
   outboundOrderLine  OutboundOrderLine[]
   allocations        Allocation[]
@@ -531,6 +546,8 @@ model SkuStorageUnit {
   unitType     String
   qtyInBaseUom Decimal
   isPreferred  Boolean @default(false)
+
+  barcodes SkuBarcode[]
 }
 
 model SkuBarcode {
@@ -539,6 +556,16 @@ model SkuBarcode {
   sku     Sku    @relation(fields: [skuId], references: [id])
   barcode String
   type    String
+
+  // Which pack level this specific barcode represents — a case barcode
+  // links to the CASE SkuStorageUnit row, a single-tyre barcode links to
+  // EACH (or stays unset, same effective meaning). Nullable and defaults
+  // to "1 each" when unset, so every barcode entered before this field
+  // existed keeps working unchanged (2026-08-27, Inbound receiving design
+  // — this is what lets a scan resolve its actual quantity: 12 for a case,
+  // 1 for a tyre, via SkuStorageUnit.qtyInBaseUom).
+  storageUnitId String?
+  storageUnit   SkuStorageUnit? @relation(fields: [storageUnitId], references: [id])
 }
 
 model SkuRelationship {
@@ -994,6 +1021,17 @@ model VehicleGateEntry {
   sealCapturedById  String?
   sealCapturedBy    User?     @relation("SealCapturedBy", fields: [sealCapturedById], references: [id])
 
+  // The real, authoritative order match (2026-08-27, Inbound receiving
+  // design) — set at a NEW step after Dock In, distinct from the loose
+  // free-text `referenceNo` above captured at Gate In. @unique so a given
+  // InboundReceipt can only ever be claimed by one gate visit. Nullable
+  // because most of a gate entry's life happens before this step runs (and
+  // Outbound entries never set it at all — this only applies to Inbound
+  // receiving).
+  inboundReceiptId String?              @unique
+  inboundReceipt   InboundReceipt?      @relation(fields: [inboundReceiptId], references: [id])
+  inboundScans     InboundReceiptScan[]
+
   createdAt DateTime @default(now())
 
   @@index([warehouseId, gateInAt])
@@ -1093,6 +1131,11 @@ enum NotificationChannel {
 
 enum NotificationEventType {
   DETENTION_ALERT
+  // Fires once at Gate In, only for INBOUND_DELIVERY, only when every
+  // GateEntryDocumentCheck came back OK — to every WAREHOUSE_SUPERVISOR/
+  // WAREHOUSE_MANAGER on that warehouse (2026-08-27, Inbound receiving
+  // design). Same broadcast shape DETENTION_ALERT already uses.
+  VEHICLE_READY_FOR_UNLOADING
 }
 
 enum NotificationStatus {
@@ -1220,6 +1263,29 @@ model InboundReceipt {
   createdAt    DateTime      @default(now())
 
   lines InboundReceiptLine[]
+  scans InboundReceiptScan[]
+
+  // Where this delivery gets staged, chosen once — at the Match Order step
+  // after Dock In, when the vehicle is physically at the dock and staff
+  // actually knows where they're unloading it (2026-08-27, a real gap the
+  // client caught: staging location can't be known at order-creation time,
+  // before the vehicle even exists in the system, and dock-to-staging
+  // mapping was rejected as premature since Dock assignment is still free
+  // text, not a real DockDoor link — see assignedDockNumber's comment).
+  // Nullable until Match Order sets it; a per-line stagingLocationId below
+  // still exists as an optional OVERRIDE for a SKU that genuinely needs a
+  // different spot than the rest of the truckload, falling back to this
+  // receipt-level default when unset (GateEntriesService.scan()).
+  stagingLocationId String?
+  stagingLocation   Location? @relation(fields: [stagingLocationId], references: [id])
+
+  // The one VehicleGateEntry that matched against this receipt (2026-08-27,
+  // Inbound receiving design) — set from the gate-entry side
+  // (VehicleGateEntry.inboundReceiptId, @unique there), so a receipt can
+  // only ever be claimed by one real gate visit. Nullable/no relation
+  // fields needed here since Prisma infers the back-relation automatically
+  // from the @unique FK on the other side.
+  gateEntry VehicleGateEntry?
 }
 
 model InboundReceiptLine {
@@ -1229,11 +1295,79 @@ model InboundReceiptLine {
   skuId             String
   sku               Sku            @relation(fields: [skuId], references: [id])
   expectedQty       Decimal
+  // Only ever incremented by an ACCEPTED or APPROVED InboundReceiptScan —
+  // never edited directly. The per-line reconciliation this drives
+  // (receivedQty vs expectedQty, checked per SKU, never blended into one
+  // receipt-wide total) is the whole point of tracking it per line rather
+  // than as one aggregate count on the receipt (2026-08-27 design
+  // conversation).
   receivedQty       Decimal        @default(0)
-  stagingLocationId String
-  stagingLocation   Location       @relation(fields: [stagingLocationId], references: [id])
+  // Optional override of the receipt's own stagingLocationId (see that
+  // field's comment) — most lines leave this unset and just use the
+  // receipt-level default.
+  stagingLocationId String?
+  stagingLocation   Location?      @relation(fields: [stagingLocationId], references: [id])
 
   putawayTasks PutawayTask[]
+  scans        InboundReceiptScan[]
+}
+
+// The full lifecycle of one scanned code during receiving (2026-08-27
+// Inbound design). Every physical item gets scanned and captured here
+// regardless of whether the system can automatically make sense of it —
+// capture is universal, interpretation is tiered:
+//   ACCEPTED  — barcode resolved cleanly via SkuBarcode/SkuStorageUnit to a
+//               SKU+quantity that matched a real remaining expected line.
+//               Posts a StockMovement immediately, no human touches it.
+//   BLOCKED   — anything that didn't resolve cleanly: wrong SKU (not on
+//               this receipt), would exceed that line's expectedQty, OR
+//               the barcode simply couldn't be interpreted at all yet (a
+//               composite case/GS1 barcode, a unique per-item serial — full
+//               parsing of those is explicitly deferred, see CLAUDE.md).
+//               skuId/receiptLineId/quantity stay null until a Supervisor
+//               resolves it — the operator who scanned it cannot self-
+//               approve, by design (their own confirmation).
+//   APPROVED  — a Supervisor confirmed what it actually is (filling in
+//               skuId/receiptLineId/quantity if they weren't already set)
+//               and it now counts as received — permanently flagged in the
+//               record as a reviewed override, never silently merged with
+//               a clean ACCEPTED scan.
+//   REJECTED  — a Supervisor discarded it as a genuine mistake (mis-scan,
+//               duplicate) — no stock impact, stays in the log for audit.
+enum InboundScanStatus {
+  ACCEPTED
+  BLOCKED
+  APPROVED
+  REJECTED
+}
+
+model InboundReceiptScan {
+  id             String              @id @default(uuid())
+  receiptId      String
+  receipt        InboundReceipt      @relation(fields: [receiptId], references: [id])
+  gateEntryId    String
+  gateEntry      VehicleGateEntry    @relation(fields: [gateEntryId], references: [id])
+  barcodeScanned String
+  skuId          String?
+  sku            Sku?                @relation(fields: [skuId], references: [id])
+  receiptLineId  String?
+  receiptLine    InboundReceiptLine? @relation(fields: [receiptLineId], references: [id])
+  // The resolved quantity this one scan represents — 12 for a case
+  // barcode, 1 for a single tyre, resolved via SkuBarcode.storageUnitId ->
+  // SkuStorageUnit.qtyInBaseUom (defaults to 1/"each" when the barcode has
+  // no storage unit linked). Null until resolved (BLOCKED, unresolved).
+  quantity       Decimal?
+  status         InboundScanStatus   @default(ACCEPTED)
+  blockReason    String? // e.g. "Unrecognized barcode", "Not on this receipt", "Exceeds expected quantity"
+  scannedById    String
+  scannedBy      User                @relation("InboundScannedBy", fields: [scannedById], references: [id])
+  scannedAt      DateTime            @default(now())
+  reviewedById   String?
+  reviewedBy     User?               @relation("InboundScanReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt     DateTime?
+
+  @@index([receiptId])
+  @@index([gateEntryId, status])
 }
 
 // ------------------------------------------------------------

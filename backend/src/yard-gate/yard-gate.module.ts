@@ -10,8 +10,10 @@ import { DriverNotificationService } from './driver-notification.service';
 import { DriverSmsAdapter } from './driver-channels/driver-sms.adapter';
 import { DriverVoiceCallAdapter } from './driver-channels/driver-voice-call.adapter';
 import { DockAssignmentScheduler } from './dock-assignment.scheduler';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
+  imports: [NotificationsModule],
   controllers: [DockDoorsController, GateEntriesController, YardController],
   providers: [
     DockDoorsService,

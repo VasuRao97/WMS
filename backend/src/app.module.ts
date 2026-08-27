@@ -16,6 +16,7 @@ import { DriversModule } from './drivers/drivers.module';
 import { VehicleTypesModule } from './vehicle-types/vehicle-types.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { CompaniesModule } from './companies/companies.module';
+import { InboundModule } from './inbound/inbound.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { CompaniesModule } from './companies/companies.module';
     VehicleTypesModule,
     NotificationsModule,
     CompaniesModule,
+    InboundModule,
   ],
   controllers: [AppController],
   providers: [AppService],

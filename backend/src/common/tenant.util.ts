@@ -53,6 +53,24 @@ export const GATE_YARD_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISO
 // only on the Gate page, so all four respect the same toggle).
 const GATE_YARD_ALWAYS_ALLOWED_ROLES = ['SUPER_ADMIN', 'COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'SECURITY_SUPERVISOR'];
 
+// Inbound receiving (2026-08-27) — see CLAUDE.md's "Inbound receiving"
+// section for the full design.
+//   INBOUND_ORDER_WRITE_ROLES: who can create the "order maker" (an
+//     InboundReceipt + its expected SKU/qty lines) — same tier as
+//     master-data write, since this is planning data, not floor work.
+//   INBOUND_SCAN_ROLES: who can physically scan during receiving — broad,
+//     matches the warehouse-floor roles. Deliberately excludes
+//     SECURITY_SUPERVISOR (their surface is the gate, not the dock).
+//   INBOUND_APPROVE_ROLES: who can resolve a BLOCKED scan — Supervisor and
+//     up only, deliberately excluding OPERATOR — the client's own
+//     instruction: the scanning operator can never self-approve their own
+//     blocked scan.
+export const INBOUND_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const INBOUND_ORDER_WRITE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
+export const INBOUND_SCAN_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const INBOUND_APPROVE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
+export const INBOUND_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+
 export async function assertGateAccessAllowed(prisma: { company: { findUnique: Function } }, user: any): Promise<void> {
   if (GATE_YARD_ALWAYS_ALLOWED_ROLES.includes(user.role)) return;
   if (!user.companyId) return; // SUPER_ADMIN already handled above; nothing else should reach this with no companyId

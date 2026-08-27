@@ -64,6 +64,17 @@ type GateEntry = {
   eWayBillNo?: string;
   invoiceWeightKg?: number;
   materialReceivedConfirmed: boolean;
+  // Inbound receiving itself (Dock In's physical condition/seal, order
+  // matching, scanning) now all lives on InboundOrdersPage.tsx, NOT here —
+  // the client's own call, 2026-08-27: "this cant be in the yard management
+  // page at all," since the inbound/warehouse team who does receiving is a
+  // different audience than the security/gate staff this page is for (the
+  // vehicle-ready notification already only ever targeted Supervisors/
+  // Managers, never Security Supervisor — this just makes the UI match
+  // that split). Gate & Yard only needs read-only status here, to show
+  // whether Gate Out is blocked on a still-in-progress order.
+  inboundReceiptId?: string;
+  inboundReceipt?: { referenceNo: string; status: string };
 };
 type YardSummaryRow = {
   warehouseId: string;
@@ -122,6 +133,13 @@ const PURPOSE_LABELS: Record<string, string> = {
   RETURNS: 'Returns',
 };
 
+const STATUS_LABELS_RECEIPT: Record<string, string> = {
+  PENDING: 'Pending',
+  PARTIALLY_RECEIVED: 'Partially Received',
+  RECEIVED: 'Received',
+  PUTAWAY_COMPLETE: 'Putaway Complete',
+};
+
 // What's checked at Gate In — pulled from the Vehicle/Driver record, a
 // simple "Confirmed OK" checkbox per document (unticked = Missing) rather
 // than a 3-way selector, per the client's direct confirmation.
@@ -145,7 +163,9 @@ const emptyDriverForm = { name: '', phone: '', licenseNumber: '', licenseExpiry:
 const emptyGateOutForm = { tareWeightKg: '', eWayBillNo: '', invoiceWeightKg: '', materialReceivedConfirmed: false, sealNumber: '', sealSignatureData: '' };
 // physicalConditionOk stays `null` until the guard actually picks OK/Flagged
 // — distinct from "left unset," same reasoning as the schema field itself.
-const emptyDockInForm = { physicalConditionOk: null as boolean | null, physicalConditionRemarks: '', sealNumber: '', sealSignatureData: '' };
+// No seal fields here — that was always Inbound-only, and Inbound's Dock In
+// moved to InboundOrdersPage.tsx (2026-08-27).
+const emptyDockInForm = { physicalConditionOk: null as boolean | null, physicalConditionRemarks: '' };
 
 // Simple canvas signature pad (2026-08-27) — the first signature-capture UI
 // in this codebase. No blob/asset storage exists here yet, so the captured
@@ -246,6 +266,9 @@ function GateYardPage() {
   const [gateOutForm, setGateOutForm] = useState(emptyGateOutForm);
   const [gateOutError, setGateOutError] = useState('');
 
+  // Dock In here is ONLY for Outbound/Returns now — Inbound's Dock In
+  // (physical condition + seal) moved to InboundOrdersPage.tsx, see
+  // GateEntry's comment above.
   const [dockInFor, setDockInFor] = useState<GateEntry | null>(null);
   const [dockInForm, setDockInForm] = useState(emptyDockInForm);
   const [dockInError, setDockInError] = useState('');
@@ -406,9 +429,8 @@ function GateYardPage() {
     loadTracker(); loadYardSummary(); loadHistory();
   };
 
-  // Dock In now opens a small modal instead of firing immediately — it's
-  // also where the physical condition inspection (both directions) and,
-  // for Inbound only, the seal number/signature get captured (2026-08-27).
+  // Dock In here is Outbound/Returns only now — just physical condition,
+  // no seal (that was always Inbound-only, moved to InboundOrdersPage.tsx).
   const openDockIn = (entry: GateEntry) => {
     setDockInFor(entry);
     setDockInForm(emptyDockInForm);
@@ -419,14 +441,10 @@ function GateYardPage() {
     e.preventDefault();
     if (!dockInFor) return;
     setDockInError('');
-    const body: any = {
+    const body = {
       physicalConditionOk: dockInForm.physicalConditionOk,
       physicalConditionRemarks: dockInForm.physicalConditionRemarks || undefined,
     };
-    if (dockInFor.purpose === 'INBOUND_DELIVERY') {
-      body.sealNumber = dockInForm.sealNumber || undefined;
-      body.sealSignatureData = dockInForm.sealSignatureData || undefined;
-    }
     const res = await fetch(`http://localhost:3000/gate-entries/${dockInFor.id}/dock-in`, { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify(body) });
     const data = await res.json();
     if (!res.ok) {
@@ -736,12 +754,25 @@ function GateYardPage() {
                   </div>
                 </>
               )}
-              {gateOutFor.purpose === 'INBOUND_DELIVERY' && (
+              {/* The manual checkbox is now only meaningful for an Inbound
+                  entry that was never matched to a real order (see
+                  GateEntriesService.gateOut's comment) — once a real
+                  InboundReceipt is matched, real scan-based receiving
+                  status drives this instead, so showing an unused checkbox
+                  here would be actively misleading (caught live, 2026-08-27,
+                  while verifying the receiving flow end-to-end). */}
+              {gateOutFor.purpose === 'INBOUND_DELIVERY' && !gateOutFor.inboundReceiptId && (
                 <div style={{ marginBottom: 12 }}>
                   <label>
                     <input type="checkbox" checked={gateOutForm.materialReceivedConfirmed} onChange={(e) => setGateOutForm({ ...gateOutForm, materialReceivedConfirmed: e.target.checked })} /> All material received/scanned confirmed
                   </label>
                 </div>
+              )}
+              {gateOutFor.purpose === 'INBOUND_DELIVERY' && gateOutFor.inboundReceiptId && (
+                <p style={{ color: gateOutFor.inboundReceipt?.status === 'RECEIVED' ? 'green' : 'crimson', marginBottom: 12 }}>
+                  Order {gateOutFor.inboundReceipt?.referenceNo}: {STATUS_LABELS_RECEIPT[gateOutFor.inboundReceipt?.status || ''] || gateOutFor.inboundReceipt?.status}
+                  {gateOutFor.inboundReceipt?.status === 'RECEIVED' ? ' ✓' : ' — Gate Out will be blocked until fully received.'}
+                </p>
               )}
               {gateOutError && <p style={{ color: 'crimson' }}>{gateOutError}</p>}
               <div>
@@ -753,8 +784,9 @@ function GateYardPage() {
         </div>
       )}
 
-      {/* Dock In modal — physical condition (both directions) + Inbound-only
-          seal capture (2026-08-27). */}
+      {/* Dock In modal — Outbound/Returns only now (2026-08-27). Inbound's
+          Dock In (physical condition + seal) moved to InboundOrdersPage.tsx
+          — see GateEntry's comment on why. */}
       {dockInFor && (
         <div style={overlayStyle}>
           <div style={modalStyle}>
@@ -776,14 +808,6 @@ function GateYardPage() {
                   style={{ width: '100%', marginTop: 8, boxSizing: 'border-box' }}
                 />
               </div>
-              {dockInFor.purpose === 'INBOUND_DELIVERY' && (
-                <div style={{ marginBottom: 12 }}>
-                  <p style={{ marginBottom: 4, fontWeight: 'bold' }}>Seal — checked as it arrived, before unloading</p>
-                  <input placeholder="Seal Number" value={dockInForm.sealNumber} onChange={(e) => setDockInForm({ ...dockInForm, sealNumber: e.target.value })} style={{ width: 160, marginBottom: 8, display: 'block' }} />
-                  <p style={{ margin: '0 0 4px', fontSize: 12, color: '#666' }}>Driver Signature</p>
-                  <SignaturePad value={dockInForm.sealSignatureData} onChange={(dataUrl) => setDockInForm({ ...dockInForm, sealSignatureData: dataUrl })} />
-                </div>
-              )}
               {dockInError && <p style={{ color: 'crimson' }}>{dockInError}</p>}
               <div>
                 <button type="submit">Confirm Docked In</button>
@@ -869,7 +893,13 @@ function GateYardPage() {
                   <td style={{ padding: 8 }}>{fmtHours(r.hoursInDock)}</td>
                   <td style={{ padding: 8 }}>{r.detentionCost != null ? `₹${r.detentionCost.toFixed(2)}` : '—'}</td>
                   <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
-                    {r.status === 'IN_YARD' && fullEntry && <button onClick={() => openDockIn(fullEntry)}>Mark Docked In</button>}
+                    {/* Inbound's Dock In/Match Order/Receiving all live on
+                        the Inbound Orders page now (2026-08-27) — this page
+                        only ever shows Dock In for Outbound/Returns. */}
+                    {r.status === 'IN_YARD' && fullEntry && fullEntry.purpose !== 'INBOUND_DELIVERY' && <button onClick={() => openDockIn(fullEntry)}>Mark Docked In</button>}
+                    {fullEntry?.purpose === 'INBOUND_DELIVERY' && r.status === 'IN_YARD' && (
+                      <span style={{ fontSize: 12, color: '#888' }}>See Inbound Orders</span>
+                    )}
                     {fullEntry && <button onClick={() => openGateOut(fullEntry)} style={{ marginLeft: 6 }}>Gate Out</button>}
                   </td>
                 </tr>

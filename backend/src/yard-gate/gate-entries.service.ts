@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
 import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
 import { DriverNotificationService } from './driver-notification.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 // VEHICLE_ONLY (a non-cargo visit) was considered and dropped 2026-08-25 —
 // no concrete real use case for it, easy to add back later if one shows up.
@@ -25,6 +26,22 @@ const GATE_ENTRY_INCLUDE = {
   gateOutBy: { select: { id: true, name: true } },
   dockedInBy: { select: { id: true, name: true } },
   documentChecks: true,
+  // Inbound receiving (2026-08-27) — the matched order (if any) with its
+  // expected lines, and the full scan log for this visit.
+  inboundReceipt: {
+    include: {
+      lines: { include: { sku: { select: { id: true, code: true, description: true } } } },
+      stagingLocation: { select: { id: true, code: true } },
+    },
+  },
+  inboundScans: {
+    include: {
+      sku: { select: { id: true, code: true, description: true } },
+      scannedBy: { select: { id: true, name: true } },
+      reviewedBy: { select: { id: true, name: true } },
+    },
+    orderBy: { scannedAt: 'desc' as const },
+  },
 };
 
 // Vehicle Gate In/Out log — foundation piece of Yard & Gate Management
@@ -40,6 +57,7 @@ export class GateEntriesService {
   constructor(
     private prisma: PrismaService,
     private driverNotifications: DriverNotificationService,
+    private notifications: NotificationsService,
   ) {}
 
   // Net weight is always derived (gross - tare) at read time, never stored —
@@ -233,7 +251,48 @@ export class GateEntriesService {
       return entry;
     });
 
+    // "Vehicle ready for unloading" (2026-08-27, Inbound receiving design)
+    // — fires once, right here at Gate In, only for Inbound and only when
+    // every document came back OK (the client's own trigger condition).
+    // Broadcast to every Supervisor/Manager on the warehouse, same shape
+    // DetentionAlertScheduler already uses for its own recipient lookup.
+    // Fire-and-forget in spirit (errors here shouldn't fail the Gate In
+    // itself) but awaited so a real send failure still surfaces in logs.
+    if (purpose === 'INBOUND_DELIVERY' && documentChecks.length === DOCUMENT_TYPE_VALUES.length && documentChecks.every((d) => d.status === 'OK')) {
+      await this.notifyVehicleReady(created, companyId!);
+    }
+
     return { ...this.attachNetWeight(created), yardFullWarning: yardResult.yardFullWarning };
+  }
+
+  private async notifyVehicleReady(entry: any, companyId: string) {
+    const recipients = await this.prisma.user.findMany({
+      where: {
+        companyId,
+        role: { in: ['WAREHOUSE_SUPERVISOR', 'WAREHOUSE_MANAGER'] },
+        isActive: true,
+        assignedWarehouses: { some: { id: entry.warehouseId } },
+      },
+      select: { id: true },
+    });
+    if (recipients.length === 0) return; // no one assigned to this warehouse yet — same known gap as detention alerting
+
+    const channels = await this.notifications.channelsFor(companyId);
+    const message = `Vehicle ${entry.vehicle.vehicleNumber} is parked and documents are OK — ready for unloading.`;
+    for (const recipient of recipients) {
+      for (const channel of channels) {
+        await this.notifications.sendAndLog({
+          companyId,
+          warehouseId: entry.warehouseId,
+          eventType: 'VEHICLE_READY_FOR_UNLOADING',
+          referenceType: 'VehicleGateEntry',
+          referenceId: entry.id,
+          recipientUserId: recipient.id,
+          channel,
+          message,
+        });
+      }
+    }
   }
 
   async findAll(user: any) {
@@ -380,6 +439,155 @@ export class GateEntriesService {
     return this.attachNetWeight(updated);
   }
 
+  // Inbound receiving, step 2 (2026-08-27) — the REAL, authoritative order
+  // match. Distinct from Gate In's loose free-text `referenceNo`: this is a
+  // deliberate second entry, after Dock In, that resolves against a real
+  // InboundReceipt and locks it to this gate entry. Only Inbound, only
+  // after Dock In (matches the client's described flow — the driver hands
+  // over the PO/invoice once actually at the dock), and only once per
+  // receipt (@unique on inboundReceiptId) and once per gate entry.
+  //
+  // Also where the receipt's staging location gets set (2026-08-27,
+  // correcting a real gap the client caught) — a delivery's staging spot
+  // can't be known at order-creation time, before the vehicle even exists
+  // in the system; this is the first moment staff actually knows where
+  // they're unloading it. Required here, not optional — every accepted/
+  // approved scan needs somewhere real to post its StockMovement against.
+  async matchReceipt(id: string, data: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
+    const existing = await this.assertAccess(id, user);
+    if (existing.purpose !== 'INBOUND_DELIVERY') throw new BadRequestException('Only Inbound Delivery vehicles can be matched to an order.');
+    if (!existing.dockedInAt) throw new BadRequestException('Mark this vehicle Docked In before matching it to an order.');
+    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+    if ((existing as any).inboundReceiptId) throw new BadRequestException('This vehicle is already matched to an order.');
+
+    const trimmed = data?.referenceNo != null ? String(data.referenceNo).trim() : '';
+    if (!trimmed) throw new BadRequestException('PO/Invoice number is required.');
+    const stagingLocationId = data?.stagingLocationId || undefined;
+    if (!stagingLocationId) throw new BadRequestException('A staging location is required — where is this delivery being unloaded to?');
+
+    const [receipt, stagingLocation] = await Promise.all([
+      this.prisma.inboundReceipt.findFirst({ where: { warehouseId: existing.warehouseId, referenceNo: trimmed } }),
+      this.prisma.location.findUnique({ where: { id: stagingLocationId } }),
+    ]);
+    if (!receipt) throw new BadRequestException(`No expected order found for "${trimmed}" at this warehouse.`);
+    if (receipt.status === 'RECEIVED' || receipt.status === 'PUTAWAY_COMPLETE') {
+      throw new BadRequestException('This order has already been fully received.');
+    }
+    if (!stagingLocation || stagingLocation.warehouseId !== existing.warehouseId) {
+      throw new BadRequestException('Staging location not found for this warehouse.');
+    }
+    const alreadyClaimed = await this.prisma.vehicleGateEntry.findFirst({ where: { inboundReceiptId: receipt.id } });
+    if (alreadyClaimed) throw new BadRequestException('This order has already been matched to a different vehicle.');
+
+    await this.prisma.inboundReceipt.update({ where: { id: receipt.id }, data: { stagingLocationId } });
+    const updated = await this.prisma.vehicleGateEntry.update({
+      where: { id },
+      data: { inboundReceiptId: receipt.id },
+      include: GATE_ENTRY_INCLUDE,
+    });
+    return this.attachNetWeight(updated);
+  }
+
+  // Inbound receiving, step 3 — one scan (2026-08-27). Capture is
+  // universal: every physical item scanned gets a row, regardless of
+  // whether it can be automatically interpreted. Resolution is scoped to
+  // THIS receipt's own expected lines, never company-wide barcode
+  // uniqueness (a real barcode can legitimately repeat across unrelated
+  // SKUs elsewhere — see schema.prisma's comment on SkuBarcode.
+  // storageUnitId) — a scan is unambiguous as long as at most one expected,
+  // not-yet-fully-received line on this receipt matches it.
+  async scan(id: string, barcode: any, user: any) {
+    await assertGateAccessAllowed(this.prisma, user);
+    const existing = await this.assertAccess(id, user);
+    if (!(existing as any).inboundReceiptId) throw new BadRequestException('This vehicle has not been matched to an order yet.');
+    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+
+    const trimmed = barcode != null ? String(barcode).trim() : '';
+    if (!trimmed) throw new BadRequestException('A barcode is required.');
+
+    const receiptId = (existing as any).inboundReceiptId as string;
+    const [barcodeMatches, receiptLines, receipt] = await Promise.all([
+      this.prisma.skuBarcode.findMany({ where: { barcode: trimmed, sku: { companyId: existing.warehouse.companyId } }, include: { storageUnit: true } }),
+      this.prisma.inboundReceiptLine.findMany({ where: { receiptId } }),
+      this.prisma.inboundReceipt.findUnique({ where: { id: receiptId }, select: { stagingLocationId: true } }),
+    ]);
+    // Line override first, falling back to the receipt's own staging spot
+    // set at Match Order — see schema.prisma's comment on
+    // InboundReceipt.stagingLocationId. matchReceipt() requires this to be
+    // set, so it's only ever missing here if a receipt somehow got matched
+    // before that requirement existed.
+    const receiptStagingLocationId = receipt?.stagingLocationId ?? null;
+
+    const candidates = barcodeMatches
+      .map((bc) => {
+        const line = receiptLines.find((l) => l.skuId === bc.skuId);
+        if (!line) return null;
+        const qty = bc.storageUnit ? Number(bc.storageUnit.qtyInBaseUom) : 1;
+        const remaining = Number(line.expectedQty) - Number(line.receivedQty);
+        if (qty > remaining) return null; // would exceed this line's expected qty — blocked, not auto-accepted
+        return { skuId: bc.skuId, receiptLineId: line.id, quantity: qty };
+      })
+      .filter((c): c is { skuId: string; receiptLineId: string; quantity: number } => c !== null);
+
+    if (candidates.length === 1) {
+      const c = candidates[0];
+      const scan = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.inboundReceiptScan.create({
+          data: { receiptId, gateEntryId: id, barcodeScanned: trimmed, skuId: c.skuId, receiptLineId: c.receiptLineId, quantity: c.quantity, status: 'ACCEPTED', scannedById: user.userId },
+        });
+        const line = await tx.inboundReceiptLine.update({ where: { id: c.receiptLineId }, data: { receivedQty: { increment: c.quantity } } });
+        const locationId = line.stagingLocationId ?? receiptStagingLocationId;
+        if (!locationId) throw new BadRequestException('This order has no staging location set — match it to a dock/staging spot first.');
+        await tx.stockMovement.create({
+          data: {
+            warehouseId: existing.warehouseId,
+            skuId: c.skuId,
+            locationId,
+            quantity: c.quantity,
+            movementType: 'RECEIPT',
+            referenceType: 'InboundReceiptScan',
+            referenceId: created.id,
+            createdById: user.userId,
+          },
+        });
+        await this.recomputeReceiptStatus(tx, receiptId);
+        return created;
+      });
+      return scan;
+    }
+
+    // Anything else lands here BLOCKED — wrong SKU/exceeds expected qty, a
+    // barcode this system can't interpret at all (a composite case/GS1
+    // barcode, a unique per-item serial — real parsing of those is
+    // explicitly deferred), or a genuine multi-SKU ambiguity within this
+    // one receipt (rare — collapsed into the same Supervisor-review path
+    // rather than a separate operator-side picker, a deliberate v1
+    // simplification). The operator who scanned it can never resolve their
+    // own blocked scan — only a Supervisor can, via approveScan/rejectScan
+    // in InboundReceiptsService.
+    let blockReason = 'Unrecognized barcode — not on this order.';
+    if (barcodeMatches.length > 0 && candidates.length === 0) blockReason = 'SKU not expected on this order, or already fully received.';
+    else if (candidates.length > 1) blockReason = 'Barcode matches more than one SKU on this order — needs manual resolution.';
+
+    return this.prisma.inboundReceiptScan.create({
+      data: { receiptId, gateEntryId: id, barcodeScanned: trimmed, status: 'BLOCKED', blockReason, scannedById: user.userId },
+    });
+  }
+
+  // Shared with InboundReceiptsService's approve/reject actions — kept as a
+  // small duplicated helper rather than a cross-module call, matching this
+  // codebase's "each module queries Prisma directly" convention (the one
+  // exception, NotificationsService, was made because duplicating a whole
+  // send/adapter/audit pipeline was a much bigger cost than this one query).
+  async recomputeReceiptStatus(tx: any, receiptId: string) {
+    const lines = await tx.inboundReceiptLine.findMany({ where: { receiptId } });
+    const allReceived = lines.length > 0 && lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
+    const anyReceived = lines.some((l: any) => Number(l.receivedQty) > 0);
+    const status = allReceived ? 'RECEIVED' : anyReceived ? 'PARTIALLY_RECEIVED' : 'PENDING';
+    await tx.inboundReceipt.update({ where: { id: receiptId }, data: { status } });
+  }
+
   // "Which dock does the driver go to" (2026-08-27) — a Security Supervisor
   // types in the dock number they've been told (the output of the future
   // Dock Scheduler, standing in for it manually for now — see
@@ -477,7 +685,18 @@ export class GateEntriesService {
         }
       }
     } else if (existing.purpose === 'INBOUND_DELIVERY') {
-      if (!materialReceivedConfirmed) {
+      // Real receiving replaces the manual checkbox once a receipt is
+      // actually matched (2026-08-27) — the checkbox stays as a fallback
+      // for an Inbound entry that never went through the order-maker/scan
+      // flow at all (e.g. a company not using it yet), so this doesn't
+      // regress anything for entries with no inboundReceiptId.
+      const receiptId = (existing as any).inboundReceiptId as string | null;
+      if (receiptId) {
+        const receipt = await this.prisma.inboundReceipt.findUnique({ where: { id: receiptId }, select: { status: true } });
+        if (receipt?.status !== 'RECEIVED' && receipt?.status !== 'PUTAWAY_COMPLETE') {
+          errors.push('This order has not been fully received yet — every expected SKU/quantity must be scanned (or supervisor-approved) before gate out.');
+        }
+      } else if (!materialReceivedConfirmed) {
         errors.push('Confirm that all material has been received/scanned before this vehicle can gate out.');
       }
     }

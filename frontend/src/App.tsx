@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import WarehousesPage from './WarehousesPage';
 import SkusPage from './SkusPage';
 import LoginPage from './LoginPage';
@@ -8,6 +8,7 @@ import LocationsPage from './LocationsPage';
 import GateYardPage from './GateYardPage';
 import VehicleDriverPage from './VehicleDriverPage';
 import CompanySettingsPage from './CompanySettingsPage';
+import InboundOrdersPage from './InboundOrdersPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -16,8 +17,28 @@ import CompanySettingsPage from './CompanySettingsPage';
 // manage the OPERATOR accounts under it.
 const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR'];
 
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders';
+
+// The six master-data pages, clubbed under one "Masters" dropdown for
+// simplicity (2026-08-27, the client's own call — the nav bar was getting
+// crowded as more pages got added, and these six are all the same kind of
+// thing: manage a list of master records, not a daily operational
+// workflow). Gate & Yard / Inbound Orders / Company Settings stay as
+// standalone top-level tabs, unchanged, per the client's explicit "rest you
+// can keep as it is for now."
+const MASTER_TABS: { tab: Tab; label: string }[] = [
+  { tab: 'warehouses', label: 'Warehouses' },
+  { tab: 'skus', label: 'SKUs' },
+  { tab: 'customers', label: 'Customers' },
+  { tab: 'locations', label: 'Locations' },
+  { tab: 'vehicledriver', label: 'Vehicle & Driver Master' },
+  { tab: 'users', label: 'Users' },
+];
+
 function App() {
-  const [tab, setTab] = useState<'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings'>('warehouses');
+  const [tab, setTab] = useState<Tab>('warehouses');
+  const [mastersOpen, setMastersOpen] = useState(false);
+  const mastersRef = useRef<HTMLDivElement | null>(null);
   const [user, setUser] = useState<any>(
     localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
   );
@@ -27,6 +48,17 @@ function App() {
     localStorage.removeItem('user');
     setUser(null);
   };
+
+  // Close the Masters dropdown on an outside click — plain DOM listener,
+  // no extra library, matching this codebase's "no component library"
+  // convention.
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (mastersRef.current && !mastersRef.current.contains(e.target as Node)) setMastersOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   if (!user) {
     return (
@@ -38,32 +70,44 @@ function App() {
     );
   }
 
+  const visibleMasterTabs = MASTER_TABS.filter((m) => m.tab !== 'users' || CAN_MANAGE_USERS.includes(user?.role));
+  const isMasterTabActive = visibleMasterTabs.some((m) => m.tab === tab);
+
   return (
     <div>
       <nav style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 16, borderBottom: '1px solid #ccc', fontFamily: 'sans-serif' }}>
-        <button onClick={() => setTab('warehouses')} style={{ fontWeight: tab === 'warehouses' ? 'bold' : 'normal' }}>
-          Warehouses
-        </button>
-        <button onClick={() => setTab('skus')} style={{ fontWeight: tab === 'skus' ? 'bold' : 'normal' }}>
-          SKUs
-        </button>
-        <button onClick={() => setTab('customers')} style={{ fontWeight: tab === 'customers' ? 'bold' : 'normal' }}>
-  Customers
-</button>
-        <button onClick={() => setTab('locations')} style={{ fontWeight: tab === 'locations' ? 'bold' : 'normal' }}>
-          Locations
-        </button>
+        <div ref={mastersRef} style={{ position: 'relative' }}>
+          <button onClick={() => setMastersOpen(!mastersOpen)} style={{ fontWeight: isMasterTabActive ? 'bold' : 'normal' }}>
+            Masters ▾
+          </button>
+          {mastersOpen && (
+            <div
+              style={{
+                position: 'absolute', top: '100%', left: 0, marginTop: 4, background: '#fff', border: '1px solid #ccc',
+                borderRadius: 6, boxShadow: '0 2px 8px rgba(0,0,0,0.15)', zIndex: 1000, minWidth: 200, display: 'flex', flexDirection: 'column',
+              }}
+            >
+              {visibleMasterTabs.map((m) => (
+                <button
+                  key={m.tab}
+                  onClick={() => { setTab(m.tab); setMastersOpen(false); }}
+                  style={{
+                    textAlign: 'left', padding: '8px 12px', border: 'none', background: tab === m.tab ? '#f0f0f0' : 'transparent',
+                    fontWeight: tab === m.tab ? 'bold' : 'normal', cursor: 'pointer',
+                  }}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button onClick={() => setTab('gateyard')} style={{ fontWeight: tab === 'gateyard' ? 'bold' : 'normal' }}>
           Gate &amp; Yard
         </button>
-        <button onClick={() => setTab('vehicledriver')} style={{ fontWeight: tab === 'vehicledriver' ? 'bold' : 'normal' }}>
-          Vehicle &amp; Driver Master
+        <button onClick={() => setTab('inboundorders')} style={{ fontWeight: tab === 'inboundorders' ? 'bold' : 'normal' }}>
+          Inbound Orders
         </button>
-        {CAN_MANAGE_USERS.includes(user?.role) && (
-          <button onClick={() => setTab('users')} style={{ fontWeight: tab === 'users' ? 'bold' : 'normal' }}>
-            Users
-          </button>
-        )}
         {user?.role === 'COMPANY_ADMIN' && (
           <button onClick={() => setTab('companysettings')} style={{ fontWeight: tab === 'companysettings' ? 'bold' : 'normal' }}>
             Company Settings
@@ -88,6 +132,8 @@ function App() {
         <VehicleDriverPage />
       ) : tab === 'companysettings' ? (
         <CompanySettingsPage />
+      ) : tab === 'inboundorders' ? (
+        <InboundOrdersPage />
       ) : (
         <UsersPage />
       )}

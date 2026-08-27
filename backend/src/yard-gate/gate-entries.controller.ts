@@ -6,7 +6,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { GATE_YARD_OPERATE_ROLES, GATE_YARD_READ_ROLES } from '../common/tenant.util';
+import { GATE_YARD_OPERATE_ROLES, GATE_YARD_READ_ROLES, INBOUND_SCAN_ROLES } from '../common/tenant.util';
 
 @Controller('gate-entries')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -72,5 +72,20 @@ export class GateEntriesController {
   @Roles(...GATE_YARD_OPERATE_ROLES)
   assignDock(@Param('id') id: string, @Body() body: { dockNumber: string }, @CurrentUser() user: any) {
     return this.gateEntriesService.assignDock(id, body?.dockNumber, user);
+  }
+
+  // Inbound receiving (2026-08-27) — see GateEntriesService.matchReceipt/
+  // scan's comments. Gated INBOUND_SCAN_ROLES (broader than the order-maker
+  // itself, since physically scanning is floor work, not planning work).
+  @Patch(':id/match-receipt')
+  @Roles(...INBOUND_SCAN_ROLES)
+  matchReceipt(@Param('id') id: string, @Body() body: { referenceNo: string; stagingLocationId: string }, @CurrentUser() user: any) {
+    return this.gateEntriesService.matchReceipt(id, body, user);
+  }
+
+  @Post(':id/scan')
+  @Roles(...INBOUND_SCAN_ROLES)
+  scan(@Param('id') id: string, @Body() body: { barcode: string }, @CurrentUser() user: any) {
+    return this.gateEntriesService.scan(id, body?.barcode, user);
   }
 }
