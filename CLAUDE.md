@@ -1828,6 +1828,40 @@ barcode, which correctly BLOCKED (12-unit case exceeding this order's 5 remainin
 Supervisor override controls rendering inline exactly as before the move — confirming the
 relocation didn't regress any of the underlying logic, only where it lives.
 
+### "Complete Inward Process" — a deliberate close-out before Gate Out (2026-08-27, next session)
+A real gap the client caught testing the whole flow themselves: once a matched order reached
+`RECEIVED`, Gate Out auto-unlocked with no explicit sign-off — no chance to flag anything, no
+audit trail of who actually closed out the delivery. Client's ask: a real button, enabled only
+once fully received, with an optional remarks field, and Gate Out should require THAT action, not
+just the receipt's own status.
+
+**Schema**: `VehicleGateEntry.inwardCompletedAt`/`inwardCompletedById`/`inwardCompletionRemarks`
+(all nullable) — a deliberate human action, distinct from `InboundReceipt.status` reaching
+`RECEIVED`, same "a status fact isn't the same as a human sign-off" reasoning as everywhere else
+timestamps + a `By` field pair up in this codebase.
+
+**Backend**: `GateEntriesService.completeInward()` (`PATCH /gate-entries/:id/complete-inward`,
+gated `INBOUND_APPROVE_ROLES` — same Supervisor-and-up tier as approving a blocked scan, not the
+broader scanning roles) — requires Inbound purpose, a matched receipt, that receipt to actually be
+`RECEIVED`/`PUTAWAY_COMPLETE`, and refuses a second completion. `gateOut()`'s Inbound branch now
+checks `inwardCompletedAt` instead of receipt status directly — the fallback path (an entry never
+matched to a real order) is untouched, so nothing regresses for a company not using this flow.
+
+**Frontend**: a "Complete Inward Process" section appears in the Receiving modal
+(`InboundOrdersPage.tsx`) once the order is fully received — a remarks textarea + button before
+completion, a green confirmation line (who/when/remarks) after. The "Vehicles Ready for Receiving"
+queue's status/action reflect it too (`Order X — Inward Completed ✓` / action becomes "View").
+Gate & Yard's Gate Out banner (read-only there) now keys off `inwardCompletedAt`, not receipt
+status, with updated messaging pointing back to Inbound Orders.
+
+Verified via a throwaway-company API script, 10/10 — including the one case that actually matters:
+Gate Out staying blocked even after the receipt reached `RECEIVED`, until `completeInward()` was
+called; a completed entry correctly refusing a second completion; Gate Out only succeeding after.
+Then re-verified live through the real UI end to end: opened Receiving on an already-`RECEIVED`
+order, submitted real remarks through the actual form, confirmed the green completion line and the
+queue's status/action both updated correctly, confirmed Gate & Yard's banner flipped to "Inward
+process completed ✓," and completed a real Gate Out afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
