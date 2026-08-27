@@ -123,11 +123,23 @@ model Company {
   selfCheckInRequests  SelfCheckInRequest[]
 
   // Whether this company's ERP can push Inbound orders directly into this
-  // system (2026-08-27) — schema-ready toggle only; the manual order maker
-  // is what's actually built this pass, ERP push is a later pass reusing
-  // the same underlying creation logic with a company API key instead of a
-  // JWT and SKU/Warehouse resolved by erpCode instead of an internal pick.
+  // system (2026-08-27) — real, working now, not just a toggle: see
+  // ErpInboundController/InboundReceiptsService.erpPush(). SKU/Warehouse
+  // are resolved by their normal internal Code (not `erpCode` — that field
+  // exists on Sku/Warehouse but is completely unwired anywhere yet, no
+  // form sets it; using it here would just be a second unpopulated
+  // dependency. Revisit once erpCode actually gets wired up somewhere).
   allowErpInboundPush Boolean @default(false)
+  // The API key an ERP integration sends in the `X-Api-Key` header to
+  // authenticate a push — this is OUR secret, issued TO an external
+  // caller, the opposite direction from a third-party provider key (which
+  // this codebase deliberately keeps out of the DB, see NotificationsModule's
+  // comment). Nullable until a COMPANY_ADMIN generates one from Company
+  // Settings; a push is rejected if unset even with allowErpInboundPush on.
+  // Stored as plain text for now (no encryption-at-rest in this project
+  // yet, same caveat as everywhere else secrets are mentioned) — a known,
+  // flagged simplification, not an oversight.
+  erpApiKey String? @unique
 }
 
 enum GatePassResetPeriod {
@@ -1316,19 +1328,33 @@ model InboundReceipt {
   referenceNo  String // e.g. supplier ASN / PO number
   supplierName String?
   status       ReceiptStatus @default(PENDING)
-  createdById  String
-  createdBy    User          @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
+  // Nullable (2026-08-27, ERP push follow-up) — was required until an ERP
+  // push needed to create a real order with no human on the other end.
+  // Null is the signal "this came from ERP, not a person" — see
+  // createdViaErpPush below for the same fact made explicit/queryable.
+  createdById  String?
+  createdBy    User?         @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
   createdAt    DateTime      @default(now())
+  // True only for an order created via ErpInboundController's push
+  // endpoint (2026-08-27) — lets the frontend show "ERP" instead of a
+  // blank creator name, and is the more explicit/queryable twin of
+  // `createdById` being null (which also means the same thing, but null
+  // alone reads ambiguously — "unknown" vs. "genuinely no human").
+  createdViaErpPush Boolean @default(false)
 
   // The one registered Vehicle this order is expected to arrive on
   // (2026-08-27, Inbound deep-dive follow-up) — required by the service
-  // layer on every NEW order (both the manual maker and Excel import), same
+  // layer on every order created MANUALLY or via Excel import, same
   // "no DB constraint layer for business rules" convention as everywhere
   // else in this codebase (see CLAUDE.md's note on the missing DTO/
-  // class-validator layer). Nullable here only so the handful of pre-
-  // existing throwaway-company receipts created before this field existed
-  // don't break — never left null by either creation path going forward.
-  // Enforces a real 1:1 mapping: GateEntriesService.matchReceipt() no
+  // class-validator layer). Nullable here for two reasons: a handful of
+  // pre-existing throwaway-company receipts created before this field
+  // existed, and — a real, ongoing case, not just legacy data — an
+  // ERP-pushed order (2026-08-27 follow-up), which by design never knows
+  // vehicle details (that's a WMS-only concern, the client's own framing)
+  // and is completed later via InboundReceiptsService.assignVehicle() once
+  // staff actually know which truck it's coming on. Enforces a real 1:1
+  // mapping once set: GateEntriesService.matchReceipt() no
   // longer takes a typed PO/Invoice number at all — it looks up the one
   // InboundReceipt for the gate entry's own vehicle that has no gateEntry
   // yet. InboundReceiptsService's create()/bulkImport() block creating a

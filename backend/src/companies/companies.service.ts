@@ -1,14 +1,15 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
 // The first Company-settings surface this project has ever had (2026-08-27)
 // — every other per-company toggle (E-Way Bill requirement, yard-full
 // blocking, gate pass reset period, security-supervisor-only gate access)
-// still has no endpoint/UI at all, only this module's two detention-related
-// fields do. Deliberately scoped narrow rather than building a
-// do-everything Company Settings page in one shot — extend this same
-// module when those other toggles get their own UI, don't build a second
-// place for it.
+// still has no endpoint/UI at all; only detention and (2026-08-27, ERP
+// push) the ERP toggle/API key do. Deliberately scoped narrow rather than
+// building a do-everything Company Settings page in one shot — extend this
+// same module when those other toggles get their own UI, don't build a
+// second place for it.
 @Injectable()
 export class CompaniesService {
   constructor(private prisma: PrismaService) {}
@@ -31,6 +32,8 @@ export class CompaniesService {
         detentionFreeHours: true,
         detentionAlertHours: true,
         detentionEscalationHours: true,
+        allowErpInboundPush: true,
+        erpApiKey: true,
       },
     });
   }
@@ -68,6 +71,9 @@ export class CompaniesService {
         detentionFreeHours: data.detentionFreeHours === undefined ? undefined : data.detentionFreeHours === null || data.detentionFreeHours === '' ? null : Number(data.detentionFreeHours),
         detentionAlertHours: data.detentionAlertHours === undefined ? undefined : data.detentionAlertHours === null || data.detentionAlertHours === '' ? null : Number(data.detentionAlertHours),
         detentionEscalationHours: data.detentionEscalationHours === undefined ? undefined : data.detentionEscalationHours === null || data.detentionEscalationHours === '' ? null : Number(data.detentionEscalationHours),
+        // 2026-08-27, ERP push — a plain boolean toggle, same "omitted
+        // means unchanged" convention as everything else here.
+        allowErpInboundPush: data.allowErpInboundPush === undefined ? undefined : !!data.allowErpInboundPush,
       },
       select: {
         id: true,
@@ -76,7 +82,26 @@ export class CompaniesService {
         detentionFreeHours: true,
         detentionAlertHours: true,
         detentionEscalationHours: true,
+        allowErpInboundPush: true,
+        erpApiKey: true,
       },
+    });
+  }
+
+  // Generates a brand-new key, overwriting any existing one (2026-08-27,
+  // ERP push) — deliberately no "reveal old key" path, matching how an API
+  // key is normally handled elsewhere (you regenerate, you don't recover).
+  // Plain random hex, stored as plain text (no encryption-at-rest in this
+  // project yet, same flagged simplification as schema.prisma's comment on
+  // Company.erpApiKey) — a COMPANY_ADMIN needs to actually read this value
+  // back out to configure their ERP with it, so it isn't hashed/masked.
+  async regenerateErpApiKey(user: any) {
+    const companyId = this.requireCompany(user);
+    const erpApiKey = randomBytes(24).toString('hex');
+    return this.prisma.company.update({
+      where: { id: companyId },
+      data: { erpApiKey },
+      select: { id: true, erpApiKey: true },
     });
   }
 }

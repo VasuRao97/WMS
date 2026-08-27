@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 
 // The first Company Settings page this project has ever had (2026-08-27) —
-// scoped narrow to just the two detention-related settings for now, per
-// backend/src/companies/'s own comment. Every other per-company toggle
-// (E-Way Bill requirement, yard-full blocking, gate pass reset period,
+// started scoped narrow to just detention settings, per
+// backend/src/companies/'s own comment, then grew an "ERP Integration"
+// section the same day (ERP push). Every other per-company toggle (E-Way
+// Bill requirement, yard-full blocking, gate pass reset period,
 // security-supervisor-only gate access) still has no UI at all — extend
 // this same page for those later rather than building a second settings
 // surface.
@@ -26,6 +27,8 @@ type Settings = {
   detentionFreeHours?: number | null;
   detentionAlertHours?: number | null;
   detentionEscalationHours?: number | null;
+  allowErpInboundPush?: boolean;
+  erpApiKey?: string | null;
 };
 
 function CompanySettingsPage() {
@@ -34,8 +37,11 @@ function CompanySettingsPage() {
   const [detentionFreeHours, setDetentionFreeHours] = useState('');
   const [detentionAlertHours, setDetentionAlertHours] = useState('');
   const [detentionEscalationHours, setDetentionEscalationHours] = useState('');
+  const [allowErpInboundPush, setAllowErpInboundPush] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
+  const [keyError, setKeyError] = useState('');
+  const [regenerating, setRegenerating] = useState(false);
 
   const load = () => {
     fetch('http://localhost:3000/companies/settings', { headers: authHeaders() })
@@ -50,6 +56,7 @@ function CompanySettingsPage() {
         setDetentionFreeHours(data.detentionFreeHours != null ? String(data.detentionFreeHours) : '');
         setDetentionAlertHours(data.detentionAlertHours != null ? String(data.detentionAlertHours) : '');
         setDetentionEscalationHours(data.detentionEscalationHours != null ? String(data.detentionEscalationHours) : '');
+        setAllowErpInboundPush(!!data.allowErpInboundPush);
       });
   };
 
@@ -71,6 +78,7 @@ function CompanySettingsPage() {
         detentionFreeHours: detentionFreeHours === '' ? null : detentionFreeHours,
         detentionAlertHours: detentionAlertHours === '' ? null : detentionAlertHours,
         detentionEscalationHours: detentionEscalationHours === '' ? null : detentionEscalationHours,
+        allowErpInboundPush,
       }),
     });
     const data = await res.json();
@@ -80,6 +88,25 @@ function CompanySettingsPage() {
     }
     setSettings(data);
     setSaved(true);
+  };
+
+  // Regenerating is a separate action/endpoint from Save Settings
+  // (2026-08-27, ERP push) — a new key is a real, deliberate act, not
+  // something that should happen as a side effect of an unrelated form
+  // save. Overwrites any existing key immediately, no "reveal old key"
+  // path — same as any other API key regeneration flow.
+  const handleRegenerateKey = async () => {
+    if (settings?.erpApiKey && !confirm('This replaces the current key immediately — anything using the old one will stop working. Continue?')) return;
+    setKeyError('');
+    setRegenerating(true);
+    const res = await fetch('http://localhost:3000/companies/settings/erp-api-key/regenerate', { method: 'PATCH', headers: authHeaders() });
+    const data = await res.json();
+    setRegenerating(false);
+    if (!res.ok) {
+      setKeyError(errorText(data, 'Could not generate a key.'));
+      return;
+    }
+    setSettings((s) => (s ? { ...s, erpApiKey: data.erpApiKey } : s));
   };
 
   if (!settings) return <div style={{ maxWidth: 600, margin: '40px auto', fontFamily: 'sans-serif' }}>Loading...</div>;
@@ -115,10 +142,39 @@ function CompanySettingsPage() {
             <input value={detentionEscalationHours} onChange={(e) => setDetentionEscalationHours(e.target.value)} placeholder="e.g. 8" style={{ width: 200, padding: 6 }} />
           </div>
 
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 'bold' }}>
+              <input type="checkbox" checked={allowErpInboundPush} onChange={(e) => setAllowErpInboundPush(e.target.checked)} />
+              Allow ERP to push Inbound orders
+            </label>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: '#888' }}>
+              A valid API key is still checked on every push even with this on — turning it off blocks pushes
+              immediately without needing to touch the key itself.
+            </p>
+          </div>
+
           {error && <p style={{ color: 'crimson' }}>{error}</p>}
           {saved && <p style={{ color: 'green' }}>Saved.</p>}
           <button type="submit">Save Settings</button>
         </form>
+      </div>
+
+      <div style={{ marginTop: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+        <h3 style={{ marginTop: 0 }}>ERP Integration</h3>
+        <p style={{ marginTop: -4, marginBottom: 16, fontSize: 13, color: '#888' }}>
+          Your ERP (or whatever system pushes Inbound orders) authenticates with this key in an{' '}
+          <code>X-Api-Key</code> header against <code>POST /erp/inbound-receipts</code>. Orders are matched by
+          Warehouse Code and SKU Code — the same codes used everywhere else in this system.
+        </p>
+        {settings.erpApiKey ? (
+          <p style={{ fontFamily: 'monospace', background: '#f5f5f5', padding: 8, borderRadius: 4, wordBreak: 'break-all' }}>{settings.erpApiKey}</p>
+        ) : (
+          <p style={{ color: '#888' }}>No key generated yet.</p>
+        )}
+        {keyError && <p style={{ color: 'crimson' }}>{keyError}</p>}
+        <button type="button" onClick={handleRegenerateKey} disabled={regenerating}>
+          {regenerating ? 'Generating...' : settings.erpApiKey ? 'Regenerate Key' : 'Generate Key'}
+        </button>
       </div>
     </div>
   );

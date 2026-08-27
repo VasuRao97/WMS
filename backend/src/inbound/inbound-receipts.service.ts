@@ -32,10 +32,16 @@ const SCAN_INCLUDE = {
 // (the scan itself is created by GateEntriesService.scan(), tied to the
 // gate-entry "session" it happens during — this service only handles what
 // comes before scanning starts and what resolves a scan afterward).
-// ERP push (Company.allowErpInboundPush) is NOT built yet — this is the
-// manual path only, per the client's own build-order call (manual first,
-// ERP push reuses this same create() logic later with a company API key
-// and erpCode-based SKU/warehouse resolution instead).
+// ERP push (2026-08-27, ErpInboundController + erpPush() below) is a real
+// third creation path alongside this and Excel import — same
+// prepareReceipt()/validateLines() underneath, just authenticated by a
+// per-company API key (ApiKeyGuard) instead of a JWT user, and resolved by
+// SKU/Warehouse's normal internal Code (erpCode exists on those models but
+// is completely unwired anywhere yet — no form sets it, so using it here
+// would just be a second unpopulated dependency). Deliberately does NOT
+// require a Vehicle — the client's own framing: "ERP will never know
+// about vehicle type etc, its completely a WMS thing" — see
+// assignVehicle() below for how a vehicle gets attached later.
 @Injectable()
 export class InboundReceiptsService {
   constructor(private prisma: PrismaService) {}
@@ -133,9 +139,14 @@ export class InboundReceiptsService {
   // company-wide, not per-warehouse: a vehicle can only physically be in
   // one place at a time, so a second open order for it at a DIFFERENT
   // warehouse is exactly as invalid as one at the same warehouse.
-  private async resolveVehicleForReceipt(vehicleId: any, user: any, errors: string[]): Promise<string | undefined> {
+  private async resolveVehicleForReceipt(vehicleId: any, user: any, errors: string[], requireVehicle = true): Promise<string | undefined> {
     if (!vehicleId) {
-      errors.push('Vehicle is required.');
+      // requireVehicle: false (2026-08-27, ERP push follow-up) — an
+      // ERP-pushed order legitimately has no vehicle yet, by design: "ERP
+      // will never know about vehicle type etc, its completely a WMS
+      // thing" (the client's own framing). Manual create() and bulkImport()
+      // both still call this with the default true, unchanged.
+      if (requireVehicle) errors.push('Vehicle is required.');
       return undefined;
     }
     const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
@@ -177,7 +188,7 @@ export class InboundReceiptsService {
   // SkusService.validateSkuData, so the two paths can't drift apart. Returns
   // errors instead of throwing so a batch import can report per-row results
   // rather than failing the whole file on the first bad order.
-  private async prepareReceipt(data: any, user: any, errors: string[]) {
+  private async prepareReceipt(data: any, user: any, errors: string[], requireVehicle = true) {
     const warehouseId = data.warehouseId;
     if (!warehouseId) errors.push('Warehouse is required.');
     else await this.assertWarehouseAccess(warehouseId, user, errors);
@@ -189,7 +200,7 @@ export class InboundReceiptsService {
       if (existing) errors.push(`An order with reference "${referenceNo}" already exists for this warehouse.`);
     }
 
-    const vehicleId = await this.resolveVehicleForReceipt(data.vehicleId, user, errors);
+    const vehicleId = await this.resolveVehicleForReceipt(data.vehicleId, user, errors, requireVehicle);
 
     const lines = warehouseId ? await this.validateLines(warehouseId, data.lines, errors) : [];
 
@@ -286,6 +297,81 @@ export class InboundReceiptsService {
     }
 
     return { totalOrders: rows.length, successCount, failCount: rows.length - successCount, results };
+  }
+
+  // ERP push (2026-08-27) — see this class's own comment above. One order
+  // per call (unlike bulkImport's many-rows-per-file shape — a REST push
+  // is naturally one resource per request, not a spreadsheet). Reuses
+  // prepareReceipt() with requireVehicle: false via a synthetic
+  // "user"-shaped object standing in for the missing human — role
+  // COMPANY_ADMIN specifically so assertWarehouseAccess/
+  // resolveVehicleForReceipt's INBOUND_SCOPED_ROLES branch never triggers
+  // (an ERP push is company-wide, not scoped to one Manager's assigned
+  // warehouses — there's no Manager here at all). Throws a normal
+  // BadRequestException with the same error array shape as create() — a
+  // machine caller gets one clear pass/fail per call, not a results array.
+  async erpPush(data: any, companyId: string) {
+    const pseudoUser = { companyId, role: 'COMPANY_ADMIN', userId: undefined };
+    const errors: string[] = [];
+    const warehouseId = await this.resolveWarehouseCodeToId(data.warehouseCode, pseudoUser, errors);
+
+    const skuLines: { skuId: string; expectedQty: number }[] = [];
+    if (warehouseId) {
+      for (const [i, line] of (data.lines || []).entries()) {
+        const skuId = await this.resolveSkuCodeToId(line.skuCode, pseudoUser, errors);
+        const expectedQty = Number(line.expectedQty);
+        if (!Number.isFinite(expectedQty) || expectedQty <= 0) {
+          errors.push(`Line ${i + 1} (${line.skuCode || '?'}): Expected Quantity must be a positive number.`);
+          continue;
+        }
+        if (skuId) skuLines.push({ skuId, expectedQty });
+      }
+    }
+    if (skuLines.length === 0 && errors.length === 0) errors.push('At least one SKU line is required.');
+
+    const prepared = warehouseId
+      ? await this.prepareReceipt({ warehouseId, referenceNo: data.referenceNo, supplierName: data.supplierName, lines: skuLines }, pseudoUser, errors, false)
+      : null;
+    if (errors.length > 0) throw new BadRequestException(errors);
+
+    return this.prisma.inboundReceipt.create({
+      data: {
+        warehouse: { connect: { id: prepared!.warehouseId } },
+        referenceNo: prepared!.referenceNo,
+        supplierName: prepared!.supplierName,
+        createdViaErpPush: true,
+        lines: { create: prepared!.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty })) },
+      },
+      include: RECEIPT_INCLUDE,
+    });
+  }
+
+  // Completes an order that was created without a Vehicle — today that's
+  // only ever an ERP-pushed one (create()/bulkImport() both still require
+  // one up front), but this doesn't assume that; it just requires the
+  // order to not already have one. Runs the exact same
+  // resolveVehicleForReceipt() check as creation (exists, company-owned,
+  // no other open order) — the 1:1 mapping is enforced identically
+  // whenever a vehicle actually gets attached, not just at creation time.
+  async assignVehicle(id: string, vehicleId: any, user: any) {
+    const receipt = await this.prisma.inboundReceipt.findUnique({ where: { id }, include: { warehouse: { select: { companyId: true } } } });
+    if (!receipt) throw new NotFoundException('Order not found.');
+    if (user.role !== 'SUPER_ADMIN' && receipt.warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this order.');
+    if (INBOUND_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(receipt.warehouseId)) throw new ForbiddenException('You do not have access to this order.');
+    }
+    if (receipt.vehicleId) throw new BadRequestException('This order already has a vehicle assigned.');
+
+    const errors: string[] = [];
+    const resolvedVehicleId = await this.resolveVehicleForReceipt(vehicleId, user, errors, true);
+    if (errors.length > 0) throw new BadRequestException(errors);
+
+    return this.prisma.inboundReceipt.update({
+      where: { id },
+      data: { vehicle: { connect: { id: resolvedVehicleId! } } },
+      include: RECEIPT_INCLUDE,
+    });
   }
 
   async findAll(user: any) {

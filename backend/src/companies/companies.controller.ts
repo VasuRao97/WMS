@@ -26,4 +26,10 @@ export class CompaniesController {
   updateSettings(@Body() body: any, @CurrentUser() user: any) {
     return this.companiesService.updateSettings(body, user);
   }
+
+  @Patch('settings/erp-api-key/regenerate')
+  @Roles('COMPANY_ADMIN')
+  regenerateErpApiKey(@CurrentUser() user: any) {
+    return this.companiesService.regenerateErpApiKey(user);
+  }
 }

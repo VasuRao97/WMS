@@ -21,12 +21,23 @@ export class InboundReceiptsController {
     return this.inboundReceiptsService.create(body, user);
   }
 
-  // Excel bulk import (2026-08-27, Inbound deep-dive conversation) — an
-  // alternative to the still-unbuilt ERP push, per the client's own
-  // framing. One file can create MULTIPLE orders: rows are grouped by
-  // (Warehouse Code, Reference No) — same repeated-key grouping pattern as
-  // Warehouse Storage Types/Customer Ship-tos — each distinct group
-  // becoming its own order with its SKU lines.
+  // Completes an order created with no Vehicle (an ERP-pushed one, today —
+  // see InboundReceiptsService.assignVehicle()'s own comment). Same role
+  // gate as create() — this is staff editing WMS-side data, not the ERP
+  // calling back in (that's ErpInboundController, a completely separate
+  // API-key-guarded controller).
+  @Patch(':id/assign-vehicle')
+  @Roles(...INBOUND_ORDER_WRITE_ROLES)
+  assignVehicle(@Param('id') id: string, @Body('vehicleId') vehicleId: string, @CurrentUser() user: any) {
+    return this.inboundReceiptsService.assignVehicle(id, vehicleId, user);
+  }
+
+  // Excel bulk import (2026-08-27, Inbound deep-dive conversation) — a
+  // second alternative to the manual order maker, alongside ERP push
+  // (ErpInboundController). One file can create MULTIPLE orders: rows are
+  // grouped by (Warehouse Code, Reference No) — same repeated-key grouping
+  // pattern as Warehouse Storage Types/Customer Ship-tos — each distinct
+  // group becoming its own order with its SKU lines.
   @Post('import')
   @Roles(...INBOUND_ORDER_WRITE_ROLES)
   @UseInterceptors(FileInterceptor('file'))

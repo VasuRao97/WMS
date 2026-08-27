@@ -26,6 +26,10 @@ type Receipt = {
   // follow-up) — required on every order now, distinct from gateEntry.
   // vehicle below (whichever real gate visit ended up matched).
   vehicle?: Vehicle;
+  // True only for an order created via the ERP push endpoint (2026-08-27)
+  // — shown as a small badge so staff can tell at a glance why an order
+  // has no vehicle yet (it's not a mistake, it's the ERP's own design).
+  createdViaErpPush?: boolean;
   status: 'PENDING' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'PUTAWAY_COMPLETE';
   stagingLocation?: Location;
   createdBy?: { name: string };
@@ -173,6 +177,9 @@ function InboundOrdersPage() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [dockDoors, setDockDoors] = useState<DockDoor[]>([]);
+  // Per-row typed text for the "Assign Vehicle" action on a vehicle-less
+  // (ERP-pushed) order in the All Orders table — 2026-08-27, ERP push.
+  const [assignVehicleInputs, setAssignVehicleInputs] = useState<Record<string, string>>({});
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [gateEntries, setGateEntries] = useState<GateEntry[]>([]);
 
@@ -421,12 +428,51 @@ function InboundOrdersPage() {
     await refreshReceiving();
   };
 
+  // Completes an order that has no vehicle yet — today that's only ever an
+  // ERP-pushed one (2026-08-27, ERP push follow-up): the manual form and
+  // Excel import both still require a vehicle up front, but "ERP will
+  // never know about vehicle type etc, its completely a WMS thing" (the
+  // client's own framing), so this is where staff finish the order once
+  // they actually know which truck it's coming on. Same
+  // <input list>+<datalist> text-match pattern as the New Order form's own
+  // vehicle picker.
+  const handleAssignVehicleTextChange = (receiptId: string, text: string) => {
+    setAssignVehicleInputs({ ...assignVehicleInputs, [receiptId]: text });
+  };
+  const handleAssignVehicle = async (receiptId: string) => {
+    const text = assignVehicleInputs[receiptId] || '';
+    const match = vehicles.find((v) => v.vehicleNumber === text);
+    if (!match) {
+      alert('Type or pick a registered vehicle number first.');
+      return;
+    }
+    const res = await fetch(`http://localhost:3000/inbound-receipts/${receiptId}/assign-vehicle`, {
+      method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ vehicleId: match.id }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(errorText(data, 'Could not assign this vehicle.'));
+      return;
+    }
+    setAssignVehicleInputs({ ...assignVehicleInputs, [receiptId]: '' });
+    load();
+  };
+
   return (
     <div style={{ maxWidth: 1100, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1 style={{ textAlign: 'center' }}>Inbound Orders</h1>
       <p style={{ textAlign: 'center', color: '#666', marginTop: -8 }}>
         Create the expected SKU/quantity plan for an incoming delivery, then receive it once the vehicle's actually here.
       </p>
+      {/* Always mounted (unlike the New Order form's own vehicle-options
+          datalist, which only exists in the DOM while that form is open) —
+          the "Assign Vehicle" action in the All Orders table below needs
+          this available regardless of the form's collapsed state. */}
+      <datalist id="assign-vehicle-options">
+        {vehicles.map((v) => (
+          <option key={v.id} value={v.vehicleNumber} />
+        ))}
+      </datalist>
 
       <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <button type="button" onClick={() => (showForm ? resetForm() : setShowForm(true))}>
@@ -841,8 +887,24 @@ function InboundOrdersPage() {
                 <td style={{ padding: 8 }}>{r.supplierName || '—'}</td>
                 <td style={{ padding: 8 }}>{r.lines.length} SKU{r.lines.length !== 1 ? 's' : ''} ({totalReceived}/{totalExpected})</td>
                 <td style={{ padding: 8 }}>{STATUS_LABELS[r.status] || r.status}</td>
-                <td style={{ padding: 8 }}>{r.vehicle?.vehicleNumber || r.gateEntry?.vehicle.vehicleNumber || '—'}</td>
-                <td style={{ padding: 8 }}>{new Date(r.createdAt).toLocaleDateString()}</td>
+                <td style={{ padding: 8 }}>
+                  {r.vehicle?.vehicleNumber || r.gateEntry?.vehicle.vehicleNumber || (
+                    <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
+                      <input
+                        list="assign-vehicle-options"
+                        placeholder="Vehicle #"
+                        value={assignVehicleInputs[r.id] || ''}
+                        onChange={(e) => handleAssignVehicleTextChange(r.id, e.target.value)}
+                        style={{ width: 100 }}
+                      />
+                      <button onClick={() => handleAssignVehicle(r.id)}>Assign</button>
+                    </div>
+                  )}
+                </td>
+                <td style={{ padding: 8 }}>
+                  {new Date(r.createdAt).toLocaleDateString()}
+                  {r.createdViaErpPush && <div style={{ fontSize: 11, color: '#888' }}>via ERP</div>}
+                </td>
               </tr>
             );
           })}

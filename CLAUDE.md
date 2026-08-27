@@ -2077,6 +2077,80 @@ watched Dock In succeed; opened Match Order and confirmed — via the actual ren
 live DOM value, not just displayed text — that the staging dropdown was genuinely pre-selected to
 the dock's real default Location.
 
+### ERP push (2026-08-27, same session, next day's follow-up)
+A real, working third creation path for Inbound orders, alongside the manual order maker and Excel
+import. Design conversation first: the client pointed out there's no actual ERP connected today,
+so building a specific integration would be premature — same reasoning already applied to the
+still-unchosen SMS/WhatsApp notification providers. The resolution, though, is different from that
+case: unlike a notification provider (a third party this system would need to call OUT to, whose
+API this system doesn't control), an ERP push is the *reverse* direction — this system exposes its
+own stable, generic ingestion contract, and whichever ERP eventually calls it just needs an
+adapter on their own side. That's genuinely buildable with zero ERP chosen, so it was built now.
+
+**The real design snag, worked through in conversation**: this session's earlier 1:1 vehicle↔order
+mapping made Vehicle required at creation — but the client's own framing killed extending that
+requirement to ERP push: "ERP will never know about vehicle type etc, its completely a WMS thing."
+So `InboundReceipt.vehicleId` stays required for `create()`/`bulkImport()` (unchanged, the earlier
+decision), but is explicitly optional for ERP push — `resolveVehicleForReceipt()` gained a
+`requireVehicle` flag threaded through `prepareReceipt()`. A brand-new
+`InboundReceiptsService.assignVehicle()` (`PATCH /inbound-receipts/:id/assign-vehicle`) is where an
+ERP-pushed, vehicle-less order gets completed later, in WMS, once staff actually know which truck
+it's coming on — running the exact same exists/company-owned/no-other-open-order check
+`resolveVehicleForReceipt()` already runs at creation, just deferred to whenever a vehicle is
+actually attached rather than requiring it up front.
+
+**Resolution is by Warehouse/SKU's own internal Code, not `erpCode`** — a real gap found checking:
+`erpCode` fields exist on `Sku`/`Warehouse` as schema-only landing spots (per the "ERP integration
+hook" note) but are **completely unwired** anywhere — no form sets them, and even the backend only
+ever accepted `erpCode` for `Customer`, never Sku/Warehouse. Using `erpCode` here would just be a
+second unpopulated dependency stacked on the first; the same `resolveWarehouseCodeToId`/
+`resolveSkuCodeToId` helpers Excel import already uses were reused unchanged instead — identical
+resolution mechanism, already proven. `erpCode` support can be layered in later, as a fast-follow,
+once something actually populates it.
+
+**Auth is a new, parallel mechanism** — an ERP push has no logged-in human, so JWT/`RolesGuard`
+don't apply. `Company.erpApiKey` (a plain random hex string, `@unique`, nullable until a
+`COMPANY_ADMIN` generates one) is OUR secret, issued TO an external caller — the opposite direction
+from a third-party provider key, which this codebase deliberately keeps out of the DB (see
+`NotificationsModule`'s comment); stored as plain text for now, a known, flagged simplification (no
+encryption-at-rest anywhere in this project yet). New `common/api-key.guard.ts` (`ApiKeyGuard`)
+checks the `X-Api-Key` header against it, also rejecting a valid key if `Company.
+allowErpInboundPush` is off, and attaches `request.company` (read via the new
+`common/current-company.decorator.ts`'s `CurrentCompany`, the API-key-authenticated twin of
+`CurrentUser`). New `ErpInboundController` (`POST /erp/inbound-receipts`) is a genuinely separate
+controller from `InboundReceiptsController` — Nest guards accumulate rather than override, so a
+route needing a completely different auth story can't just live under the same
+`@UseGuards(JwtAuthGuard, RolesGuard)` class.
+
+**`InboundReceipt.createdById` is now nullable** (was required) — an ERP push has no human creator
+at all, `null` is the honest answer, not a placeholder user. A new `createdViaErpPush` boolean makes
+the same fact explicit/queryable rather than relying on `createdById` being null alone (which reads
+ambiguously — "unknown" vs. "genuinely no human"). `InboundOrdersPage.tsx`'s "All Orders" table
+shows a small "via ERP" tag under the Created date, and — the actual point of `assignVehicle` — an
+inline Vehicle-Number `<input list>` + "Assign" button wherever the Vehicle column would otherwise
+be blank, same `<input list>`+`<datalist>` pattern as the New Order form's own vehicle picker (its
+own always-mounted datalist, since the New Order form's copy only exists in the DOM while that form
+is expanded). `CompanySettingsPage.tsx` gained an "ERP Integration" section — the `allowErpInboundPush`
+checkbox folded into the existing Save Settings form, plus a separate Generate/Regenerate Key action
+(deliberately its own button/endpoint, not bundled into the settings save — a new key is a
+deliberate act, not a side effect of an unrelated form submit).
+
+Verified via a throwaway-company API script, 23/24 (the one "failure" was the test script's own
+strict-equality mismatch against a Decimal field serializing as a string over JSON — not a real
+bug): a push with an invalid key rejected, the toggle defaulting off with no key generated, a push
+blocked even with a valid key while the toggle is off, a real push succeeding with case-insensitive
+Warehouse/SKU codes, the resulting order having no vehicle/no createdBy/`createdViaErpPush: true`,
+a duplicate reference blocked, an unknown warehouse code blocked, manual `create()` still requiring
+a vehicle (regression check), `assignVehicle` succeeding once and correctly refusing a second
+assignment, and a full Gate In → Dock In → Match Order cycle correctly finding the ERP-pushed,
+now-vehicle-assigned order. Then re-verified live through the actual rendered UI (logged in via the
+API+localStorage token trick): generated a real API key from the real Company Settings page,
+toggled the checkbox and saved through the real form, pushed a real order using that exact
+UI-generated key via a raw fetch (standing in for a real ERP caller), confirmed it rendered
+correctly in Inbound Orders with the "via ERP" tag and an inline Assign control, and completed a
+real vehicle assignment through that exact control — confirming the row updated to show the
+assigned vehicle number.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2239,6 +2313,14 @@ under Masters) which Match Order pre-fills from, and **approving a blocked scan 
 barcode-mismatched SKU is now hard-blocked** (a genuinely unrecognized barcode's override stays
 fully open, unaffected). A fourth item — an active notification signaling security it's time to
 Gate Out — is explicitly flagged, not built, pending a fuller design pass next session.
+
+**ERP push is now real and working** (2026-08-27, see "ERP push" above) — a third Inbound
+order-creation path alongside the manual maker and Excel import, authenticated by a per-company
+API key (not a JWT), resolved by Warehouse/SKU's own internal Code (not the still-unwired
+`erpCode` fields). Deliberately doesn't require a Vehicle at creation (the client's own framing —
+"ERP will never know about vehicle type etc"); a new `assignVehicle()` action completes the order
+in WMS once staff know which truck it's actually coming on. `Company Settings` gained an "ERP
+Integration" section to generate/regenerate the key and toggle `allowErpInboundPush`.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

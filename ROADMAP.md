@@ -2,7 +2,8 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-27 (Inbound deep-dive).
+what to pick up next. Updated as priorities shift — last updated 2026-08-27 (Inbound deep-dive +
+ERP push).
 
 Stated direction: cover the basics of every module first (module build order below), then come
 back and deepen each one — rather than gold-plating one module before the rest exist at all.
@@ -16,7 +17,7 @@ Returns → Analytics
 |---|---|
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
-| **Inbound** | ✅ Basics built + one deep-dive pass — order maker (+ Excel bulk import), order matching, scan-based receiving, Complete Inward Process/Dock Out |
+| **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
 | Putaway | ⬜ Not started — schema exists (`PutawayTask`), no logic/UI |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
@@ -80,6 +81,20 @@ up again on their own, worth a real look next time Inbound comes up. Sources, fo
 [S2B Analytics — Dock-to-Stock](https://s2bianalytics.com/warehouse-receiving-process/). Nothing
 from this research pass is written into `CLAUDE.md` — this note here is the only record of it.
 
+## Session note (2026-08-27, ERP push — a later, separate session)
+You asked directly: since there's no ERP actually connected, what should "ERP push" even mean?
+Landed on a real distinction — the *ingestion endpoint* is provider-agnostic and buildable now
+(it's our own contract, any ERP's adapter maps to it later); the *specific integration* (payload
+shape, auth handshake) genuinely isn't, and stays untouched. Built the first half: **`POST
+/erp/inbound-receipts`**, authenticated by a per-company API key (generate/regenerate it from
+Company Settings' new "ERP Integration" section), resolved by Warehouse/SKU's own internal Code
+(not `erpCode` — checked, and that field is completely unwired anywhere in this codebase, no form
+sets it even for SKU/Warehouse). Deliberately does **NOT** require a Vehicle at creation — your own
+call: "ERP will never know about vehicle type etc, its completely a WMS thing... the PO from ERP is
+pushed to this order maker where the vehicle details are then added" — so a new **Assign Vehicle**
+action on Inbound Orders' "All Orders" table completes a vehicle-less order once staff know which
+truck it's on. Full detail in `CLAUDE.md`'s "ERP push" section.
+
 The first three candidates below are the module-level options (unchanged from before); the rest
 are smaller items raised this same session — pick any of them, not a forced order.
 
@@ -122,8 +137,10 @@ Pick one — these are the live options on the table, not a forced order:
   gap in competitor research, still "later we do it."
 - **Yard Plan View** — needs a small spatial-layout design pass first (Yard Slots have no
   row/aisle data today).
-- **ERP push for Inbound orders** (`Company.allowErpInboundPush`) — manual order maker + Excel bulk
-  import only for now, by design; ERP push reuses the same backend logic once built.
+- **`erpCode`-based resolution for ERP push** — ERP push (built 2026-08-27) resolves orders by
+  Warehouse/SKU's own internal Code for now, since `erpCode` is completely unwired anywhere (no
+  form sets it, not even for Sku/Warehouse). A real fast-follow once erpCode actually gets a UI —
+  small, not urgent.
 - **`DockLocationDistance` data-entry tooling** (no endpoint/import/UI exists yet) and the actual
   dock-suggestion algorithm that reads it — both deliberately deferred until Putaway/Picking exist
   to consume the data (your own call, 2026-08-27).
