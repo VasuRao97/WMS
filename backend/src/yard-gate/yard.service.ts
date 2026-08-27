@@ -116,6 +116,11 @@ export class YardService {
 
       return {
         gateEntryId: e.id,
+        // Added 2026-08-27 (Inbound deep-dive) so the frontend can split
+        // "vehicles to unload" from "vehicles to load" without a separate
+        // join against the full gate-entries list — the page already did
+        // this join before, just fragile (see GateYardPage.tsx history).
+        purpose: e.purpose,
         warehouse: { id: e.warehouse.id, code: e.warehouse.code, name: e.warehouse.name },
         slotCode: e.yardSlot?.code,
         vehicleNumber: e.vehicle.vehicleNumber,

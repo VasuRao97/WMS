@@ -1862,6 +1862,92 @@ order, submitted real remarks through the actual form, confirmed the green compl
 queue's status/action both updated correctly, confirmed Gate & Yard's banner flipped to "Inward
 process completed ✓," and completed a real Gate Out afterward.
 
+### Inbound deep-dive: Excel order import, Dock↔Location distance schema, Unload/Load split (2026-08-27, next session)
+Picked up per the client's explicit ask to "go deeper" into Inbound rather than start the next
+module in the build order. Three distinct pieces, aligned on individually before building:
+
+**1. Excel order import** (`POST /inbound-receipts/import`) — a real alternative to the
+still-unbuilt ERP push (`Company.allowErpInboundPush`), confirmed with the client as the
+alternative path they actually wanted. **One file can create MULTIPLE orders** — rows are grouped
+by (Warehouse Code, Reference No) in the controller, same repeated-key grouping pattern as
+Warehouse Storage Types/Customer Ship-tos; each distinct group becomes its own `InboundReceipt`
+with its SKU lines. Mirrors the manual "order maker" form's own fields exactly — no Staging
+Location column, same reasoning as `create()`: it isn't knowable until the vehicle is actually at
+the dock (Match Order). `InboundReceiptsService.create()` was refactored to extract a shared
+`prepareReceipt()` (same "one function, two callers" convention as `SkusService.validateSkuData`)
+so the manual and import paths can't drift apart; a new `resolveSkuCodeToId`/
+`resolveWarehouseCodeToId` pair (same shape as `LocationsService`'s own) resolve the sheet's typed
+codes. Template: `Inbound_Order_Import_Template.xlsx` (three sheets — data/How To Use/Legend &
+Rules, same shape as every other import template), in both `templates/` and
+`frontend/public/templates/`. `InboundOrdersPage.tsx` gained a Download Template link + file input
++ Import button + per-row error results, copy-pasted from `WarehousesPage.tsx`'s own import UI.
+
+**2. Dock↔Location distance — schema only, deliberately no logic/UI this pass.** The client's own
+framing when asked how granular/precise to make it: "we need to build logic that looking at the
+order we should be able to suggest which dock should be used to keep movement lower (schema to be
+done now, logic during the picking/putaway logic)" — i.e. the real "which dock minimizes movement"
+algorithm is explicitly meant to plug in once Putaway (inbound) / Picking (outbound) logic exists
+to consume it, not now. New `DockLocationDistance` model — `dockDoorId` + `locationId` +
+`distanceMeters`, unique per pair. The client chose the most granular, most precise option when
+asked: **per individual Location** (not per Aisle/Section) and **real measured meters** (not a
+simple rank/priority number) — both the harder-to-populate choices, confirmed explicitly rather
+than defaulted to the easier option. This means a real warehouse implies a large number of rows
+(every dock × every bin) with **no data-entry tooling built yet** — no endpoint, no import, no UI
+— left for whenever the consuming Putaway/Picking logic actually gets built, same "schema
+now/logic later" shape as this project's other deferred pieces (ASN, `SelfCheckInRequest`).
+Migration `20260827190000_add_dock_location_distance`.
+
+**3. Gate & Yard "Currently Open" split into Unload vs. Load** — a real gap the client raised
+directly: everything built for Inbound so far ("what we made") assumes a vehicle arrives already
+loaded with material to unload, but a vehicle can just as easily arrive empty to be LOADED
+(Outbound Dispatch), and that vehicle needs the exact same Gate In → yard/dock → Gate Out
+treatment. This wasn't a new workflow to build — `GateEntryPurpose` (`INBOUND_DELIVERY`/
+`OUTBOUND_DISPATCH`/`RETURNS`) already existed, and Dock In already stayed on Gate & Yard for
+Outbound/Returns (only Inbound's moved to Inbound Orders, per the earlier "moved off Gate & Yard
+entirely" pass) — the client's ask was to make that existing split **visible**, not to build new
+logic. `YardService.tracker()` now returns a `purpose` field per row (previously the frontend had
+to cross-reference the separate `history` list to get this — a fragile pattern already in use for
+the exact same purpose-based branching on the "Mark Docked In" button; this replaces the fragile
+half of it, the `history` cross-reference is still used for the row's other fields).
+`GateYardPage.tsx`'s "Currently Open" section now renders two sub-tables — "Vehicles to Unload
+(Inbound Delivery)" and "Vehicles to Load (Outbound Dispatch / Returns)" — sharing one
+`renderOpenTable()` helper so the column layout isn't duplicated. Returns groups with
+Outbound here (both keep Dock In on Gate & Yard, neither goes through Match Order/Receiving) —
+distinct from the *separate*, already-settled "Returns counts as Inbound" rule for Gate Pass
+Number sequencing, which is an administrative/numbering convention, not a physical-workflow one;
+the two didn't need to agree and don't.
+
+**A real process note, mid-pass**: Docker Desktop had stopped since the last session (the same
+recurring gotcha as always) and needed restarting before `migrate deploy` could run. Separately, a
+**different, currently-running backend dev server was found already live in this folder** (not
+started by this session) holding the Prisma client's file lock — rather than silently killing
+another active process (this session's standing rule for hard-to-reverse/outward-facing actions),
+this was surfaced to the client directly and only stopped after explicit confirmation, then
+relaunched by this session once the client regenerated/rebuilt.
+
+Verified two ways. A throwaway-company API script, 19/19: multi-order import (2 orders, 2+1 lines,
+correct totals), re-importing the same file correctly blocking both as duplicates, an unknown SKU
+code blocked, an unknown Warehouse Code blocked, a wrong sheet name rejected, and the Gate & Yard
+tracker's new `purpose` field correctly matching for both an Inbound and an Outbound entry. Then
+re-verified live through the actual rendered UI (logged in via the API+localStorage token trick):
+confirmed the Inbound Orders page's Download Template link/file input/Import button render
+correctly; fetched the REAL static template file being served and POSTed it to the real import
+endpoint from the browser (correctly reported "Warehouse Code TN01 not found" against this
+throwaway company's own WH1 — proving the actual downloadable file, not just a hand-built test
+buffer, parses and groups correctly end-to-end); confirmed a manually-created order renders
+correctly in the "All Orders" table; registered two real vehicles/drivers and gated both in
+(Inbound + Outbound), then confirmed the Gate & Yard page split them into the correct two
+sections with the correct per-purpose action buttons (Inbound: "See Inbound Orders"; Outbound:
+"Mark Docked In") — exactly matching the pre-existing, unchanged purpose-based logic underneath.
+`DockLocationDistance`'s migration applied cleanly against the real dev DB; no logic exists yet to
+exercise beyond that.
+
+**Explicitly not built this pass, per the client's own scoping**: the Dock↔Location
+distance-suggestion algorithm itself (Putaway/Picking's job, later), any data-entry tooling for
+`DockLocationDistance` rows, and anything beyond making the existing Unload/Load purpose split
+visible (no new workflow logic for a "vehicles to load" stream — that's the real Outbound module,
+still not started).
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2000,6 +2086,16 @@ inspection (no photos) at Dock In for both directions, and seal number + a new c
 signature capture (Inbound at Dock In, Outbound at Gate Out). The same pass explicitly deferred a
 driver self-service portal, a Drop Trailer/Live Load flag, and a Yard Plan View — none of those are
 built.
+
+Also worth knowing (2026-08-27, next session) — see "Inbound deep-dive: Excel order import,
+Dock↔Location distance schema, Unload/Load split" above: **Excel order import**
+(`POST /inbound-receipts/import`) is real, built, and live-verified — one file can create
+multiple orders, mirroring the manual order maker's own fields exactly. **`DockLocationDistance`**
+is schema-only (Dock × Location × distance in meters, the client's own choice of the most granular
+option) — no logic/UI, deliberately deferred until Putaway/Picking exist to consume it. **Gate &
+Yard's "Currently Open" table now visibly splits into Unload (Inbound Delivery) vs. Load (Outbound
+Dispatch/Returns)** — a visibility change over already-existing purpose-based logic, not new
+workflow.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

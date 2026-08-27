@@ -50,6 +50,30 @@ export class InboundReceiptsService {
     }
   }
 
+  // Same shape as LocationsService's resolveWarehouseCodeToId — used only
+  // by the Excel import path (the manual order maker already gets a real
+  // warehouseId from a dropdown, not a typed code).
+  private async resolveWarehouseCodeToId(code: any, user: any, errors: string[]): Promise<string | undefined> {
+    const codeStr = code ? String(code).trim().toUpperCase() : '';
+    if (!codeStr) {
+      errors.push('Warehouse Code is required.');
+      return undefined;
+    }
+    const warehouse = await this.prisma.warehouse.findUnique({ where: { companyId_code: { companyId: user.companyId, code: codeStr } } });
+    if (!warehouse) {
+      errors.push(`Warehouse Code "${codeStr}" not found.`);
+      return undefined;
+    }
+    if (INBOUND_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouse.id)) {
+        errors.push(`You can only create orders for your own assigned warehouse(s) — no access to "${codeStr}".`);
+        return undefined;
+      }
+    }
+    return warehouse.id;
+  }
+
   // Staging location is deliberately NOT required here (2026-08-27, a real
   // gap the client caught) — at order-creation time nobody can know where a
   // delivery will physically be staged; that's only knowable once the
@@ -91,9 +115,12 @@ export class InboundReceiptsService {
     return result;
   }
 
-  async create(data: any, user: any) {
-    if (!user.companyId) throw new ForbiddenException('Super admin accounts cannot create orders directly — log in as a company admin instead.');
-    const errors: string[] = [];
+  // Shared by the manual order maker (create()) and the Excel bulk import
+  // below — same "one function, two callers" convention as
+  // SkusService.validateSkuData, so the two paths can't drift apart. Returns
+  // errors instead of throwing so a batch import can report per-row results
+  // rather than failing the whole file on the first bad order.
+  private async prepareReceipt(data: any, user: any, errors: string[]) {
     const warehouseId = data.warehouseId;
     if (!warehouseId) errors.push('Warehouse is required.');
     else await this.assertWarehouseAccess(warehouseId, user, errors);
@@ -107,18 +134,96 @@ export class InboundReceiptsService {
 
     const lines = warehouseId ? await this.validateLines(warehouseId, data.lines, errors) : [];
 
+    return { warehouseId, referenceNo, supplierName: data.supplierName ? String(data.supplierName).trim() : undefined, lines };
+  }
+
+  async create(data: any, user: any) {
+    if (!user.companyId) throw new ForbiddenException('Super admin accounts cannot create orders directly — log in as a company admin instead.');
+    const errors: string[] = [];
+    const prepared = await this.prepareReceipt(data, user, errors);
     if (errors.length > 0) throw new BadRequestException(errors);
 
     return this.prisma.inboundReceipt.create({
       data: {
-        warehouse: { connect: { id: warehouseId } },
-        referenceNo,
-        supplierName: data.supplierName ? String(data.supplierName).trim() : undefined,
+        warehouse: { connect: { id: prepared.warehouseId } },
+        referenceNo: prepared.referenceNo,
+        supplierName: prepared.supplierName,
         createdBy: { connect: { id: user.userId } },
-        lines: { create: lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty, stagingLocationId: l.stagingLocationId })) },
+        lines: { create: prepared.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty, stagingLocationId: l.stagingLocationId })) },
       },
       include: RECEIPT_INCLUDE,
     });
+  }
+
+  private async resolveSkuCodeToId(code: any, user: any, errors: string[]): Promise<string | undefined> {
+    const codeStr = code ? String(code).trim().toUpperCase() : '';
+    if (!codeStr) {
+      errors.push('SKU Code is required.');
+      return undefined;
+    }
+    const sku = await this.prisma.sku.findUnique({ where: { companyId_code: { companyId: user.companyId, code: codeStr } } });
+    if (!sku) {
+      errors.push(`SKU Code "${codeStr}" not found.`);
+      return undefined;
+    }
+    return sku.id;
+  }
+
+  // Excel bulk import (2026-08-27, Inbound deep-dive) — an alternative to
+  // the still-unbuilt ERP push (Company.allowErpInboundPush), per the
+  // client's own framing. One file can create MULTIPLE orders in one call —
+  // rows are grouped by (Warehouse Code, Reference No) in the controller
+  // (same repeated-key grouping pattern as Warehouse Storage Types/Customer
+  // Ship-tos), each distinct group becomes its own InboundReceipt with its
+  // SKU lines. Deliberately mirrors the manual order maker's own fields
+  // exactly — no staging location column, same reasoning as create(): it
+  // isn't knowable until the vehicle is actually at the dock (Match Order).
+  async bulkImport(rows: any[], user: any) {
+    if (!user.companyId) throw new ForbiddenException('Super admin accounts cannot import orders directly — log in as a company admin instead.');
+    const results: any[] = [];
+    let successCount = 0;
+
+    for (const row of rows) {
+      const errors: string[] = [];
+      const warehouseId = await this.resolveWarehouseCodeToId(row.warehouseCode, user, errors);
+
+      const skuLines: { skuId: string; expectedQty: number }[] = [];
+      if (warehouseId) {
+        for (const [i, line] of (row.lines || []).entries()) {
+          const skuId = await this.resolveSkuCodeToId(line.skuCode, user, errors);
+          const expectedQty = Number(line.expectedQty);
+          if (!Number.isFinite(expectedQty) || expectedQty <= 0) {
+            errors.push(`Line ${i + 1} (${line.skuCode || '?'}): Expected Quantity must be a positive number.`);
+            continue;
+          }
+          if (skuId) skuLines.push({ skuId, expectedQty });
+        }
+      }
+      if (skuLines.length === 0 && errors.length === 0) errors.push('At least one SKU line is required.');
+
+      const prepared = warehouseId
+        ? await this.prepareReceipt({ warehouseId, referenceNo: row.referenceNo, supplierName: row.supplierName, lines: skuLines }, user, errors)
+        : null;
+
+      if (errors.length > 0) {
+        results.push({ referenceNo: row.referenceNo || '(blank)', warehouseCode: row.warehouseCode, status: 'error', errors });
+        continue;
+      }
+
+      await this.prisma.inboundReceipt.create({
+        data: {
+          warehouse: { connect: { id: prepared!.warehouseId } },
+          referenceNo: prepared!.referenceNo,
+          supplierName: prepared!.supplierName,
+          createdBy: { connect: { id: user.userId } },
+          lines: { create: prepared!.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty })) },
+        },
+      });
+      successCount++;
+      results.push({ referenceNo: row.referenceNo, warehouseCode: row.warehouseCode, status: 'success' });
+    }
+
+    return { totalOrders: rows.length, successCount, failCount: rows.length - successCount, results };
   }
 
   async findAll(user: any) {

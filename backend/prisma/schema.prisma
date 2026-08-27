@@ -487,6 +487,7 @@ model Location {
   receiptsStaged     InboundReceipt[]
   allocations        Allocation[]
   returns            Return[]
+  dockDistances       DockLocationDistance[]
 
   @@unique([warehouseId, code])
 }
@@ -656,7 +657,34 @@ model DockDoor {
   isActive    Boolean        @default(true)
   createdAt   DateTime       @default(now())
 
+  distances DockLocationDistance[]
+
   @@unique([warehouseId, code])
+}
+
+// Dock <-> Location travel distance (2026-08-27, Inbound deep-dive
+// conversation) — schema-only for now, per the client's own "schema now,
+// logic during the picking/putaway logic" framing: the actual
+// dock-suggestion algorithm ("which dock keeps movement lowest for this
+// order's putaway/pick locations") is deliberately NOT built this pass —
+// it plugs in once Putaway (inbound) / Picking (outbound) logic exists to
+// consume it. No endpoint, no import/entry UI exists yet either — the
+// client explicitly chose the finest granularity (per real Location, not
+// per Aisle/Section) and real measured meters (not a rank/priority number),
+// which for a warehouse of any size means a large number of rows with no
+// tooling to bulk-populate them yet; that data-entry tooling is left for
+// when the consuming logic actually gets built, same as this project's
+// other schema-now/logic-later pieces (ASN, SelfCheckInRequest).
+model DockLocationDistance {
+  id             String   @id @default(uuid())
+  dockDoorId     String
+  dockDoor       DockDoor @relation(fields: [dockDoorId], references: [id])
+  locationId     String
+  location       Location @relation(fields: [locationId], references: [id])
+  distanceMeters Decimal
+  createdAt      DateTime @default(now())
+
+  @@unique([dockDoorId, locationId])
 }
 
 // Platform-level reference data (like ProductCategory — no companyId, not

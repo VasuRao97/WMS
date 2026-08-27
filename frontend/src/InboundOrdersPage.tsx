@@ -170,6 +170,14 @@ function InboundOrdersPage() {
   const [formError, setFormError] = useState('');
   const [search, setSearch] = useState('');
 
+  // Excel bulk import (2026-08-27, Inbound deep-dive conversation) — an
+  // alternative to the still-unbuilt ERP push. One file can create multiple
+  // orders (rows grouped by Warehouse Code + Reference No), same pattern as
+  // Warehouse/Location's own import UI.
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ totalOrders: number; successCount: number; failCount: number; results: any[] } | null>(null);
+
   // Dock In (physical condition + seal) — moved here from Gate & Yard,
   // Inbound only (2026-08-27).
   const [dockInFor, setDockInFor] = useState<GateEntry | null>(null);
@@ -236,6 +244,20 @@ function InboundOrdersPage() {
       return;
     }
     resetForm();
+    load();
+  };
+
+  const handleImport = async () => {
+    if (!importFile) return;
+    setImporting(true);
+    setImportResult(null);
+    const formData = new FormData();
+    formData.append('file', importFile);
+    const res = await fetch('http://localhost:3000/inbound-receipts/import', { method: 'POST', headers: authHeaders(), body: formData });
+    const data = await res.json();
+    setImportResult(data);
+    setImporting(false);
+    setImportFile(null);
     load();
   };
 
@@ -371,11 +393,29 @@ function InboundOrdersPage() {
         Create the expected SKU/quantity plan for an incoming delivery, then receive it once the vehicle's actually here.
       </p>
 
-      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'center' }}>
+      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <button type="button" onClick={() => (showForm ? resetForm() : setShowForm(true))}>
           {showForm ? '▾ Hide new order form' : '▸ + New Order'}
         </button>
+        <a href="/templates/Inbound_Order_Import_Template.xlsx" download>Download Template</a>
+        <input type="file" accept=".xlsx" onChange={(e) => setImportFile(e.target.files ? e.target.files[0] : null)} />
+        <button onClick={handleImport} disabled={!importFile || importing}>
+          {importing ? 'Importing...' : 'Import Orders'}
+        </button>
       </div>
+
+      {importResult && (
+        <div style={{ marginBottom: 24, padding: 12, border: '1px solid #ccc', borderRadius: 8 }}>
+          <p><strong>{importResult.successCount}</strong> succeeded, <strong>{importResult.failCount}</strong> failed, out of {importResult.totalOrders} order(s).</p>
+          {importResult.results?.filter((r) => r.status === 'error').length > 0 && (
+            <ul style={{ margin: 0 }}>
+              {importResult.results.filter((r) => r.status === 'error').map((r, i) => (
+                <li key={i} style={{ color: 'crimson' }}>{r.referenceNo} ({r.warehouseCode || '?'}): {r.errors.join(' | ')}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {showForm && (
         <div style={{ marginBottom: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>

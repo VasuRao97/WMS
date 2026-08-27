@@ -1,9 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import * as XLSX from 'xlsx';
 import { InboundReceiptsService } from './inbound-receipts.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { stripHeaderAsterisks } from '../common/xlsx-parse.util';
 import { INBOUND_READ_ROLES, INBOUND_ORDER_WRITE_ROLES, INBOUND_APPROVE_ROLES } from '../common/tenant.util';
 
 @Controller('inbound-receipts')
@@ -16,6 +19,55 @@ export class InboundReceiptsController {
   @Roles(...INBOUND_ORDER_WRITE_ROLES)
   create(@Body() body: any, @CurrentUser() user: any) {
     return this.inboundReceiptsService.create(body, user);
+  }
+
+  // Excel bulk import (2026-08-27, Inbound deep-dive conversation) — an
+  // alternative to the still-unbuilt ERP push, per the client's own
+  // framing. One file can create MULTIPLE orders: rows are grouped by
+  // (Warehouse Code, Reference No) — same repeated-key grouping pattern as
+  // Warehouse Storage Types/Customer Ship-tos — each distinct group
+  // becoming its own order with its SKU lines.
+  @Post('import')
+  @Roles(...INBOUND_ORDER_WRITE_ROLES)
+  @UseInterceptors(FileInterceptor('file'))
+  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    } catch {
+      return { totalOrders: 0, successCount: 0, failCount: 0, results: [{ referenceNo: '(file)', status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+    }
+    // Read by sheet NAME, not position — same convention as Warehouse/
+    // Location's importers (the template ships "How To Use"/"Legend &
+    // Rules" tabs alongside the data tab).
+    const sheet = workbook.Sheets['Inbound Order Import'];
+    if (!sheet) {
+      return { totalOrders: 0, successCount: 0, failCount: 0, results: [{ referenceNo: '(file)', status: 'error', errors: ['No "Inbound Order Import" sheet found in this file.'] }] };
+    }
+    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+
+    const grouped = new Map<string, any>();
+    for (const r of rawRows) {
+      const warehouseCode = r['Warehouse Code'] ? String(r['Warehouse Code']).trim().toUpperCase() : '';
+      const referenceNo = r['Reference No'] ? String(r['Reference No']).trim() : '';
+      if (!warehouseCode && !referenceNo) continue;
+      const key = `${warehouseCode}::${referenceNo}`;
+
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          warehouseCode,
+          referenceNo,
+          supplierName: r['Supplier Name'] ? String(r['Supplier Name']).trim() : undefined,
+          lines: [] as any[],
+        });
+      }
+      const order = grouped.get(key);
+      if (r['SKU Code']) {
+        order.lines.push({ skuCode: String(r['SKU Code']).trim(), expectedQty: r['Expected Qty'] });
+      }
+    }
+
+    return this.inboundReceiptsService.bulkImport(Array.from(grouped.values()), user);
   }
 
   @Get()

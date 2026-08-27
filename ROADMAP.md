@@ -2,7 +2,7 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-27.
+what to pick up next. Updated as priorities shift — last updated 2026-08-27 (Inbound deep-dive).
 
 Stated direction: cover the basics of every module first (module build order below), then come
 back and deepen each one — rather than gold-plating one module before the rest exist at all.
@@ -16,7 +16,7 @@ Returns → Analytics
 |---|---|
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
-| **Inbound** | ✅ Basics built — order maker, order matching, scan-based receiving, Complete Inward Process/Dock Out |
+| **Inbound** | ✅ Basics built + one deep-dive pass — order maker (+ Excel bulk import), order matching, scan-based receiving, Complete Inward Process/Dock Out |
 | Putaway | ⬜ Not started — schema exists (`PutawayTask`), no logic/UI |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
@@ -25,20 +25,33 @@ Returns → Analytics
 | Returns | ⬜ Not started |
 | Analytics | ⬜ Not started (deliberately last, built on top of everything else) |
 
+## Session note (2026-08-27, Inbound deep-dive)
+Rather than starting the next module, this session went deeper into Inbound per your own ask.
+Three pieces landed: **Excel order import** (real, one file can create multiple orders — an
+alternative to ERP push), **`DockLocationDistance`** (schema only — Dock × Location × distance in
+meters, your own call to go with the most granular option; the actual "which dock minimizes
+movement" algorithm is deliberately deferred until Putaway/Picking exist to consume it), and
+**Gate & Yard's "Currently Open" table now visibly splits into Unload vs. Load** (a visibility
+change over already-existing purpose-based logic, not new workflow — the real Outbound module
+itself is still not started). Full detail in `CLAUDE.md`'s "Inbound deep-dive" section. The three
+candidates below are unchanged and still the live options for the next module-level session.
+
 ## Immediate candidates for the next session
 
 Pick one — these are the live options on the table, not a forced order:
 
 1. **Putaway** — the natural next module. Moves received stock from its staging location to a real
    final storage bin. This is also what would let received Inbound stock actually go somewhere
-   instead of sitting at staging indefinitely.
+   instead of sitting at staging indefinitely. Also the first real consumer of the new
+   `DockLocationDistance` data (dock-suggestion logic was explicitly deferred to land here).
 2. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now (Inbound receiving
    writes to it), but nothing renders it. Even a read-only view would close a real, felt gap.
 3. **Outbound order maker** — the flow you described in an earlier conversation (destination +
    vehicle capacity check, weight *and* volume, triggering a pick list) — a real, well-understood
    need, but benefits from Inventory existing first so a "can this order be fulfilled" check means
-   something.
+   something. Would also be the first real user of the Gate & Yard "Vehicles to Load" queue added
+   this session.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 
@@ -46,8 +59,11 @@ Pick one — these are the live options on the table, not a forced order:
   gap in competitor research, still "later we do it."
 - **Yard Plan View** — needs a small spatial-layout design pass first (Yard Slots have no
   row/aisle data today).
-- **ERP push for Inbound orders** (`Company.allowErpInboundPush`) — manual order maker only for now,
-  by design; this reuses the same backend logic once built.
+- **ERP push for Inbound orders** (`Company.allowErpInboundPush`) — manual order maker + Excel bulk
+  import only for now, by design; ERP push reuses the same backend logic once built.
+- **`DockLocationDistance` data-entry tooling** (no endpoint/import/UI exists yet) and the actual
+  dock-suggestion algorithm that reads it — both deliberately deferred until Putaway/Picking exist
+  to consume the data (your own call, 2026-08-27).
 - **Real GS1/unique-barcode parsing** ("Reading B") — the tyres/FMCG-case problem. Today's
   Supervisor-approve fallback makes those categories usable without this; full barcode-format
   parsing is a distinct, larger future feature.

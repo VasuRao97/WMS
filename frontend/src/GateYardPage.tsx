@@ -91,6 +91,9 @@ type YardSummaryRow = {
 };
 type TrackerRow = {
   gateEntryId: string;
+  // Added 2026-08-27 (Inbound deep-dive) — drives the Unload/Load split on
+  // the Currently Open table below.
+  purpose: string;
   warehouse: { id: string; code: string; name: string };
   slotCode?: string;
   vehicleNumber: string;
@@ -497,6 +500,75 @@ function GateYardPage() {
     return matchesSearch && matchesFrom && matchesTo;
   });
 
+  // Shared by both the Unload and Load sections of "Currently Open"
+  // (2026-08-27) — same column layout either way, only the row set differs.
+  const renderOpenTable = (rows: TrackerRow[], emptyMessage: string) => (
+    <>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 12 }}>
+        <thead>
+          <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
+            <th style={{ padding: 8 }}>Status</th>
+            <th style={{ padding: 8 }}>Slot</th>
+            <th style={{ padding: 8 }}>Dock</th>
+            <th style={{ padding: 8 }}>Warehouse</th>
+            <th style={{ padding: 8 }}>Vehicle</th>
+            <th style={{ padding: 8 }}>Destination</th>
+            <th style={{ padding: 8 }}>Transporter</th>
+            <th style={{ padding: 8 }}>Gate In At</th>
+            <th style={{ padding: 8 }}>Hrs in Parking</th>
+            <th style={{ padding: 8 }}>Hrs in Dock</th>
+            <th style={{ padding: 8 }}>Detention Cost</th>
+            <th style={{ padding: 8 }}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const fullEntry = history.find((e) => e.id === r.gateEntryId);
+            return (
+              <tr key={r.gateEntryId} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
+                <td style={{ padding: 8 }}>{r.status === 'DOCKED' ? 'Docked' : 'In Yard'}</td>
+                <td style={{ padding: 8 }}>{r.slotCode || '—'}</td>
+                <td style={{ padding: 8 }}>
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
+                    <input
+                      value={dockInputs[r.gateEntryId] ?? r.assignedDockNumber ?? ''}
+                      onChange={(e) => setDockInputs({ ...dockInputs, [r.gateEntryId]: e.target.value })}
+                      placeholder="Dock #"
+                      style={{ width: 55 }}
+                    />
+                    <button onClick={() => handleAssignDock(r.gateEntryId)}>{r.assignedDockNumber ? 'Update' : 'Assign'}</button>
+                  </div>
+                  {r.assignedDockNumber && (
+                    <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>since {fmtDateTime(r.dockAssignedAt)}</div>
+                  )}
+                </td>
+                <td style={{ padding: 8 }}>{r.warehouse.code}</td>
+                <td style={{ padding: 8, fontWeight: 'bold' }}>{r.vehicleNumber}</td>
+                <td style={{ padding: 8 }}>{r.destinationCity || '—'}</td>
+                <td style={{ padding: 8 }}>{r.transporterName || '—'}</td>
+                <td style={{ padding: 8 }}>{fmtDateTime(r.gateInAt)}</td>
+                <td style={{ padding: 8 }}>{fmtHours(r.hoursInParking)}</td>
+                <td style={{ padding: 8 }}>{fmtHours(r.hoursInDock)}</td>
+                <td style={{ padding: 8 }}>{r.detentionCost != null ? `₹${r.detentionCost.toFixed(2)}` : '—'}</td>
+                <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
+                  {/* Inbound's Dock In/Match Order/Receiving all live on
+                      the Inbound Orders page now (2026-08-27) — this page
+                      only ever shows Dock In for Outbound/Returns. */}
+                  {r.status === 'IN_YARD' && fullEntry && fullEntry.purpose !== 'INBOUND_DELIVERY' && <button onClick={() => openDockIn(fullEntry)}>Mark Docked In</button>}
+                  {fullEntry?.purpose === 'INBOUND_DELIVERY' && r.status === 'IN_YARD' && (
+                    <span style={{ fontSize: 12, color: '#888' }}>See Inbound Orders</span>
+                  )}
+                  {fullEntry && <button onClick={() => openGateOut(fullEntry)} style={{ marginLeft: 6 }}>Gate Out</button>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {rows.length === 0 && <p style={{ marginTop: -4, marginBottom: 32 }}>{emptyMessage}</p>}
+    </>
+  );
+
   return (
     <div style={{ maxWidth: 1200, margin: '40px auto', fontFamily: 'sans-serif' }}>
       <h1 style={{ textAlign: 'center' }}>Gate &amp; Yard Management</h1>
@@ -851,74 +923,25 @@ function GateYardPage() {
         )}
       </div>
 
-      {/* Open entries — the working table */}
+      {/* Open entries — the working table, split by direction (2026-08-27,
+          Inbound deep-dive conversation): a vehicle here to UNLOAD (Inbound
+          Delivery) is a different audience/workflow than one here to LOAD
+          (Outbound Dispatch / Returns) — this just makes that existing
+          purpose-based split visible, it doesn't change any underlying
+          logic. Both groups share the exact same column layout, rendered by
+          renderOpenTable() below to avoid duplicating it twice. */}
       <h2 style={{ marginBottom: 8, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowOpenList(!showOpenList)}>
         {showOpenList ? '▾' : '▸'} Currently Open (In Yard / Docked)
       </h2>
       {showOpenList && (
-        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
-          <thead>
-            <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
-              <th style={{ padding: 8 }}>Status</th>
-              <th style={{ padding: 8 }}>Slot</th>
-              <th style={{ padding: 8 }}>Dock</th>
-              <th style={{ padding: 8 }}>Warehouse</th>
-              <th style={{ padding: 8 }}>Vehicle</th>
-              <th style={{ padding: 8 }}>Destination</th>
-              <th style={{ padding: 8 }}>Transporter</th>
-              <th style={{ padding: 8 }}>Gate In At</th>
-              <th style={{ padding: 8 }}>Hrs in Parking</th>
-              <th style={{ padding: 8 }}>Hrs in Dock</th>
-              <th style={{ padding: 8 }}>Detention Cost</th>
-              <th style={{ padding: 8 }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tracker.map((r) => {
-              const fullEntry = history.find((e) => e.id === r.gateEntryId);
-              return (
-                <tr key={r.gateEntryId} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
-                  <td style={{ padding: 8 }}>{r.status === 'DOCKED' ? 'Docked' : 'In Yard'}</td>
-                  <td style={{ padding: 8 }}>{r.slotCode || '—'}</td>
-                  <td style={{ padding: 8 }}>
-                    <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
-                      <input
-                        value={dockInputs[r.gateEntryId] ?? r.assignedDockNumber ?? ''}
-                        onChange={(e) => setDockInputs({ ...dockInputs, [r.gateEntryId]: e.target.value })}
-                        placeholder="Dock #"
-                        style={{ width: 55 }}
-                      />
-                      <button onClick={() => handleAssignDock(r.gateEntryId)}>{r.assignedDockNumber ? 'Update' : 'Assign'}</button>
-                    </div>
-                    {r.assignedDockNumber && (
-                      <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>since {fmtDateTime(r.dockAssignedAt)}</div>
-                    )}
-                  </td>
-                  <td style={{ padding: 8 }}>{r.warehouse.code}</td>
-                  <td style={{ padding: 8, fontWeight: 'bold' }}>{r.vehicleNumber}</td>
-                  <td style={{ padding: 8 }}>{r.destinationCity || '—'}</td>
-                  <td style={{ padding: 8 }}>{r.transporterName || '—'}</td>
-                  <td style={{ padding: 8 }}>{fmtDateTime(r.gateInAt)}</td>
-                  <td style={{ padding: 8 }}>{fmtHours(r.hoursInParking)}</td>
-                  <td style={{ padding: 8 }}>{fmtHours(r.hoursInDock)}</td>
-                  <td style={{ padding: 8 }}>{r.detentionCost != null ? `₹${r.detentionCost.toFixed(2)}` : '—'}</td>
-                  <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
-                    {/* Inbound's Dock In/Match Order/Receiving all live on
-                        the Inbound Orders page now (2026-08-27) — this page
-                        only ever shows Dock In for Outbound/Returns. */}
-                    {r.status === 'IN_YARD' && fullEntry && fullEntry.purpose !== 'INBOUND_DELIVERY' && <button onClick={() => openDockIn(fullEntry)}>Mark Docked In</button>}
-                    {fullEntry?.purpose === 'INBOUND_DELIVERY' && r.status === 'IN_YARD' && (
-                      <span style={{ fontSize: 12, color: '#888' }}>See Inbound Orders</span>
-                    )}
-                    {fullEntry && <button onClick={() => openGateOut(fullEntry)} style={{ marginLeft: 6 }}>Gate Out</button>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <>
+          <h3 style={{ marginBottom: 8 }}>Vehicles to Unload (Inbound Delivery)</h3>
+          {renderOpenTable(tracker.filter((r) => r.purpose === 'INBOUND_DELIVERY'), 'No vehicles currently waiting to unload.')}
+
+          <h3 style={{ marginBottom: 8 }}>Vehicles to Load (Outbound Dispatch / Returns)</h3>
+          {renderOpenTable(tracker.filter((r) => r.purpose !== 'INBOUND_DELIVERY'), 'No vehicles currently waiting to load.')}
+        </>
       )}
-      {showOpenList && tracker.length === 0 && <p style={{ marginTop: -16, marginBottom: 32 }}>No vehicles currently in the yard or docked.</p>}
 
       {/* Full history */}
       <h2 style={{ marginBottom: 8, cursor: 'pointer', userSelect: 'none' }} onClick={() => setShowHistoryList(!showHistoryList)}>
