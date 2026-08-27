@@ -1652,6 +1652,182 @@ coordinates without a visible screenshot) — `sealSignatureData` round-tripping
 by the API script instead. Docker Desktop had also stopped since the last session (same recurring
 gotcha as before) and needed restarting before the migration could be applied.
 
+### Inbound receiving — order maker, order match, and scan-based receiving (2026-08-27)
+The first real build on Inbound, the next stage in the module build order after Master Data and
+Yard & Gate. Followed a long, deliberate align-before-coding conversation (real workflow — vehicle
+readiness, dock allocation, order matching, scan-by-scan receiving, and the tyres/FMCG-case
+barcode-uniqueness problem) before any schema/code — see git history for the full back-and-forth if
+the reasoning behind a specific design choice needs revisiting.
+
+**The five-step flow, confirmed with the client**: (1) a manual "order maker" creates an
+`InboundReceipt` + expected SKU/qty lines — ERP push is a schema-ready toggle
+(`Company.allowErpInboundPush`) but explicitly NOT built this pass, manual only, per the client's
+own build-order call; (2) once Gate In's documents all come back OK, every Warehouse Supervisor/
+Manager on that warehouse gets notified the vehicle is ready for unloading
+(`NotificationEventType.VEHICLE_READY_FOR_UNLOADING`, same broadcast shape `DETENTION_ALERT`
+already uses); (3) Dock Door assignment stays exactly as it already was (unchanged this pass); (4)
+once Docked In, a **second, authoritative** PO/invoice number gets entered — deliberately separate
+from Gate In's loose free-text `referenceNo` — which resolves against a real `InboundReceipt` and
+locks it to this one gate entry (`VehicleGateEntry.inboundReceiptId`, `@unique`); (5) every physical
+item then gets scanned during receiving.
+
+**Scanning: capture is universal, interpretation is tiered** — the key design resolution from the
+conversation. A real 1,000-tyre truck can't be manually quantity-typed, so every scan gets captured
+as an `InboundReceiptScan` row regardless of whether the system can make sense of it yet:
+- **Resolution is scoped to the matched receipt's own expected lines, never company-wide barcode
+  uniqueness** — the client's own correction mid-conversation: a real barcode can legitimately repeat
+  across unrelated SKUs (ERP dumps aren't always clean), so a scan only needs to be unambiguous
+  *within this one receipt's remaining expected lines*, not globally unique.
+- A scan that resolves cleanly (`SkuBarcode` → `SkuStorageUnit.qtyInBaseUom` for the quantity
+  multiplier — 12 for a case, 1 for a tyre — matching a real remaining expected line) is
+  **ACCEPTED** immediately: posts a real `StockMovement` (`RECEIPT`) and increments that line's
+  `receivedQty` — the first-ever write to that ledger anywhere in this codebase.
+- Anything else — wrong SKU, would exceed that line's expected qty, or a barcode the system simply
+  can't interpret yet (a composite GS1-128 case barcode, a unique per-tyre serial — real parsing of
+  those, "Reading B," is explicitly deferred, not built) — is **BLOCKED**. The scanning operator can
+  never resolve their own blocked scan (enforced by role gating, `INBOUND_APPROVE_ROLES` excludes
+  `OPERATOR` — the client's own instruction). A Supervisor either **APPROVEs** it (confirms the real
+  SKU/line/quantity, which then posts exactly like an accepted scan, permanently flagged in the
+  record as a reviewed override) or **REJECTs** it (a genuine mis-scan/duplicate, no stock impact).
+- **Reconciliation is per-(SKU, quantity), never a blended total** — `InboundReceipt.status` only
+  reaches `RECEIVED` when *every* line's `receivedQty` exactly equals its own `expectedQty`; one
+  short/over line keeps the whole receipt at `PARTIALLY_RECEIVED` even if unrelated lines are
+  perfect and an aggregate sum would otherwise look right. This was a specific, deliberate
+  client correction — an early framing risked a blended-total check that could silently hide a real
+  over/under-receipt on one SKU offset by another.
+- Gate Out's old `materialReceivedConfirmed` checkbox (a manual placeholder since the day it was
+  built, explicitly commented as such) is now driven by real receipt status once a receipt is
+  matched — falls back to the old manual checkbox only for an Inbound entry that was never matched
+  to a real order at all, so nothing regresses for a company not yet using this flow.
+
+**Schema**: `InboundReceiptScan` (new — the per-scan audit/status log), `SkuBarcode.storageUnitId`
+(new, nullable — links a barcode to its pack-level `SkuStorageUnit`, defaults to "1 each" when
+unset so every pre-existing barcode keeps working unchanged), `VehicleGateEntry.inboundReceiptId`
+(new, `@unique`), `Company.allowErpInboundPush` (new toggle, unused this pass).
+
+**Backend**: new `inbound/` module (`InboundReceiptsController`/`Service` — the order maker,
+`GET`/list/detail, and the Supervisor approve/reject actions) alongside new methods on the existing
+`GateEntriesService` (`matchReceipt`, `scan`) and a modified `create()`/`gateOut()`. `NotificationsModule`
+now `exports: [NotificationsService]` and `YardGateModule` imports it — the first real cross-module
+service reuse in this codebase (every module before this just queried Prisma directly rather than
+importing another module's service; duplicating the whole send/audit/adapter pipeline would have
+been a much bigger cost than this one import). `recomputeReceiptStatus` is intentionally duplicated
+between `GateEntriesService` and `InboundReceiptsService` rather than shared cross-module, matching
+that same "each module queries Prisma directly" convention for the smaller cases.
+
+**Frontend**: new `InboundOrdersPage.tsx` (the order maker + order list, new "Inbound Orders" nav
+tab) and a substantial `GateYardPage.tsx` addition — "Match Order" and "Receive" actions on a
+docked Inbound row, a Match Order modal, and a Receiving modal (expected-lines table, a plain text
+scan input that a hardware scanner works against as-is via keyboard-wedge input, a live scan log,
+and inline Supervisor approve/reject controls on any blocked scan). **A camera-scan toggle
+("scanner or phone, ready for either") is a deliberate, flagged v1 gap — not built.** No barcode-
+decoding library exists in this codebase; only the hardware-scanner-compatible text input path is
+real. Gate Out's Inbound checkbox now only renders when no real order is matched — showing a
+now-unused checkbox once a receipt is matched would be actively misleading, caught live while
+verifying this pass.
+
+**A real bug caught and fixed during live verification, not the automated script**: `approveScan`
+originally required the client to also pass a `skuId` alongside `receiptLineId`, redundant since a
+line already determines its SKU unambiguously — the Receiving UI's approve form was only ever built
+to collect a line + quantity, so every real approval 400'd until this was caught clicking through
+the actual UI and fixed by deriving `skuId` from the chosen line server-side instead of requiring it
+from the client. The original 29-check API script had passed because it happened to pass `skuId`
+by hand — a good example of why the live-browser pass catches things the API script alone doesn't.
+
+Verified two ways: a throwaway-company API script, 29/29 (order creation, duplicate-reference
+rejection, vehicle-ready notification firing to a real registered Manager, match-receipt blocked
+before Dock In, a clean case-barcode scan auto-accepting with the right quantity, an unrecognized
+barcode correctly BLOCKED, a Supervisor APPROVE correctly reconciling the line and flipping the
+receipt to `RECEIVED`, a would-exceed-quantity scan correctly BLOCKED and REJECTED, Gate Out
+succeeding purely off real receipt status with no manual checkbox, and exactly 2 real `StockMovement`
+RECEIPT rows summing correctly). Then re-verified live through the actual rendered UI end to end
+(order created through the real form, a real Gate In/Dock In/Match Order/scan/Supervisor-approve/
+Gate Out cycle) — this is where the `approveScan` bug above was actually caught, confirming the value
+of the second pass beyond what the API script alone had already proven.
+
+**Explicitly deferred, not part of this build**: full GS1-128/DataMatrix barcode parsing and
+unique-per-item/pallet tracking ("Reading B" — see the earlier competitor-research conversation,
+still the same combined future topic), ERP push for order creation, camera-based scanning, and
+Putaway (the next module — `PutawayTask` already exists in schema, hangs off `InboundReceiptLine`,
+untouched this pass).
+
+**Follow-up, same day: staging location moved from the order maker to Match Order.** A real gap
+the client caught after this all shipped: `InboundReceiptLine.stagingLocationId` was originally
+*required* at order-creation time — but nobody can know where a delivery will physically be staged
+before the vehicle even exists in the system. The client's own proposed fix (linking a Dock Door to
+a handful of candidate staging blocks) was a real, legitimate pattern but was rejected for now:
+`VehicleGateEntry.assignedDockNumber` is deliberately free text, not a link to a real `DockDoor`
+row (a placeholder for the still-unbuilt real Dock Scheduler), so a mapping built against it today
+would be fragile and need rebuilding once Dock Scheduling is real — flagged as a good enhancement
+to revisit *then*, not now.
+
+The actual fix: **`InboundReceipt` gained its own `stagingLocationId`** (nullable, `Location`), set
+once at the **Match Order** step (`GateEntriesService.matchReceipt()`) — now required there, since
+that's the first real moment staff knows where they're unloading. `InboundReceiptLine.
+stagingLocationId` stays as an optional per-line override (a specific SKU that genuinely needs a
+different spot), falling back to the receipt's own default everywhere a scan needs a real
+`Location` to post a `StockMovement` against (`GateEntriesService.scan()`,
+`InboundReceiptsService.approveScan()`). The order maker itself no longer asks for a staging
+location at all (relabeled "Staging Location Override" with a note explaining why it's normally
+left blank); `matchReceipt`'s existing controller/frontend both extended to carry it.
+
+**A real bug caught live, not by the API script**: `approveScan` originally required the client to
+pass `skuId` separately from `receiptLineId`, even though a line already determines its SKU
+unambiguously — the Receiving screen's approve form was only ever built to collect a line +
+quantity, so `skuId` was silently always missing and every real approval 400'd. The original
+29-check script had passed because it happened to supply `skuId` by hand. Fixed by deriving `skuId`
+from the chosen line server-side instead of accepting it from the client at all — this is the
+second time in this same feature that the live-browser pass caught something the API script alone
+had missed, worth remembering as a reason not to skip that second verification step even when the
+API script is green.
+
+Verified via a new 10-check throwaway-company script (order creation without a staging location
+succeeds; `matchReceipt` without one is rejected; with one succeeds and shows up on the gate
+entry's `inboundReceipt.stagingLocation`; an unrecognized scan blocks; approving it without an
+explicit `skuId` succeeds and resolves the right SKU from the line; the receipt reaches `RECEIVED`)
+plus a live browser pass — opened Match Order on a real docked entry, confirmed the Staging
+Location field actually renders and lists the real warehouse's locations, submitted it, and
+confirmed the Receiving modal's header shows "staging at GF-S1-BLK01" pulled from the real saved
+value.
+
+### Inbound receiving moved off Gate & Yard entirely (2026-08-27, same day)
+A real architecture correction from the client, caught after the whole flow above had already
+shipped and been tested: "this cant be in the yard management page at all" — Dock In's physical
+condition/seal capture, Match Order, and Receiving/scanning were all still living inside
+`GateYardPage.tsx`, mixed in with Gate In, dock assignment, and Gate Out. That's wrong: the
+inbound/warehouse team who actually does receiving is a different audience than the security/gate
+staff Gate & Yard is for — a distinction this system had already half-established (the
+`VEHICLE_READY_FOR_UNLOADING` notification only ever targeted Supervisors/Managers, never Security
+Supervisor) but hadn't carried through to the page layout.
+
+**The split, confirmed in conversation**: Gate & Yard keeps Gate In, dock assignment, and Gate Out
+for every direction — unchanged. **Dock In itself also moved**, not just physical condition — for
+an Inbound Delivery, "Mark Docked In" no longer appears on Gate & Yard at all; the inbound team
+does it themselves on **Inbound Orders**, which is now the whole inbound workflow's home: create an
+order, then a **"Vehicles Ready for Receiving"** queue (every open Inbound gate entry, state derived
+straight from `dockedInAt`/`inboundReceiptId` — no dependency on Gate & Yard's yard-tracker data)
+drives Mark Docked In → Match Order → Receive, all in one place. Outbound/Returns keep Dock In on
+Gate & Yard exactly as before — there's no separate "outbound team" page in this design, so no
+reason to move it there.
+
+**No backend/schema changes needed at all** — this was a pure frontend relocation. `dockIn()`/
+`matchReceipt()`/`scan()`/`approveScan()`/`rejectScan()` are all purpose-agnostic at the API level;
+they never cared which page called them. `GateYardPage.tsx`'s `GateEntry` type, `emptyDockInForm`,
+and `handleDockInSubmit` all dropped their seal-related fields (`sealNumber`/`sealSignatureData`)
+entirely — those were always Inbound-only, so Gate & Yard's Dock In modal is now just physical
+condition, nothing else. `InboundOrdersPage.tsx` gained its own copy of `SignaturePad` (this
+codebase has no shared component library, same "duplicate per page" convention as everywhere else)
+plus the full Dock In/Match Order/Receiving modal set ported over close to verbatim.
+
+Verified live through the actual rendered UI: confirmed Gate & Yard's tracker row for an already-
+docked Inbound vehicle now shows only Assign Dock + Gate Out (no Match Order/Receive button
+anywhere on that page); confirmed the same vehicle correctly appears on Inbound Orders' new
+"Vehicles Ready for Receiving" queue with the right derived status ("Order PO-UI-STAGE-1 —
+Pending") and a working Receive action; opened Receiving from its new home and scanned a real case
+barcode, which correctly BLOCKED (12-unit case exceeding this order's 5 remaining units) with the
+Supervisor override controls rendering inline exactly as before the move — confirming the
+relocation didn't regress any of the underlying logic, only where it lives.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -1667,6 +1843,17 @@ No CSS framework/component library is installed despite being mentioned in `READ
 ("Getting started") — styling today is inline `style={{...}}` objects. Column show/hide on
 list tables is deliberately deferred until more list pages exist, so it can be built once as a
 reusable pattern rather than per-page.
+
+**Nav bar: a "Masters" dropdown groups the six master-data pages** (2026-08-27, the client's own
+simplicity call — the top-level nav was getting crowded as more pages got added). Warehouses/SKUs/
+Customers/Locations/Vehicle & Driver Master/Users now live under one `App.tsx` dropdown (`Masters ▾`,
+closes on an outside click via a plain `document.addEventListener('mousedown', ...)` — no library),
+bolded when the active tab is one of the six. Gate & Yard, Inbound Orders, and Company Settings stay
+as standalone top-level buttons, unchanged — the client's explicit "rest you can keep as it is for
+now." `Users` is still filtered out of the dropdown for a role outside `CAN_MANAGE_USERS`, same gate
+as before. Apply this same "operational workflows stay top-level, master-data lists go in the
+dropdown" split to any new page — a page that's mostly CRUD over a list belongs in Masters, a page
+that's a daily task/workflow (like Gate & Yard or Inbound Orders) stays top-level.
 
 ## Status: what's built vs. what's next
 
@@ -1731,9 +1918,19 @@ reorder point, FIFO/FEFO/LIFO), Opening Balance load, dispatch-proximity distanc
 (lat/long fields exist, no algorithm), a dispatch cutoff-time/policy concept (deliberately not
 added alongside Warehouse's working-hours fields — it's a policy, not a static fact, and belongs
 to a future Dispatch Policy stage once Outbound/Dispatch exist to enforce it), real SAP/ERP
-integration, and — per the module build order above — Inbound, Putaway, Inventory, Outbound,
-Picking, Dispatch, Analytics. Cloud/production deployment hasn't happened; this is local Docker
+integration, and — per the module build order above — Putaway, Inventory, Outbound, Picking,
+Dispatch, Analytics (**Inbound now has real first-pass logic** — see "Inbound receiving" below,
+not just schema anymore). Cloud/production deployment hasn't happened; this is local Docker
 Compose (Postgres) only.
+
+**Inbound receiving** (2026-08-27, see "Inbound receiving — order maker, order match, and
+scan-based receiving" above for the full design and what's verified) — the manual order maker,
+vehicle-ready notification, order matching at the dock, and scan-based receiving (auto-accept for
+a clean barcode match, Supervisor-approve/reject for anything blocked, per-line not blended
+reconciliation) are all real, working, and live-verified end-to-end, including the **first-ever
+write** to the `StockMovement` ledger anywhere in this codebase. ERP push, full GS1/unique-instance
+barcode parsing (the tyres/FMCG-case "Reading B" problem), camera-based scanning, and Putaway
+itself are all explicitly deferred, not built this pass.
 
 Also worth knowing (2026-08-27) — see "Detention, multi-channel notifications, and self-service
 check-in", "Detention alerting: cron job + notification logic", and "Detention cost: company-wide
