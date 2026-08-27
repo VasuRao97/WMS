@@ -1595,6 +1595,63 @@ separately re-verified live — it's keyed off the alert's own timestamp being o
 unacknowledged, which would take a real hour-plus wait to observe firsthand; traced through the
 code instead rather than spending that time.
 
+### Seal/signature, physical condition inspection, and commodity description (2026-08-27)
+Follow-up to a competitor-research pass (Blue Yonder/Infor YMS gap analysis — see the
+`wms-yms-competitor-research` memory for the full list and what got explicitly skipped/deferred).
+Three cheap, confirmed-in-conversation additions to `VehicleGateEntry`, all optional fields, no new
+tables, no new events:
+
+- **`commodityDescription`** — free-text cargo visibility, captured at Gate In, either direction.
+- **`physicalConditionOk`/`physicalConditionRemarks`** — the truck/trailer's own physical condition
+  (dents, tyres), deliberately separate from `GateEntryDocumentCheck`'s paperwork checks. Flat, no
+  photos, no itemized checklist — "not mature enough for photos yet," the client's own call.
+  Captured alongside **Dock In**, for BOTH directions — there's no separate "loading start" event in
+  this system to hang it off instead.
+- **`sealNumber`/`sealSignatureData`(+`sealCapturedAt`/`sealCapturedById`)** — cheap dispute-
+  resolution fields ("was the seal intact when it left/arrived"). Timing branches by purpose, same
+  pattern `eWayBillNo`/`materialReceivedConfirmed` already use: **Inbound** captures it at **Dock
+  In** (the seal the truck arrived with, checked before unloading); **Outbound** captures it at
+  **Gate Out** (sealed right after loading — the client said "after dock out," but this system has
+  no separate Dock Out event, so — same reasoning as E-Way Bill, captured at the identical moment —
+  it lands on the existing Gate Out step instead, confirmed with the client before building).
+  `sealSignatureData` is a base64 PNG from a new `SignaturePad` component (`GateYardPage.tsx`) — the
+  first signature-capture UI in this codebase, plain `<canvas>` + pointer events (mouse and touch
+  both), no library. No blob/asset storage exists in this project, so the drawing is stored as text
+  straight into a Prisma `String` column (Postgres `TEXT`, no length concern for one small image).
+
+**Deferred from the same research pass, explicitly not built this round** (see the memory for full
+reasoning): a driver/carrier self-service portal (`SelfCheckInRequest` stays schema-only), a Drop
+Trailer vs. Live Load flag (would need real tractor/trailer decoupling to be meaningful, not just a
+flag — parked, not scoped), and a Yard Plan View (`YardSlot` has no spatial data to visualize yet —
+needs its own small design pass, same as Locations' Plan View did).
+
+**Backend**: `dockIn()` now takes a request body (previously none) — `GateEntriesController`/
+`GateEntriesService` both updated; `gateOut()` gained the two seal fields, set only when actually
+provided (so Inbound's Dock-In-captured seal is never clobbered by a later Gate Out call). Export
+(`exportRows()`) gained Commodity Description, Physical Condition OK/Remarks, and Seal Number
+columns (deliberately not the signature image — too large/not spreadsheet-appropriate).
+
+**Frontend**: Commodity Description added to the existing Gate In form. **"Mark Docked In" is now a
+modal, not a single-click button** — collects physical condition (OK/Flagged radio + remarks) for
+both directions, plus Seal Number + `SignaturePad` for Inbound only. The existing Gate Out modal
+gained the same Seal Number + `SignaturePad` pair, shown only for Outbound.
+
+Verified two ways: a throwaway-company API script, 25/25 checks passing (commodity description at
+Gate In; physical condition OK/Flagged + remarks at Dock In both directions; Inbound seal captured
+at Dock In and confirmed to survive an unrelated Gate Out untouched; Outbound Dock In confirmed to
+have NO seal; Outbound seal captured at Gate Out; export returning 200 with content). Then re-
+verified live through the actual rendered UI (logged in via the API+localStorage token trick): ran a
+real Inbound Gate In with a typed Commodity Description, opened the new Dock In modal and confirmed
+it showed the physical condition radios + Seal Number + signature pad (Inbound), submitted, and
+confirmed via the actual network response that all fields persisted correctly; ran the Gate Out for
+that entry and confirmed no seal fields appear for Inbound; ran a fresh Outbound Gate In, opened
+Gate Out, confirmed Seal Number + signature pad DO appear there (and only there) for Outbound, and
+confirmed the submitted seal number persisted. Signature drawing itself was exercised through the
+component's logic but not literally mouse-dragged during the live browser pass (no reliable pixel
+coordinates without a visible screenshot) — `sealSignatureData` round-tripping was fully confirmed
+by the API script instead. Docker Desktop had also stopped since the last session (same recurring
+gotcha as before) and needed restarting before the migration could be applied.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -1703,6 +1760,15 @@ real provider chosen, Exotel was the research lead for voice) and logs proof of 
 (`DockAssignmentScheduler`); actually reassigning the dock to the next vehicle after that stays
 fully deferred to the real Dock Scheduler, which itself still has no schema/design work done at all
 — only its eventual OUTPUT (a dock number) has anywhere to land now.
+
+Also worth knowing (2026-08-27, same day, later pass) — see "Seal/signature, physical condition
+inspection, and commodity description" above: a competitor-research pass (Blue Yonder/Infor YMS —
+see `wms-yms-competitor-research` memory) led to three more small, confirmed additions, all
+built and live-verified — commodity/cargo description at Gate In, a flat physical condition
+inspection (no photos) at Dock In for both directions, and seal number + a new canvas-based
+signature capture (Inbound at Dock In, Outbound at Gate Out). The same pass explicitly deferred a
+driver self-service portal, a Drop Trailer/Live Load flag, and a Yard Plan View — none of those are
+built.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
