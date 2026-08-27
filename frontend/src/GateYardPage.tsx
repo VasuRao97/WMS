@@ -1036,11 +1036,12 @@ function GateYardPage() {
 export default GateYardPage;
 
 const cardStyle: React.CSSProperties = {
-  border: '1px solid #ccc',
+  border: '1px solid #90b8e0',
   borderRadius: 8,
   padding: '12px 16px',
   textAlign: 'center',
   minWidth: 100,
+  background: '#eaf2fc',
 };
 const overlayStyle: React.CSSProperties = {
   position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
