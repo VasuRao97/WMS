@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 // Combines Gate In/Out and Yard Management into one page — the client's
 // explicit call ("both same, yard + gate in / gate out, security should
@@ -48,6 +48,7 @@ type GateEntry = {
   transporterName?: string;
   referenceNo?: string;
   destinationCity?: string;
+  commodityDescription?: string;
   yardSlot?: { id: string; code: string };
   gateInAt: string;
   gateInBy?: { name: string };
@@ -55,6 +56,11 @@ type GateEntry = {
   gateOutBy?: { name: string };
   dockedInAt?: string;
   dockedInBy?: { name: string };
+  physicalConditionOk?: boolean | null;
+  physicalConditionRemarks?: string;
+  sealNumber?: string;
+  sealSignatureData?: string;
+  sealCapturedAt?: string;
   eWayBillNo?: string;
   invoiceWeightKg?: number;
   materialReceivedConfirmed: boolean;
@@ -128,7 +134,7 @@ const DOCUMENT_DEFS: { type: string; label: string; source: 'vehicle' | 'driver'
 ];
 
 const emptyGateInForm = {
-  warehouseId: '', vehicleId: '', driverId: '', purpose: '', transporterName: '', referenceNo: '', destinationCity: '', grossWeightKg: '',
+  warehouseId: '', vehicleId: '', driverId: '', purpose: '', transporterName: '', referenceNo: '', destinationCity: '', commodityDescription: '', grossWeightKg: '',
 };
 const emptyVehicleForm = {
   vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '', detentionCostPerDay: '',
@@ -136,7 +142,77 @@ const emptyVehicleForm = {
   isBlacklisted: false, blacklistReason: '',
 };
 const emptyDriverForm = { name: '', phone: '', licenseNumber: '', licenseExpiry: '', isBlacklisted: false, blacklistReason: '' };
-const emptyGateOutForm = { tareWeightKg: '', eWayBillNo: '', invoiceWeightKg: '', materialReceivedConfirmed: false };
+const emptyGateOutForm = { tareWeightKg: '', eWayBillNo: '', invoiceWeightKg: '', materialReceivedConfirmed: false, sealNumber: '', sealSignatureData: '' };
+// physicalConditionOk stays `null` until the guard actually picks OK/Flagged
+// — distinct from "left unset," same reasoning as the schema field itself.
+const emptyDockInForm = { physicalConditionOk: null as boolean | null, physicalConditionRemarks: '', sealNumber: '', sealSignatureData: '' };
+
+// Simple canvas signature pad (2026-08-27) — the first signature-capture UI
+// in this codebase. No blob/asset storage exists here yet, so the captured
+// drawing is exported as a base64 PNG data URL straight into
+// VehicleGateEntry.sealSignatureData (a plain text column is enough for one
+// small image). Pointer events cover both mouse and touch in one handler set
+// (this page is meant to hold up on a security guard's tablet eventually).
+function SignaturePad({ value, onChange }: { value: string; onChange: (dataUrl: string) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingRef = useRef(false);
+
+  const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    drawingRef.current = true;
+    const { x, y } = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const { x, y } = getPos(e);
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#000';
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+  const handlePointerUp = () => {
+    if (!drawingRef.current) return;
+    drawingRef.current = false;
+    if (canvasRef.current) onChange(canvasRef.current.toDataURL('image/png'));
+  };
+  const handleClear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    onChange('');
+  };
+
+  return (
+    <div>
+      <canvas
+        ref={canvasRef}
+        width={300}
+        height={120}
+        style={{ border: '1px solid #ccc', borderRadius: 4, touchAction: 'none', background: '#fff', display: 'block' }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+      />
+      <div style={{ fontSize: 12, marginTop: 4 }}>
+        <button type="button" onClick={handleClear}>Clear Signature</button>
+        {value && <span style={{ marginLeft: 8, color: 'green' }}>✓ Signature captured</span>}
+      </div>
+    </div>
+  );
+}
 
 function GateYardPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -169,6 +245,10 @@ function GateYardPage() {
   const [gateOutFor, setGateOutFor] = useState<GateEntry | null>(null);
   const [gateOutForm, setGateOutForm] = useState(emptyGateOutForm);
   const [gateOutError, setGateOutError] = useState('');
+
+  const [dockInFor, setDockInFor] = useState<GateEntry | null>(null);
+  const [dockInForm, setDockInForm] = useState(emptyDockInForm);
+  const [dockInError, setDockInError] = useState('');
 
   const [showOpenList, setShowOpenList] = useState(true);
   const [showHistoryList, setShowHistoryList] = useState(false);
@@ -308,6 +388,11 @@ function GateYardPage() {
     if (gateOutFor.purpose === 'OUTBOUND_DISPATCH') {
       body.eWayBillNo = gateOutForm.eWayBillNo || undefined;
       body.invoiceWeightKg = gateOutForm.invoiceWeightKg || undefined;
+      // Seal is captured here for Outbound (right after loading, same
+      // moment as the E-Way Bill) — Inbound captures it at Dock In instead,
+      // see handleDockInSubmit below.
+      body.sealNumber = gateOutForm.sealNumber || undefined;
+      body.sealSignatureData = gateOutForm.sealSignatureData || undefined;
     } else if (gateOutFor.purpose === 'INBOUND_DELIVERY') {
       body.materialReceivedConfirmed = gateOutForm.materialReceivedConfirmed;
     }
@@ -321,14 +406,35 @@ function GateYardPage() {
     loadTracker(); loadYardSummary(); loadHistory();
   };
 
-  const handleDockIn = async (id: string) => {
-    const res = await fetch(`http://localhost:3000/gate-entries/${id}/dock-in`, { method: 'PATCH', headers: authHeaders() });
+  // Dock In now opens a small modal instead of firing immediately — it's
+  // also where the physical condition inspection (both directions) and,
+  // for Inbound only, the seal number/signature get captured (2026-08-27).
+  const openDockIn = (entry: GateEntry) => {
+    setDockInFor(entry);
+    setDockInForm(emptyDockInForm);
+    setDockInError('');
+  };
+
+  const handleDockInSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dockInFor) return;
+    setDockInError('');
+    const body: any = {
+      physicalConditionOk: dockInForm.physicalConditionOk,
+      physicalConditionRemarks: dockInForm.physicalConditionRemarks || undefined,
+    };
+    if (dockInFor.purpose === 'INBOUND_DELIVERY') {
+      body.sealNumber = dockInForm.sealNumber || undefined;
+      body.sealSignatureData = dockInForm.sealSignatureData || undefined;
+    }
+    const res = await fetch(`http://localhost:3000/gate-entries/${dockInFor.id}/dock-in`, { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify(body) });
+    const data = await res.json();
     if (!res.ok) {
-      const data = await res.json();
-      alert(errorText(data, 'Could not mark this vehicle docked in.'));
+      setDockInError(errorText(data, 'Could not mark this vehicle docked in.'));
       return;
     }
-    loadTracker(); loadYardSummary();
+    setDockInFor(null);
+    loadTracker(); loadYardSummary(); loadHistory();
   };
 
   // Fires the driver's SMS + automated call immediately server-side
@@ -446,6 +552,7 @@ function GateYardPage() {
               <input placeholder="Transporter Name" value={gateInForm.transporterName} onChange={(e) => setGateInForm({ ...gateInForm, transporterName: e.target.value })} style={{ width: 180 }} />
               <input placeholder="Reference No" value={gateInForm.referenceNo} onChange={(e) => setGateInForm({ ...gateInForm, referenceNo: e.target.value })} style={{ width: 150 }} />
               <input placeholder="Destination City" value={gateInForm.destinationCity} onChange={(e) => setGateInForm({ ...gateInForm, destinationCity: e.target.value })} style={{ width: 150 }} />
+              <input placeholder="Commodity / Cargo Description" value={gateInForm.commodityDescription} onChange={(e) => setGateInForm({ ...gateInForm, commodityDescription: e.target.value })} style={{ width: 220 }} />
               <input placeholder="Gross Weight (kg)" value={gateInForm.grossWeightKg} onChange={(e) => setGateInForm({ ...gateInForm, grossWeightKg: e.target.value })} style={{ width: 140 }} />
             </div>
 
@@ -615,10 +722,19 @@ function GateYardPage() {
                 <input placeholder="Tare Weight (kg)" value={gateOutForm.tareWeightKg} onChange={(e) => setGateOutForm({ ...gateOutForm, tareWeightKg: e.target.value })} style={{ width: 150 }} />
               </div>
               {gateOutFor.purpose === 'OUTBOUND_DISPATCH' && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-                  <input placeholder="Invoice Weight (kg) *" value={gateOutForm.invoiceWeightKg} onChange={(e) => setGateOutForm({ ...gateOutForm, invoiceWeightKg: e.target.value })} style={{ width: 160 }} />
-                  <input placeholder="E-Way Bill No" value={gateOutForm.eWayBillNo} onChange={(e) => setGateOutForm({ ...gateOutForm, eWayBillNo: e.target.value })} style={{ width: 160 }} />
-                </div>
+                <>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    <input placeholder="Invoice Weight (kg) *" value={gateOutForm.invoiceWeightKg} onChange={(e) => setGateOutForm({ ...gateOutForm, invoiceWeightKg: e.target.value })} style={{ width: 160 }} />
+                    <input placeholder="E-Way Bill No" value={gateOutForm.eWayBillNo} onChange={(e) => setGateOutForm({ ...gateOutForm, eWayBillNo: e.target.value })} style={{ width: 160 }} />
+                  </div>
+                  {/* Seal + signature — sealed right after loading, same
+                      moment as the E-Way Bill above (2026-08-27). */}
+                  <div style={{ marginBottom: 12 }}>
+                    <input placeholder="Seal Number" value={gateOutForm.sealNumber} onChange={(e) => setGateOutForm({ ...gateOutForm, sealNumber: e.target.value })} style={{ width: 160, marginBottom: 8, display: 'block' }} />
+                    <p style={{ margin: '0 0 4px', fontSize: 12, color: '#666' }}>Driver Signature</p>
+                    <SignaturePad value={gateOutForm.sealSignatureData} onChange={(dataUrl) => setGateOutForm({ ...gateOutForm, sealSignatureData: dataUrl })} />
+                  </div>
+                </>
               )}
               {gateOutFor.purpose === 'INBOUND_DELIVERY' && (
                 <div style={{ marginBottom: 12 }}>
@@ -631,6 +747,47 @@ function GateYardPage() {
               <div>
                 <button type="submit">Gate Out</button>
                 <button type="button" onClick={() => setGateOutFor(null)} style={{ marginLeft: 8 }}>Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Dock In modal — physical condition (both directions) + Inbound-only
+          seal capture (2026-08-27). */}
+      {dockInFor && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <h3 style={{ marginTop: 0 }}>Mark Docked In — {dockInFor.vehicle.vehicleNumber}</h3>
+            <p style={{ marginTop: -8, color: '#666' }}>{PURPOSE_LABELS[dockInFor.purpose]}</p>
+            <form onSubmit={handleDockInSubmit}>
+              <div style={{ marginBottom: 12 }}>
+                <p style={{ marginBottom: 4, fontWeight: 'bold' }}>Physical Condition (truck/trailer — dents, tyres, etc.)</p>
+                <label style={{ marginRight: 16 }}>
+                  <input type="radio" name="physicalConditionOk" checked={dockInForm.physicalConditionOk === true} onChange={() => setDockInForm({ ...dockInForm, physicalConditionOk: true })} /> OK
+                </label>
+                <label>
+                  <input type="radio" name="physicalConditionOk" checked={dockInForm.physicalConditionOk === false} onChange={() => setDockInForm({ ...dockInForm, physicalConditionOk: false })} /> Flagged
+                </label>
+                <input
+                  placeholder="Remarks (optional)"
+                  value={dockInForm.physicalConditionRemarks}
+                  onChange={(e) => setDockInForm({ ...dockInForm, physicalConditionRemarks: e.target.value })}
+                  style={{ width: '100%', marginTop: 8, boxSizing: 'border-box' }}
+                />
+              </div>
+              {dockInFor.purpose === 'INBOUND_DELIVERY' && (
+                <div style={{ marginBottom: 12 }}>
+                  <p style={{ marginBottom: 4, fontWeight: 'bold' }}>Seal — checked as it arrived, before unloading</p>
+                  <input placeholder="Seal Number" value={dockInForm.sealNumber} onChange={(e) => setDockInForm({ ...dockInForm, sealNumber: e.target.value })} style={{ width: 160, marginBottom: 8, display: 'block' }} />
+                  <p style={{ margin: '0 0 4px', fontSize: 12, color: '#666' }}>Driver Signature</p>
+                  <SignaturePad value={dockInForm.sealSignatureData} onChange={(dataUrl) => setDockInForm({ ...dockInForm, sealSignatureData: dataUrl })} />
+                </div>
+              )}
+              {dockInError && <p style={{ color: 'crimson' }}>{dockInError}</p>}
+              <div>
+                <button type="submit">Confirm Docked In</button>
+                <button type="button" onClick={() => setDockInFor(null)} style={{ marginLeft: 8 }}>Cancel</button>
               </div>
             </form>
           </div>
@@ -712,7 +869,7 @@ function GateYardPage() {
                   <td style={{ padding: 8 }}>{fmtHours(r.hoursInDock)}</td>
                   <td style={{ padding: 8 }}>{r.detentionCost != null ? `₹${r.detentionCost.toFixed(2)}` : '—'}</td>
                   <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
-                    {r.status === 'IN_YARD' && <button onClick={() => handleDockIn(r.gateEntryId)}>Mark Docked In</button>}
+                    {r.status === 'IN_YARD' && fullEntry && <button onClick={() => openDockIn(fullEntry)}>Mark Docked In</button>}
                     {fullEntry && <button onClick={() => openGateOut(fullEntry)} style={{ marginLeft: 6 }}>Gate Out</button>}
                   </td>
                 </tr>

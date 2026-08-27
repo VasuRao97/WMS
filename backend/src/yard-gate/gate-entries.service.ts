@@ -197,6 +197,7 @@ export class GateEntriesService {
     }
 
     const documentChecks = this.validateDocumentChecks(data.documentChecks, errors);
+    const commodityDescription = data.commodityDescription ? String(data.commodityDescription).trim() : undefined;
 
     let yardResult: { yardSlotId?: string; yardFullWarning: boolean } = { yardFullWarning: false };
     if (warehouseId && companyId && errors.length === 0) {
@@ -215,6 +216,7 @@ export class GateEntriesService {
           purpose: purpose as any,
           referenceNo: data.referenceNo ? String(data.referenceNo).trim() : undefined,
           destinationCity: data.destinationCity ? String(data.destinationCity).trim() : undefined,
+          commodityDescription,
           yardSlot: yardResult.yardSlotId ? { connect: { id: yardResult.yardSlotId } } : undefined,
           gateInBy: { connect: { id: user.userId } },
           grossWeightKg: grossWeightKg,
@@ -265,10 +267,14 @@ export class GateEntriesService {
       'Purpose': e.purpose,
       'Reference No': e.referenceNo || '',
       'Destination City': e.destinationCity || '',
+      'Commodity Description': e.commodityDescription || '',
       'Yard Slot': e.yardSlot?.code || '',
       'Assigned Dock': e.assignedDockNumber || '',
       'Docked In At': e.dockedInAt ? e.dockedInAt.toISOString() : '',
       'Docked In By': e.dockedInBy?.name || '',
+      'Physical Condition OK': e.physicalConditionOk === true ? 'TRUE' : e.physicalConditionOk === false ? 'FALSE' : '',
+      'Physical Condition Remarks': e.physicalConditionRemarks || '',
+      'Seal Number': e.sealNumber || '',
       'Gate Out At': e.gateOutAt ? e.gateOutAt.toISOString() : '',
       'Gate Out By': e.gateOutBy?.name || '',
       'E-Way Bill No': e.eWayBillNo || '',
@@ -332,16 +338,37 @@ export class GateEntriesService {
   // yet) — just marks "this vehicle left the yard," frees its slot, and
   // stops here. No dock door selection, no appointment logic — that's a
   // separate future feature. See schema.prisma's comment on `dockedInAt`.
-  async dockIn(id: string, user: any) {
+  //
+  // Also where the physical condition inspection (both directions) and,
+  // for INBOUND_DELIVERY only, the seal number/signature get captured
+  // (2026-08-27, Yard/Gate competitor-research follow-up) — see
+  // schema.prisma's comments on those fields. All optional; nothing here
+  // blocks Dock In if left blank.
+  async dockIn(id: string, data: any, user: any) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
     if (existing.dockedInAt) throw new BadRequestException('This vehicle has already been marked docked in.');
     if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
 
+    const physicalConditionOk = data?.physicalConditionOk !== undefined && data.physicalConditionOk !== null ? !!data.physicalConditionOk : undefined;
+    const physicalConditionRemarks = data?.physicalConditionRemarks ? String(data.physicalConditionRemarks).trim() : undefined;
+    const sealNumber = data?.sealNumber ? String(data.sealNumber).trim() : undefined;
+    const sealSignatureData = data?.sealSignatureData ? String(data.sealSignatureData) : undefined;
+    const sealCaptured = sealNumber !== undefined || sealSignatureData !== undefined;
+
     const updated = await this.prisma.$transaction(async (tx) => {
       const entry = await tx.vehicleGateEntry.update({
         where: { id },
-        data: { dockedInAt: new Date(), dockedInBy: { connect: { id: user.userId } } },
+        data: {
+          dockedInAt: new Date(),
+          dockedInBy: { connect: { id: user.userId } },
+          physicalConditionOk,
+          physicalConditionRemarks,
+          sealNumber,
+          sealSignatureData,
+          sealCapturedAt: sealCaptured ? new Date() : undefined,
+          sealCapturedBy: sealCaptured ? { connect: { id: user.userId } } : undefined,
+        },
         include: GATE_ENTRY_INCLUDE,
       });
       if (existing.yardSlotId) {
@@ -414,6 +441,12 @@ export class GateEntriesService {
     const eWayBillNo = data?.eWayBillNo !== undefined ? String(data.eWayBillNo).trim() || undefined : undefined;
     const materialReceivedConfirmed = !!data?.materialReceivedConfirmed;
 
+    // Seal number/signature — Outbound only lands here (Inbound captures it
+    // at Dock In instead, see dockIn() above). Optional either way.
+    const sealNumber = data?.sealNumber ? String(data.sealNumber).trim() : undefined;
+    const sealSignatureData = data?.sealSignatureData ? String(data.sealSignatureData) : undefined;
+    const sealCaptured = sealNumber !== undefined || sealSignatureData !== undefined;
+
     let invoiceWeightKg: number | undefined;
     if (data?.invoiceWeightKg !== undefined && data.invoiceWeightKg !== null && data.invoiceWeightKg !== '') {
       invoiceWeightKg = Number(data.invoiceWeightKg);
@@ -463,6 +496,10 @@ export class GateEntriesService {
           eWayBillGeneratedAt: eWayBillNo !== undefined ? new Date() : undefined,
           materialReceivedConfirmed,
           invoiceWeightKg,
+          sealNumber,
+          sealSignatureData,
+          sealCapturedAt: sealCaptured ? new Date() : undefined,
+          sealCapturedBy: sealCaptured ? { connect: { id: user.userId } } : undefined,
         },
         include: GATE_ENTRY_INCLUDE,
       });

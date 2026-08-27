@@ -162,15 +162,16 @@ model User {
   assignedWarehouses Warehouse[]
   loginEvents        LoginEvent[]
 
-  receiptsCreated   InboundReceipt[]   @relation("ReceiptCreatedBy")
-  putawaysCompleted PutawayTask[]      @relation("PutawayCompletedBy")
-  ordersCreated     OutboundOrder[]    @relation("OrderCreatedBy")
-  picksCompleted    PickTask[]         @relation("PickedBy")
-  dispatches        Dispatch[]         @relation("DispatchedBy")
-  movements         StockMovement[]    @relation("MovementCreatedBy")
-  gateEntriesIn     VehicleGateEntry[] @relation("GateInBy")
-  gateEntriesOut    VehicleGateEntry[] @relation("GateOutBy")
-  gateEntriesDocked VehicleGateEntry[] @relation("DockedInBy")
+  receiptsCreated     InboundReceipt[]   @relation("ReceiptCreatedBy")
+  putawaysCompleted   PutawayTask[]      @relation("PutawayCompletedBy")
+  ordersCreated       OutboundOrder[]    @relation("OrderCreatedBy")
+  picksCompleted      PickTask[]         @relation("PickedBy")
+  dispatches          Dispatch[]         @relation("DispatchedBy")
+  movements           StockMovement[]    @relation("MovementCreatedBy")
+  gateEntriesIn       VehicleGateEntry[] @relation("GateInBy")
+  gateEntriesOut      VehicleGateEntry[] @relation("GateOutBy")
+  gateEntriesDocked   VehicleGateEntry[] @relation("DockedInBy")
+  gateEntriesSealedBy VehicleGateEntry[] @relation("SealCapturedBy")
 
   notificationsReceived       NotificationLog[]    @relation("NotificationRecipient")
   notificationsEscalatedTo    NotificationLog[]    @relation("NotificationEscalatedTo")
@@ -956,6 +957,42 @@ model VehicleGateEntry {
   // confirming a SelfCheckInRequest rather than a normal Gate In. See that
   // model's comment for the full self-service check-in flow.
   selfCheckInRequest SelfCheckInRequest?
+
+  // Cargo/commodity description — free-text, useful for basic visibility
+  // before a real Inbound/Outbound module exists to carry SKU-level detail
+  // (2026-08-27, Yard/Gate competitor-research follow-up — see
+  // wms-yms-competitor-research memory). Captured at Gate In, either
+  // direction.
+  commodityDescription String?
+
+  // Physical condition inspection — separate from GateEntryDocumentCheck's
+  // paperwork checks: this is about the truck/trailer's own physical state
+  // (dents, tyres), not document validity. Deliberately flat (no photos, no
+  // itemized checklist) — the client's own call, "not mature enough to take
+  // in photos yet." Captured once, alongside Dock In (dockIn()) for BOTH
+  // directions — there's no separate "loading start" event in this system
+  // to hang it off instead, and Dock In is the natural "about to
+  // load/unload" moment.
+  physicalConditionOk      Boolean?
+  physicalConditionRemarks String?
+
+  // Seal number + signature — cheap dispute-resolution fields ("was the
+  // seal intact when it left/arrived"). Timing differs by purpose, same
+  // "purpose decides what's captured at each step" pattern eWayBillNo/
+  // materialReceivedConfirmed already use: for INBOUND_DELIVERY, captured
+  // at Dock In (the seal the truck arrived with, checked before unloading);
+  // for OUTBOUND_DISPATCH, captured at Gate Out (sealed right after
+  // loading — same moment the E-Way Bill is generated, "dock out" in the
+  // client's own words but this system has no separate Dock Out event, so
+  // it lands on the existing Gate Out step, same as E-Way Bill does).
+  // sealSignatureData is a base64 PNG from a simple canvas signature pad —
+  // no separate asset/blob storage exists in this project, so a plain text
+  // column is enough for one small image.
+  sealNumber        String?
+  sealSignatureData String?
+  sealCapturedAt    DateTime?
+  sealCapturedById  String?
+  sealCapturedBy    User?     @relation("SealCapturedBy", fields: [sealCapturedById], references: [id])
 
   createdAt DateTime @default(now())
 

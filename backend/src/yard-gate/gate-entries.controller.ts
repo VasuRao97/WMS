@@ -57,12 +57,13 @@ export class GateEntriesController {
     return this.gateEntriesService.gateOut(id, body, user);
   }
 
-  // Lightweight stand-in for real Dock Scheduling — see
+  // Lightweight stand-in for real Dock Scheduling, also where physical
+  // condition + (Inbound-only) seal capture land — see
   // GateEntriesService.dockIn's comment.
   @Patch(':id/dock-in')
   @Roles(...GATE_YARD_OPERATE_ROLES)
-  dockIn(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.gateEntriesService.dockIn(id, user);
+  dockIn(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.gateEntriesService.dockIn(id, body, user);
   }
 
   // Security Supervisor types in the dock number they've been told — see
