@@ -17,6 +17,8 @@ import { VehicleTypesModule } from './vehicle-types/vehicle-types.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { CompaniesModule } from './companies/companies.module';
 import { InboundModule } from './inbound/inbound.module';
+import { EquipmentTypesModule } from './equipment-types/equipment-types.module';
+import { EquipmentModule } from './equipment/equipment.module';
 
 @Module({
   imports: [
@@ -39,6 +41,8 @@ import { InboundModule } from './inbound/inbound.module';
     NotificationsModule,
     CompaniesModule,
     InboundModule,
+    EquipmentTypesModule,
+    EquipmentModule,
   ],
   controllers: [AppController],
   providers: [AppService],

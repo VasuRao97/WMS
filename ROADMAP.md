@@ -2,8 +2,8 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-28 (Dock Door
-auto-generation rebuild; Putaway itself still not started).
+what to pick up next. Updated as priorities shift — last updated 2026-08-28 (MHE/Equipment master
+built as a Putaway prerequisite; Putaway's own task logic still not started).
 
 Stated direction: cover the basics of every module first (module build order below), then come
 back and deepen each one — rather than gold-plating one module before the rest exist at all.
@@ -18,7 +18,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| Putaway | ⬜ Not started — schema exists (`PutawayTask`), no logic/UI. Prerequisite closed 2026-08-28 (Dock Door + staging Locations now auto-generated from Warehouse.noOfDocks) |
+| Putaway | ⬜ Task logic/UI not started — schema exists (`PutawayTask`). Two prerequisites now closed: Dock Door + staging Locations auto-generation (2026-08-28), and a real MHE/Equipment master (`EquipmentType`/`Equipment`, 2026-08-28 — built because the client wants Putaway's task/suggestion logic designed against real equipment throughput, not guessed at) |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |
@@ -122,6 +122,47 @@ auto-generated from Warehouse.noOfDocks" section. **Putaway itself has NOT been 
 was a prerequisite closed first, the three workflow-alignment questions (task creation trigger, bin
 selection, page location) are still open and unanswered.
 
+## Session note (2026-08-28, Putaway kickoff conversation — MHE master built, task logic still not started)
+Picked the three workflow questions back up: task creation trigger, bin selection, and page location
+all got real answers (per-line/per-batch trigger modes with a company toggle, system-suggested bin
+only — "it can never be operator's decision", a standalone Putaway page) — but jumping straight into
+`PutawayTask` schema off those answers alone was premature and got called out directly. Real
+process note: mid-conversation code got written and was reverted (`git checkout` on
+`schema.prisma`, nothing else touched) before the conversation actually continued. See
+`[[wms-align-before-coding]]`.
+
+Five more real dimensions surfaced once discussion continued: multi-dock parallel picking, operator-
+to-vehicle assignment (dedicated vs. pooled), physical execution method (manual vs. MHE), and bin
+consolidation. Resolutions: consolidation is out (bin suggestion only ever offers a genuinely
+available bin); multi-dock-parallel and dedicated-vs-pooled operator assignment are both
+deliberately **not** enforced modes — "we need to build both... our value add should be that we
+need to suggest which way is better after a few days of operations" — i.e. let staff work however
+they naturally do, capture the data, let a future Analytics pass compare patterns. MHE turned out
+to be the real blocker: **"we need to get the MHE master at start, and work accordingly, the
+throughput of each mhe would be different."**
+
+This session built that master: `EquipmentType` (platform-seeded — Manual, Hand Held Trolley, HOPT,
+BOPT, Stacker, two Forklift sub-types, Reach Truck, DDRT, each with a placeholder generic
+pallets-per-trip/avg-trip-minutes) + `Equipment` (a company's own warehouse-scoped registered
+units, overriding the generic numbers) — full CRUD, a new "Equipment (MHE)" page under Masters,
+verified via a throwaway-company API script and a live browser pass. Full detail in `CLAUDE.md`'s
+"MHE (Material Handling Equipment) master — built before Putaway itself" section.
+
+**Same-session follow-up, corrected same day**: a six-activity suitability matrix
+(Putaway/Picking/Loading/Unloading/Consolidation/Inventory Check, each PRIMARY/SECONDARY/NOT_USED)
+was added — your own ask, "so we get all the mhe's in warehouse instantly." First built directly on
+`EquipmentType` (shared platform-wide, no edit path) — caught immediately ("where is the matrix for
+input??") and corrected to be **warehouse-wise**, per your own call: "it should be warehouse wise!
+you can give dropdown for wh code and give matrix." Now a real `WarehouseEquipmentSuitability`
+table, one row per (Warehouse, EquipmentType), auto-populated with sensible defaults at warehouse
+creation and fully editable via a real "Equipment Type Matrix" screen (pick a warehouse, edit a 9×6
+grid, save). `GET /equipment?activity=X&warehouseId=Y` gives the real, Primary-ranked instant
+lookup the original ask wanted. Full detail in `CLAUDE.md`'s "MHE activity suitability matrix"
+section (includes the correction story). **Putaway's own task logic (trigger modes, bin suggestion,
+batching, claiming) is still NOT started** — a real workflow conversation designing that logic
+against this real, warehouse-specific equipment data is the natural next step, not a re-litigation
+of what's already been decided above.
+
 The first three candidates below are the module-level options (unchanged from before); the rest
 are smaller items raised in earlier sessions — pick any of them, not a forced order.
 
@@ -133,8 +174,10 @@ Pick one — these are the live options on the table, not a forced order:
    staging location to a real final storage bin. This is also what would let received Inbound
    stock actually go somewhere instead of sitting at staging indefinitely. Also the first real
    consumer of the new `DockLocationDistance` data (dock-suggestion logic was explicitly deferred
-   to land here). `PutawayTask` schema already exists (receiptLine/sku/from/to Location/quantity/
-   status PENDING|COMPLETED) — no logic/UI built yet, workflow conversation to happen first.
+   to land here) and the new MHE/`Equipment` master built this session. `PutawayTask` schema already
+   exists (receiptLine/sku/from/to Location/quantity/status PENDING|COMPLETED) but will need real
+   rework once task logic is actually designed — trigger-mode toggle, system-only bin suggestion,
+   and MHE-aware task sizing all still need a real workflow conversation before touching schema.
 2. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now (Inbound receiving
    writes to it), but nothing renders it. Even a read-only view would close a real, felt gap.

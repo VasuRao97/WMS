@@ -67,6 +67,48 @@ const VEHICLE_TYPES: { name: string; segment: string; lengthFt: number; widthFt:
   { name: '40 ft Container', segment: 'Container', lengthFt: 40, widthFt: 8, heightFt: 8.5, maxTonnage: 28 },
 ];
 
+// Seeds EquipmentType — platform-level reference data for Putaway's MHE
+// master (2026-08-28, "we need to get the MHE master at start" — built
+// before any Putaway task logic, per the client's own explicit sequencing).
+// Same "not a tenant master, seeded by us, client corrects the numbers
+// later" shape as VehicleType. Two entries came from a direct client
+// disambiguation: "Manual" is a real zero-equipment hand-carry entry
+// (needed so a task worked with no MHE at all still has somewhere to log
+// throughput against), distinct from "Hand Held Trolley" (a real wheeled
+// cart). Forklift is split into named sub-types (confirmed explicitly,
+// same reasoning as VehicleType splitting Dost vs. Bada Dost) rather than
+// one generic entry with per-unit overrides. "Stacker (Walkie/Rider)" was
+// added by us, not in the client's own named list — a common lighter-duty
+// vertical-lift type in Indian warehouses, easy to drop/rename later if it
+// doesn't apply.
+//
+// genericPalletsPerTrip/genericAvgTripMinutes are both placeholder numbers
+// (same "ships with a number, client corrects it later" convention as
+// VehicleType.maxTonnage) — not sourced from this client's real fleet,
+// don't treat them as final. Every real Equipment unit a company registers
+// can override either figure with its own measured value.
+//
+// The activity-suitability matrix (Putaway/Picking/Loading/Unloading/
+// Consolidation/Inventory Check) is deliberately NOT seeded here — a same-
+// day correction, 2026-08-28: it was first built as a shared column set on
+// this very model, then moved to a per-(Warehouse, EquipmentType) table
+// once it became clear there was nowhere to actually edit a platform-wide
+// matrix ("where is the matrix for input??"). See
+// `common/equipment-suitability-defaults.ts` (consumed by
+// `WarehousesService.generateEquipmentSuitability()`) and
+// `WarehouseEquipmentSuitability` in schema.prisma for where it lives now.
+const EQUIPMENT_TYPES: { name: string; genericPalletsPerTrip: number; genericAvgTripMinutes: number }[] = [
+  { name: 'Manual (Hand Carry)', genericPalletsPerTrip: 0.05, genericAvgTripMinutes: 3 },
+  { name: 'Hand Held Trolley', genericPalletsPerTrip: 0.15, genericAvgTripMinutes: 4 },
+  { name: 'HOPT (Hand Pallet Truck)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 6 },
+  { name: 'BOPT (Battery Pallet Truck)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 4 },
+  { name: 'Stacker (Walkie/Rider)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 4.5 },
+  { name: 'Forklift (Electric, up to 2T)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3 },
+  { name: 'Forklift (Diesel/LPG, 2.5T+)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3.5 },
+  { name: 'Reach Truck (RT)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3 },
+  { name: 'Double Deep Reach Truck (DDRT)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3.5 },
+];
+
 async function main() {
   for (const name of CATEGORIES) {
     await prisma.productCategory.upsert({
@@ -85,6 +127,15 @@ async function main() {
     });
   }
   console.log(`Seeded ${VEHICLE_TYPES.length} vehicle types.`);
+
+  for (const et of EQUIPMENT_TYPES) {
+    await prisma.equipmentType.upsert({
+      where: { name: et.name },
+      update: {},
+      create: et,
+    });
+  }
+  console.log(`Seeded ${EQUIPMENT_TYPES.length} equipment types.`);
 }
 
 main()

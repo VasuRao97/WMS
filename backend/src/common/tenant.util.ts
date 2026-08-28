@@ -45,6 +45,16 @@ export const GATE_YARD_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WARE
 export const GATE_YARD_OPERATE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'];
 export const GATE_YARD_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'];
 
+// MHE (Material Handling Equipment) master (2026-08-28, Putaway kickoff —
+// built before any Putaway task logic). Same tier as Inbound's own floor
+// roles, not Gate/Yard's — SECURITY_SUPERVISOR is deliberately excluded
+// (their surface is the gate, not warehouse-floor equipment), OPERATOR is
+// included since they're who'll eventually execute Putaway tasks with this
+// gear. Create/edit/delete stays MASTER_DATA_WRITE_ROLES/'COMPANY_ADMIN',
+// same tier as DockDoor (a physical asset config, occasional-edit).
+export const EQUIPMENT_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const EQUIPMENT_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+
 // Roles that keep Gate/Yard access even when a company turns ON
 // Company.restrictGateAccessToSecuritySupervisor — Manager/Admin oversight
 // is never locked out by the toggle, only the general Supervisor/Operator

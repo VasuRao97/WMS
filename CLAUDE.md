@@ -2303,6 +2303,141 @@ as "the real client tenant." The client confirmed they're not sure either. No ba
 attempted against any specific company as a result — `noOfDocks` will simply drive this
 automatically the moment a real client company and warehouse actually get set up.
 
+### MHE (Material Handling Equipment) master — built before Putaway itself (2026-08-28)
+A real process correction, worth remembering: this session opened with the three original Putaway
+workflow questions from the previous session's ROADMAP note (task creation trigger, bin selection,
+page location) and got real answers — but jumping straight into writing PutawayTask schema off
+those answers alone was premature and got called out directly ("who told you to code??? we havent
+finish discussed"). Five more real dimensions surfaced once the conversation actually continued:
+multi-dock parallel picking, operator-to-vehicle assignment (dedicated vs. pooled), how putaway is
+physically executed (manual vs. MHE), and whether bin consolidation is ever needed first. The
+schema/code from the premature jump was reverted (`git checkout` on `schema.prisma`, nothing else
+had been touched) before any further discussion happened. See `[[wms-align-before-coding]]`.
+
+Working through those five: consolidation is out (the bin-suggestion algorithm will only ever
+suggest a genuinely available bin, never one needing space freed up first). Multi-dock-parallel and
+dedicated-vs-pooled operator assignment are both explicitly **not** being built as enforced modes —
+the client's own framing: "we need to build both... our value add should be that we need to suggest
+which way is better after a few days of operations" — i.e. don't gate/restrict either pattern, just
+let staff work however they naturally do and capture enough real data (operator, vehicle, dock,
+timestamps) that a future Analytics pass (already last in the module build order) can observe which
+pattern performed better. Nothing to build for that here beyond keeping those fields on whatever
+Putaway ends up capturing later.
+
+MHE turned out to be the real blocker: "the throughput of each mhe would be different" — the client
+wants Putaway's actual task/suggestion logic designed against real equipment throughput data, not
+decided in the abstract. Their own instruction: "we need to get the MHE master at start, and work
+accordingly" — build the master now, design Putaway's task logic in a later session once it's real
+data to look at, not guessed at in the same breath as the master itself. **Putaway task logic itself
+(trigger modes, bin suggestion, batching, claiming) is still not started** — this session only
+built the MHE foundation piece.
+
+**Same two-tier shape as Vehicle/VehicleType**, confirmed directly rather than assumed:
+`EquipmentType` is platform-seeded reference data (`prisma/seed.ts`, not client-editable, same tier
+as `VehicleType`/`ProductCategory`) — Manual (Hand Carry), Hand Held Trolley, HOPT, BOPT, Stacker
+(Walkie/Rider — added by us, not in the client's own named list, flagged as easy to drop/rename),
+Forklift split into two named sub-types (Electric up to 2T / Diesel-LPG 2.5T+, same reasoning as
+`VehicleType` splitting Dost vs. Bada Dost — confirmed explicitly rather than one generic Forklift
+entry with per-unit overrides), Reach Truck (RT), Double Deep Reach Truck (DDRT). `Equipment` is a
+company's own actual registered unit — **warehouse-scoped** (confirmed: unlike `Vehicle`, which
+roams between warehouses, MHE is a physical asset that lives at one warehouse), same tier as
+`DockDoor`/`Location` for code uniqueness (`@@unique([warehouseId, code])`, not company-wide).
+
+**Throughput is one consistent unit across every type: pallet-equivalents per trip**, plus average
+trip minutes — confirmed explicitly rather than adding a separate cases/eaches figure for
+non-palletized equipment (Manual/Hand Held Trolley just carry a small fraction of a pallet per
+trip, e.g. 0.05/0.15). Keeps every equipment type comparable on the same scale for whatever Putaway
+logic eventually consumes it. `Equipment.palletsPerTrip`/`avgTripMinutes` are optional per-unit
+overrides of `EquipmentType`'s generic numbers — same override-when-known/fall-back-to-generic
+pattern as `Vehicle` overriding `VehicleType`'s dimensions/`maxTonnage`. Generic numbers are
+placeholders (same "ships with a number, client corrects it later" convention as
+`VehicleType.maxTonnage`) — not sourced from this client's real fleet, don't treat them as final.
+
+**Backend**: new `equipment-types/` (read-only `GET /equipment-types`, same shape as
+`vehicle-types/`) and `equipment/` (full CRUD — create/list/update/deactivate/reactivate/Delete
+All/single delete — same shape as `DockDoorsService`, gated `MASTER_DATA_WRITE_ROLES` for
+write/`COMPANY_ADMIN` for delete, new `EQUIPMENT_READ_ROLES`/`EQUIPMENT_SCOPED_ROLES` in
+`tenant.util.ts` for read — Operator included since they're who'll eventually execute Putaway tasks
+with this gear, Security Supervisor excluded since their surface is the gate, not warehouse-floor
+equipment). Unlike `DockDoor` (now fully auto-generated), Equipment has no generator — a company
+just tells us what it owns, so create stays open on this page, not removed. Migration
+`20260828140000_add_equipment_master`.
+
+**Frontend**: new `EquipmentPage.tsx`, added to the Masters dropdown as "Equipment (MHE)" — a
+manual "Add Equipment" form (collapsed behind the standard toggle) doubling as the edit form, a
+searchable table showing each row's effective pallets/trip and avg-trip-minutes (flagging
+`(generic)` when falling through to the type's default vs. genuinely overridden), and Delete All
+per this project's standing convention for every master-data module.
+
+Verified via a throwaway-company API script (10/10: all 9 equipment types seeded with the right
+names/generic numbers, equipment creation with and without overrides, duplicate-code-per-warehouse
+correctly blocked, update applying an override, deactivate/reactivate, Delete All reporting the
+right count) plus a live browser pass through the actual rendered UI (logged in via the
+API+localStorage token trick): registered a real Forklift with a Pallets/Trip override through the
+real form, confirmed the table showed the override number alongside the type's generic Avg Trip
+Minutes correctly tagged `(generic)`, and confirmed Edit re-opens with every field — including the
+override — correctly pre-filled from the live DOM values, not just displayed text.
+
+### MHE activity suitability matrix — Putaway/Picking/Loading/Unloading/Consolidation/Inventory Check (2026-08-28, same session, corrected same day)
+Immediate follow-up, same session: "let's make a matrix... so we get all the mhe's in warehouse
+instantly" — six named activities, each cell a priority level (`EquipmentSuitability`:
+`PRIMARY`/`SECONDARY`/`NOT_USED`, default `NOT_USED`), not a plain yes/no.
+
+**First pass put the matrix directly on `EquipmentType`** — one shared platform-wide classification,
+reasoning that six fixed activities is the same "known small fixed set stays flat" case as
+`WarehouseStorageType.maxSkusClassA/B/C`. **This was wrong, caught immediately**: "hey what have we
+done?????? where is the matrix for input??" — `EquipmentType` is platform-seeded reference data with
+no client-facing edit path anywhere (same as `VehicleType`), so there was nowhere to actually type
+in or correct a value. Real follow-up call, once asked who should edit it and how: **"it should be
+warehouse wise! you can give dropdown for wh code and give matrix"** — real warehouses can
+legitimately disagree on how a given equipment type gets used.
+
+**Corrected shape**: the six columns moved off `EquipmentType` onto a new `WarehouseEquipmentSuitability`
+model, one row per (Warehouse, EquipmentType) — `@@unique([warehouseId, equipmentTypeId])`.
+`WarehousesService.generateEquipmentSuitability()` auto-creates one row per `EquipmentType` for
+every new warehouse (same auto-generation convention as `generateDockDoorsAndStaging`/
+`generateYardSlots`, called from both `create()`/`bulkImport()`), seeded from a hardcoded
+`common/equipment-suitability-defaults.ts` (the same placeholder values from the first pass, moved
+here rather than duplicated) — a fresh warehouse starts with a reasonable, fully-editable default
+rather than everything blank. Migrations `20260828150000_add_equipment_type_activity_matrix`
+(the since-corrected `EquipmentType` columns) and `20260828160000_add_warehouse_equipment_suitability`
+(drops those columns, creates the real table) — both applied in the same session, no real client
+data was ever on the wrong shape.
+
+**The real "input" surface**: `GET /equipment/suitability-matrix?warehouseId=X` (returns all 9
+`EquipmentType`s with that warehouse's saved values, defaulting any missing row to `NOT_USED` in the
+response only — never invents a stored row on a plain read, so a warehouse created before this
+feature existed reads cleanly with no backfill needed) and `PATCH /equipment/suitability-matrix`
+(body `{warehouseId, rows: [...]}`, upserts one row per `EquipmentType`, gated
+`MASTER_DATA_WRITE_ROLES`). `EquipmentPage.tsx` gained a "▸ Configure Equipment Type Matrix" section
+— pick a warehouse, get a real 9×6 grid of `<select>`s (Primary/Secondary/Not Used), Save.
+
+**`GET /equipment` gained the "instant lookup" query params** — `warehouseId` and `activity`
+(`PUTAWAY`/`PICKING`/`LOADING`/`UNLOADING`/`CONSOLIDATION`/`INVENTORY_CHECK`). Since the matrix is
+now warehouse-scoped, `activity` REQUIRES `warehouseId` (a clear 400 otherwise — "the matrix is
+scored per warehouse"); an explicit `warehouseId` is still checked against the caller's own
+accessible set before being trusted (same real bug class `YardService.tracker()` had before its
+2026-08-27 fix). Results narrow to *active* units whose type scores `PRIMARY`/`SECONDARY` at that
+warehouse (`NOT_USED` excluded), Primary-ranked first (Prisma can't order by a custom enum rank
+without a computed field, so this is a JS re-sort after fetch, same pattern `DockDoorsService`
+already uses). Plain `GET /equipment` (no params) is unaffected. The Equipment browse table's
+"Suitable For (this warehouse)" column only renders real values when the Warehouse filter is set to
+one specific warehouse (fetches that warehouse's matrix once) — otherwise shows "Filter by this
+warehouse to see" rather than guessing across warehouses with potentially different matrices.
+
+Verified via a throwaway-company API script (two warehouses, proving real per-warehouse isolation):
+a fresh warehouse's auto-generated matrix matched the default seed exactly (9 rows); editing one
+warehouse's BOPT picking rating from Not Used to Primary left a second warehouse's own BOPT row
+completely untouched; `?warehouseId=X&activity=PICKING` correctly picked up the edited value;
+`?activity=PICKING` with no `warehouseId` correctly 400ed. Then re-verified live through the actual
+rendered UI: opened the Matrix editor on a warehouse created *before* this feature existed and
+confirmed it gracefully showed all 54 cells as "Not used" (no crash, no invented data) rather than
+needing a backfill; edited two real cells (Forklift Electric's Putaway and Picking to Primary) and
+saved; confirmed via the live DOM (`select.value`, not just displayed text) both cells actually
+persisted as `PRIMARY` after the save round-trip; switched the browse table's Warehouse filter to
+that same warehouse and confirmed the "Suitable For (this warehouse)" column immediately reflected
+the just-saved edit ("Putaway (Primary), Picking (Primary)").
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2489,6 +2624,25 @@ only, no manual add. A new mutual-exclusion rule — only one of a dock's Inboun
 bins can be in use at a time — is enforced at Match Order via real on-hand stock, ready for the
 still-unbuilt Outbound module. Putaway itself (this session's stated next module) has not been
 started yet — this was a prerequisite closed first.
+
+**A real MHE (Material Handling Equipment) master now exists** (2026-08-28, see "MHE master — built
+before Putaway itself" above) — built as a deliberate prerequisite once the client made clear
+Putaway's own task/suggestion logic needs to be designed against real equipment throughput, not
+guessed at. `EquipmentType` (platform-seeded: Manual, Hand Held Trolley, HOPT, BOPT, Stacker, two
+Forklift sub-types, Reach Truck, Double Deep Reach Truck) + `Equipment` (a company's own
+warehouse-scoped registered units, overriding the type's generic pallets-per-trip/avg-trip-minutes)
+are both live, tested, and have a real frontend page ("Equipment (MHE)" under Masters). Each
+warehouse also carries its own **six-activity suitability matrix** (Putaway/Picking/Loading/
+Unloading/Consolidation/Inventory Check, each PRIMARY/SECONDARY/NOT_USED, one row per
+EquipmentType — `WarehouseEquipmentSuitability`, auto-generated with sensible defaults at warehouse
+creation, edited via a real "Equipment Type Matrix" screen since real practice can differ warehouse
+to warehouse) — `GET /equipment?activity=X&warehouseId=Y` gives an instant, Primary-ranked lookup of
+which registered units in that warehouse are usable for a given activity (see "MHE activity
+suitability matrix" above for the correction story — it was first built as a shared platform-wide
+matrix with no edit path, then moved to be warehouse-scoped and editable the same session).
+**Putaway's actual task logic (trigger modes, bin suggestion, batching, claiming) is still not
+started** — a real workflow conversation covering multi-dock parallelism, operator assignment, and
+MHE-aware task sizing is still needed before any of that gets built.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

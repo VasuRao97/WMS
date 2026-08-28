@@ -4,6 +4,7 @@ import { normalizeCode } from '../common/normalize.util';
 import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
 import { CODE_REGEX, PINCODE_REGEX } from '../common/validation.util';
 import { toNumberOrUndefined } from '../common/xlsx-parse.util';
+import { DEFAULT_EQUIPMENT_SUITABILITY, NOT_USED_ROW } from '../common/equipment-suitability-defaults';
 
 const NODE_TYPE_VALUES = ['FACTORY', 'DISTRIBUTOR', 'REGIONAL_DC', 'NATIONAL_DC', 'CNF', 'CROSS_DOCK'];
 const STORAGE_TYPE_VALUES = ['GROUND_FLOOR', 'SPR', 'DRIVE_IN', 'MIX', 'ASRS'];
@@ -249,6 +250,23 @@ export class WarehousesService {
     }
   }
 
+  // Auto-creates one WarehouseEquipmentSuitability row per EquipmentType for
+  // a brand-new warehouse (2026-08-28, same auto-generation convention as
+  // generateDockDoorsAndStaging/generateYardSlots above) — seeded from
+  // DEFAULT_EQUIPMENT_SUITABILITY so the matrix starts as a reasonable,
+  // fully-editable default rather than everything blank (NOT_USED). Always
+  // runs (unlike the two methods above, which are conditional on a numeric
+  // field) — every warehouse gets a matrix, there's no "opt out" input for
+  // this one. See WarehouseEquipmentSuitability's schema.prisma comment for
+  // the full "where is the matrix for input??" correction story.
+  private async generateEquipmentSuitability(warehouseId: string) {
+    const types = await this.prisma.equipmentType.findMany();
+    if (types.length === 0) return;
+    await this.prisma.warehouseEquipmentSuitability.createMany({
+      data: types.map((t) => ({ warehouseId, equipmentTypeId: t.id, ...(DEFAULT_EQUIPMENT_SUITABILITY[t.name] ?? NOT_USED_ROW) })),
+    });
+  }
+
   async create(data: any, user: any) {
     if (!user.companyId) {
       throw new ForbiddenException('Super admin accounts cannot create warehouses directly — log in as a company admin instead.');
@@ -269,6 +287,7 @@ export class WarehousesService {
     });
     await this.generateYardSlots(created.id, toNumberOrUndefined(data.yardCapacity));
     await this.generateDockDoorsAndStaging(created.id, toNumberOrUndefined(data.noOfDocks));
+    await this.generateEquipmentSuitability(created.id);
     return created;
   }
 
@@ -322,6 +341,7 @@ export class WarehousesService {
         const created = await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name, resolvedStorageTypes) });
         await this.generateYardSlots(created.id, toNumberOrUndefined(group.yardCapacity));
         await this.generateDockDoorsAndStaging(created.id, toNumberOrUndefined(group.noOfDocks));
+        await this.generateEquipmentSuitability(created.id);
         const dispatchFlowCount = new Set((group.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType))).size;
         results.push({
           code: upperCode,

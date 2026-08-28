@@ -47,6 +47,7 @@ model Company {
   customers  Customer[]
   vehicles   Vehicle[]
   drivers    Driver[]
+  equipment  Equipment[]
 
   // Outbound Gate Out can require an E-Way Bill number before it's allowed
   // to close (see VehicleGateEntry.eWayBillNo) — but not every client routes
@@ -139,7 +140,7 @@ model Company {
   // Stored as plain text for now (no encryption-at-rest in this project
   // yet, same caveat as everywhere else secrets are mentioned) — a known,
   // flagged simplification, not an oversight.
-  erpApiKey String? @unique
+  erpApiKey           String? @unique
 }
 
 enum GatePassResetPeriod {
@@ -270,19 +271,21 @@ model Warehouse {
 
   assignedUsers User[]
 
-  shipToAssignments   CustomerShipTo[]
-  locations           Location[]
-  inboundReceipts     InboundReceipt[]
-  outboundOrders      OutboundOrder[]
-  stockMovements      StockMovement[]
-  storageTypes        WarehouseStorageType[]
-  dispatchFlows       WarehouseDispatchFlow[]
-  dockDoors           DockDoor[]
-  gateEntries         VehicleGateEntry[]
-  yardSlots           YardSlot[]
-  gatePassSequences   GatePassSequence[]
-  notificationLogs    NotificationLog[]
-  selfCheckInRequests SelfCheckInRequest[]
+  shipToAssignments    CustomerShipTo[]
+  locations            Location[]
+  inboundReceipts      InboundReceipt[]
+  outboundOrders       OutboundOrder[]
+  stockMovements       StockMovement[]
+  storageTypes         WarehouseStorageType[]
+  dispatchFlows        WarehouseDispatchFlow[]
+  dockDoors            DockDoor[]
+  gateEntries          VehicleGateEntry[]
+  yardSlots            YardSlot[]
+  gatePassSequences    GatePassSequence[]
+  notificationLogs     NotificationLog[]
+  selfCheckInRequests  SelfCheckInRequest[]
+  equipment            Equipment[]
+  equipmentSuitability WarehouseEquipmentSuitability[]
 
   @@unique([companyId, code])
 }
@@ -493,20 +496,20 @@ model Location {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  stockMovements     StockMovement[]
-  putawayFrom        PutawayTask[]        @relation("PutawayFromLocation")
-  putawayTo          PutawayTask[]        @relation("PutawayToLocation")
-  receiptLinesStaged InboundReceiptLine[]
+  stockMovements          StockMovement[]
+  putawayFrom             PutawayTask[]          @relation("PutawayFromLocation")
+  putawayTo               PutawayTask[]          @relation("PutawayToLocation")
+  receiptLinesStaged      InboundReceiptLine[]
   // A receipt-level default staging spot, chosen once the vehicle is
   // actually at the dock (2026-08-27 — see InboundReceipt.stagingLocationId's
   // comment for why this replaced requiring a location per-line at
   // order-creation time).
-  receiptsStaged     InboundReceipt[]
-  allocations        Allocation[]
-  returns            Return[]
-  dockDistances       DockLocationDistance[]
-  defaultStagingForDocks DockDoor[] @relation("DockDoorInboundStaging")
-  outboundStagingForDocks DockDoor[] @relation("DockDoorOutboundStaging")
+  receiptsStaged          InboundReceipt[]
+  allocations             Allocation[]
+  returns                 Return[]
+  dockDistances           DockLocationDistance[]
+  defaultStagingForDocks  DockDoor[]             @relation("DockDoorInboundStaging")
+  outboundStagingForDocks DockDoor[]             @relation("DockDoorOutboundStaging")
 
   @@unique([warehouseId, code])
 }
@@ -889,6 +892,112 @@ model Driver {
   blacklistReason String?
 
   gateEntries VehicleGateEntry[]
+}
+
+// MHE (Material Handling Equipment) master data — the foundation piece for
+// Putaway (2026-08-28 kickoff conversation), built BEFORE any Putaway task
+// logic per the client's own explicit sequencing: "we need to get the MHE
+// master at start, and work accordingly, the throughput of each mhe would
+// be different." Same two-tier shape as VehicleType/Vehicle, confirmed
+// directly rather than assumed: a platform-seeded generic EquipmentType
+// list (not client-editable, same tier as VehicleType/ProductCategory) plus
+// a company's own actual Equipment units, which can override the generic
+// numbers.
+//
+// Throughput is measured in pallet-equivalents per trip (confirmed,
+// 2026-08-28) — ONE consistent unit across every equipment type, including
+// non-palletized ones (Manual hand-carry, Hand Held Trolley), which simply
+// carry a small fraction of a pallet per trip. This keeps every type
+// comparable on the same scale for whatever Putaway/analytics logic
+// eventually consumes it, rather than needing a conversion step between a
+// pallets figure and a separate cases/eaches figure.
+model EquipmentType {
+  id   String @id @default(uuid())
+  name String @unique // e.g. "Manual (Hand Carry)", "BOPT", "Reach Truck (RT)"
+
+  // Generic per-trip capacity, in pallet-equivalents, and average round-trip
+  // time in minutes (travel + handling) at that capacity — both placeholder
+  // numbers seeded by us (see prisma/seed.ts), same "ships with a number,
+  // client corrects it later" convention as VehicleType.maxTonnage. Every
+  // real Equipment unit a company registers can override either figure with
+  // its own measured value.
+  genericPalletsPerTrip Decimal
+  genericAvgTripMinutes Decimal
+
+  equipment            Equipment[]
+  warehouseSuitability WarehouseEquipmentSuitability[]
+}
+
+enum EquipmentSuitability {
+  PRIMARY
+  SECONDARY
+  NOT_USED
+}
+
+// Activity suitability matrix — Putaway/Picking/Loading/Unloading/
+// Consolidation/Inventory Check, scored per (Warehouse, EquipmentType)
+// (2026-08-28, corrected same day: a first pass put this matrix directly on
+// EquipmentType as one shared platform-wide classification, which turned
+// out wrong — "where is the matrix for input??" — there was nowhere to
+// actually edit it. The client's own explicit call once asked: "it should
+// be warehouse wise! you can give dropdown for wh code and give matrix" —
+// real warehouses can legitimately disagree on how a given equipment type
+// gets used, and a real admin needs to be able to type in/correct this per
+// warehouse, not just read a value we guessed at in seed data).
+//
+// One row per (warehouse, type) — `@@unique([warehouseId, equipmentTypeId])`
+// — auto-created for every EquipmentType the moment a warehouse is set up
+// (`WarehousesService.generateEquipmentSuitability()`, same auto-generation
+// convention as DockDoor/YardSlot), seeded from a hardcoded platform
+// default matrix (`common/equipment-suitability-defaults.ts`) so a fresh
+// warehouse starts with a reasonable, editable starting point rather than
+// everything blank. Fully editable after that via
+// `PATCH /equipment/suitability-matrix` — this is the real "input" surface
+// the earlier EquipmentType-level version was missing.
+model WarehouseEquipmentSuitability {
+  id              String        @id @default(uuid())
+  warehouseId     String
+  warehouse       Warehouse     @relation(fields: [warehouseId], references: [id])
+  equipmentTypeId String
+  equipmentType   EquipmentType @relation(fields: [equipmentTypeId], references: [id])
+
+  putawaySuitability        EquipmentSuitability @default(NOT_USED)
+  pickingSuitability        EquipmentSuitability @default(NOT_USED)
+  loadingSuitability        EquipmentSuitability @default(NOT_USED)
+  unloadingSuitability      EquipmentSuitability @default(NOT_USED)
+  consolidationSuitability  EquipmentSuitability @default(NOT_USED)
+  inventoryCheckSuitability EquipmentSuitability @default(NOT_USED)
+
+  @@unique([warehouseId, equipmentTypeId])
+}
+
+// A company's own actual registered MHE unit — warehouse-scoped (confirmed
+// 2026-08-28: unlike Vehicle, which roams between warehouses, a forklift is
+// a physical asset that lives at one warehouse), same tier as DockDoor/
+// Location for role-gating and code uniqueness (@@unique([warehouseId,
+// code]), not company-wide).
+model Equipment {
+  id          String    @id @default(uuid())
+  companyId   String
+  company     Company   @relation(fields: [companyId], references: [id])
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  code        String // staff-assigned asset tag, e.g. "FL-01"
+  name        String?
+
+  equipmentTypeId String
+  equipmentType   EquipmentType @relation(fields: [equipmentTypeId], references: [id])
+
+  // Optional per-unit overrides of the type's generic numbers — same
+  // override-when-known/fall-back-to-generic pattern as Vehicle overriding
+  // VehicleType's dimensions/maxTonnage.
+  palletsPerTrip Decimal?
+  avgTripMinutes Decimal?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([warehouseId, code])
 }
 
 // Why the vehicle is at the gate — captured at Gate In (not deferred to dock
@@ -1362,25 +1471,25 @@ enum ReceiptStatus {
 }
 
 model InboundReceipt {
-  id           String        @id @default(uuid())
-  warehouseId  String
-  warehouse    Warehouse     @relation(fields: [warehouseId], references: [id])
-  referenceNo  String // e.g. supplier ASN / PO number
-  supplierName String?
-  status       ReceiptStatus @default(PENDING)
+  id                String        @id @default(uuid())
+  warehouseId       String
+  warehouse         Warehouse     @relation(fields: [warehouseId], references: [id])
+  referenceNo       String // e.g. supplier ASN / PO number
+  supplierName      String?
+  status            ReceiptStatus @default(PENDING)
   // Nullable (2026-08-27, ERP push follow-up) — was required until an ERP
   // push needed to create a real order with no human on the other end.
   // Null is the signal "this came from ERP, not a person" — see
   // createdViaErpPush below for the same fact made explicit/queryable.
-  createdById  String?
-  createdBy    User?         @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
-  createdAt    DateTime      @default(now())
+  createdById       String?
+  createdBy         User?         @relation("ReceiptCreatedBy", fields: [createdById], references: [id])
+  createdAt         DateTime      @default(now())
   // True only for an order created via ErpInboundController's push
   // endpoint (2026-08-27) — lets the frontend show "ERP" instead of a
   // blank creator name, and is the more explicit/queryable twin of
   // `createdById` being null (which also means the same thing, but null
   // alone reads ambiguously — "unknown" vs. "genuinely no human").
-  createdViaErpPush Boolean @default(false)
+  createdViaErpPush Boolean       @default(false)
 
   // The one registered Vehicle this order is expected to arrive on
   // (2026-08-27, Inbound deep-dive follow-up) — required by the service
