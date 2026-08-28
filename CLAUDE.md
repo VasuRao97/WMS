@@ -2047,6 +2047,21 @@ per-item serial, "Reading B" territory) still allows a free, unrestricted Superv
 that's the one legitimate case this override tier exists for, and closing #3 must not have broken
 it (verified explicitly, see below).
 
+**Reversed, 2026-08-28 — the "fuller policy" from #3's own open item, finally picked up.** Live-
+testing this exact override surfaced the real problem with leaving it wide open: it had zero
+friction, letting anyone approve a scan onto any SKU with no verification at all behind it. The
+client's own call, once walked through the tradeoff (an unregistered barcode staying genuinely
+un-receivable via scanning vs. staying open with no scrutiny): an UNREGISTERED barcode is a MORE
+serious problem than a registered-to-the-wrong-SKU one, not a lesser, more-forgivable case — there's
+no verified real-world mapping behind it at all. `approveScan()` now hard-blocks a zero-registered-
+row barcode outright (`"...is not registered to any SKU — it cannot be approved..."`) — a blocked
+scan with an unrecognized barcode can now only be Rejected, never Approved. Register the barcode
+against the correct SKU first (closing the real "Reading B" gap for real, not routing around it)
+if it's a genuinely valid product. Verified via a throwaway-company API script (4/4: an unregistered
+barcode blocks on scan then correctly 400s on approve with the new message, Reject still succeeds
+for it, the pre-existing "registered to a different SKU" block is untouched, and a correctly-
+registered barcode's auto-accept happy path is unaffected).
+
 **4. Dock-out / "time to gate out" signal — explicitly NOT built this pass.** The client's own
 framing: an active notification is wanted (not just a passive timestamp), but "we also need to
 think about some logic, as after dock out also, documentation takes time and then only gate out

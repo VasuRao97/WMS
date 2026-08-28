@@ -473,7 +473,21 @@ export class InboundReceiptsService {
       where: { barcode: scan.barcodeScanned, sku: { companyId: scan.receipt.warehouse.companyId } },
       include: { sku: { select: { code: true } } },
     });
-    if (registeredBarcodes.length > 0 && !registeredBarcodes.some((bc) => bc.skuId === skuId)) {
+    // Hard block, 2026-08-28 — reverses the original "a barcode with zero
+    // registered rows is a legitimate, freely-overridable case" stance (see
+    // schema/CLAUDE.md's "Reading B" notes). Client's own call after seeing
+    // how easy the free override was to click through with no scrutiny at
+    // all: an UNREGISTERED barcode is a MORE serious problem than a
+    // registered-to-the-wrong-SKU one, not a lesser one — there's no
+    // verified real-world mapping behind it at all, so it can no longer be
+    // approved onto any SKU, full stop. A blocked scan with a barcode that
+    // isn't registered anywhere can now only be Rejected, never Approved —
+    // register the barcode against the right SKU first if it's genuinely a
+    // valid product, then re-scan it.
+    if (registeredBarcodes.length === 0) {
+      throw new BadRequestException(`Barcode "${scan.barcodeScanned}" is not registered to any SKU — it cannot be approved. Register this barcode against the correct SKU first, then re-scan it; this blocked scan can only be Rejected.`);
+    }
+    if (!registeredBarcodes.some((bc) => bc.skuId === skuId)) {
       const knownFor = registeredBarcodes.map((bc) => bc.sku.code).join(', ');
       throw new BadRequestException(`Barcode "${scan.barcodeScanned}" is already registered to ${knownFor}, not ${line.sku.code} — cannot approve this scan against a different SKU.`);
     }
