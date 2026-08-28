@@ -237,6 +237,11 @@ model Warehouse {
   city        String?
   pincode     String?
   threePlName String? // free text; "OWN" by convention if self-operated
+  // Required at creation as of 2026-08-28 (Putaway kickoff conversation) —
+  // the sole input driving WarehousesService.generateDockDoorsAndStaging(),
+  // which auto-creates one DockDoor plus a matching Inbound/Outbound
+  // staging Location pair per dock number. Stays nullable at the column
+  // level only for pre-existing rows created before this was required.
   noOfDocks   Int?
   areaSqFt    Decimal? // total facility footprint, not broken down by storage type
 
@@ -500,7 +505,8 @@ model Location {
   allocations        Allocation[]
   returns            Return[]
   dockDistances       DockLocationDistance[]
-  defaultStagingForDocks DockDoor[]
+  defaultStagingForDocks DockDoor[] @relation("DockDoorInboundStaging")
+  outboundStagingForDocks DockDoor[] @relation("DockDoorOutboundStaging")
 
   @@unique([warehouseId, code])
 }
@@ -636,14 +642,21 @@ model StockMovement {
 // door) and Dock Scheduling (advance appointment booking) are consciously
 // deferred, not scaffolded — see CLAUDE.md's Yard & Gate section.
 //
-// DockDoor and VehicleGateEntry are deliberately NOT linked to each other —
-// an earlier draft gave VehicleGateEntry an optional dockDoorId with the
-// system auto-flipping the door's status on assignment/gate-out. Rejected
-// by the client (2026-08-25): Dock Door status is a manual, staff-driven
-// action in practice, and real dock *selection* logic (which vehicle gets
-// which door, and when) needs its own proper design pass later — not a
-// side-effect of the gate log. Don't reintroduce this link without
-// re-confirming the actual workflow first.
+// DockDoor and VehicleGateEntry still have no real FK link (dock
+// *selection* logic — which vehicle gets which door, and when — is still
+// the fully-deferred Dock Scheduler, unchanged from the 2026-08-25 decision
+// below). BUT the "status stays manual-only" half of that same decision was
+// REVERSED 2026-08-28, caught by the client's own live testing: a
+// docked-in vehicle's dock still showing "Available" was a real, confusing
+// gap. GateEntriesService.setDockDoorStatus() now auto-flips status
+// (OCCUPIED on Dock In, AVAILABLE on Gate Out) by matching
+// VehicleGateEntry.assignedDockNumber against this DockDoor's own free-text
+// code — the same string match Match Order's staging pre-fill already
+// uses, still no stored FK. Original 2026-08-25 reasoning, for history:
+// Dock Door status is a manual, staff-driven action in practice, and real
+// dock *selection* logic needs its own proper design pass later — not a
+// side-effect of the gate log. That still holds for *selection*; it no
+// longer holds for *status*.
 
 // What a dock door can be used for. BOTH is the common case for a small
 // facility with no dedicated inbound/outbound doors.
@@ -663,7 +676,13 @@ model DockDoor {
   id          String         @id @default(uuid())
   warehouseId String
   warehouse   Warehouse      @relation(fields: [warehouseId], references: [id])
-  code        String // physical door number/label, e.g. "D01"
+  // Physical door number/label. Auto-generated docks (see
+  // WarehousesService.generateDockDoorsAndStaging(), 2026-08-28) use a bare
+  // number ("1", "2"...) — deliberately NOT "Dock1" style, since this still
+  // has to string-match whatever a Security Supervisor free-types into
+  // VehicleGateEntry.assignedDockNumber (e.g. "7"). The "Dock1-SA-IB" style
+  // naming applies only to this dock's paired staging Locations below.
+  code        String
   name        String?
   dockType    DockDoorType   @default(BOTH)
   status      DockDoorStatus @default(AVAILABLE)
@@ -675,14 +694,35 @@ model DockDoor {
   // the dock-to-staging mapping idea originally rejected as premature back
   // when Inbound receiving first shipped (assignedDockNumber on
   // VehicleGateEntry was, and still is, free text, not a real DockDoor
-  // link — that decision is untouched by this field). This is deliberately
-  // ONE default Location per dock, not a candidate list — a simple
-  // suggestion Match Order pre-fills client-side (by string-matching the
-  // gate entry's free-text assignedDockNumber against this DockDoor's own
-  // code) but staff can still override. Optional — an unmapped dock just
-  // leaves Match Order's staging field blank, exactly like today.
+  // link — that decision is untouched by this field).
+  //
+  // As of 2026-08-28 (Putaway kickoff conversation) this is auto-populated,
+  // not manually chosen: WarehousesService.generateDockDoorsAndStaging()
+  // creates BOTH this Location and its Outbound sibling below the moment a
+  // Warehouse is created, driven purely by Warehouse.noOfDocks — "i dont
+  // want the client doing this activity at all", the client's own words.
+  // Still just ONE Location per direction, not a candidate list, and still
+  // editable afterward (client explicitly asked for modify/delete to stay
+  // available) — Match Order pre-fills from this by string-matching the
+  // gate entry's assignedDockNumber against this DockDoor's own code.
   defaultStagingLocationId String?
-  defaultStagingLocation   Location? @relation(fields: [defaultStagingLocationId], references: [id])
+  defaultStagingLocation   Location? @relation("DockDoorInboundStaging", fields: [defaultStagingLocationId], references: [id])
+
+  // Mirror of the above for the Outbound direction — added 2026-08-28
+  // alongside the auto-generation logic, named "Dock{N}-SA-OB" by
+  // convention (see the Inbound sibling's "Dock{N}-SA-IB"). The two are
+  // MUTUALLY EXCLUSIVE at any given moment — the client's own rule: "only
+  // one bin can be used at a time, if unloading is going on, inbound bin is
+  // used, that time outbound bin cant be used" — enforced by checking real
+  // on-hand stock at the sibling Location (GateEntriesService.
+  // assertStagingBinAvailable, derived from StockMovement, same
+  // "always derive, never store a flag" philosophy as everywhere else in
+  // this codebase), not by any stored occupancy state here. Outbound itself
+  // doesn't exist as a module yet, so this side of the check has nothing
+  // real to guard until then — the check is still wired in now so it's
+  // correct the moment Outbound lands, not a placeholder needing rework.
+  outboundStagingLocationId String?
+  outboundStagingLocation   Location? @relation("DockDoorOutboundStaging", fields: [outboundStagingLocationId], references: [id])
 
   distances DockLocationDistance[]
 

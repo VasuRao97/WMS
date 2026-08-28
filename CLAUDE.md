@@ -2182,6 +2182,127 @@ a transporter name and a real captured seal/signature, and confirmed the history
 "View" button and confirmed the modal rendered the actual signature image (not just a placeholder)
 with the correct vehicle number and seal metadata.
 
+### Dock Door + staging Locations now fully auto-generated from Warehouse.noOfDocks (2026-08-28)
+Closes the "confirm real Dock Door staging config" open item from the previous session's ROADMAP
+note. Rather than confirming a real company's manual Dock Door setup, the client changed the
+underlying concept entirely — a direct instruction, not a design conversation this pass: "i dont
+want the client doing this activity at all." `Warehouse.noOfDocks` (pre-existing, now **required**
+at creation — "keep the dock entry field as mandatory, so this logic never fails") is now the sole
+input; `WarehousesService.generateDockDoorsAndStaging()` auto-creates one `DockDoor` plus a
+matching Inbound/Outbound staging `Location` pair for every dock number, called from both
+`create()` and `bulkImport()` right after the existing `generateYardSlots()`.
+
+**Naming, per the client's own spec**: `DockDoor.code` stays a bare number ("1", "2"...) —
+deliberately NOT "Dock1" style, since it still has to string-match whatever a Security Supervisor
+free-types into `VehicleGateEntry.assignedDockNumber` (unchanged behavior). The two Locations are
+`Dock{N}-SA-IB` (zoneType `UNLOADING_STAGING`) / `Dock{N}-SA-OB` (zoneType `LOADING_STAGING`), both
+`storageType: GROUND_FLOOR` — all the client's own explicit choices. They deliberately carry no
+`aisle` (so `LocationsPlanView.tsx`, which already filters out any Location with no aisle, doesn't
+try to render a dock apron as a structural storage aisle) — a known minor side effect is that they
+still count toward `WarehousesService.getMappingSummary()`'s Storage Type Mapping table under
+"Uncategorized" (cosmetic, that table is a QA aid only).
+
+**`DockDoor` gained an Outbound sibling FK** — `outboundStagingLocationId`/`outboundStagingLocation`
+alongside the existing (Inbound) `defaultStagingLocationId`/`defaultStagingLocation`, both now named
+Prisma relations (`"DockDoorInboundStaging"`/`"DockDoorOutboundStaging"`) since there are now two FKs
+from `DockDoor` to `Location`. `DockDoorsService`'s staging-resolution logic was generalized to one
+shared `resolveStagingLocationId()`/`resolveStagingUpdate()` pair backing both fields rather than
+duplicating the same "connect/disconnect/leave unchanged" logic twice.
+
+**Append-only, per the client's explicit ask** — `generateDockDoorsAndStaging()` only ever creates
+dock numbers beyond whatever already exists (`highestDockNumber()`, parsed from `DockDoor.code`, not
+a row count — so a manually-deleted dock doesn't get its number silently reused). Safe to call again
+once Warehouse Edit exists and `noOfDocks` increases. Manual edit/delete of an auto-created DockDoor
+or Location stays fully available — this only ever adds, never overwrites or deletes.
+
+**IB/OB mutual exclusion — the client's fourth rule**: "only one bin can be used at a time, if
+unloading is going on, inbound bin is used, that time outbound bin cant be used." Enforced by
+`GateEntriesService.assertStagingBinAvailable()`, called from `matchReceipt()` — derives "in use"
+from real on-hand stock at the sibling Location (a `StockMovement` sum), same "always derive, never
+store an occupancy flag" philosophy as everywhere else in this codebase, rather than a stored lock.
+A Location that doesn't match the `Dock{N}-SA-IB`/`-OB` naming has no sibling and is never blocked.
+Outbound doesn't exist as a module yet, so this side of the check has nothing real to guard until
+then — wired in now anyway so it's correct the moment Outbound lands, not a placeholder needing
+rework later.
+
+**`DockDoorsPage.tsx` lost manual "Add Dock Door" entirely** (same "generator/import creates, page
+only edits" pattern `LocationsPage.tsx` established for its own manual-add removal) — Edit and
+Delete stay, now covering both staging fields; the page's own copy no longer needs a Warehouse
+picker since editing never changes a dock's warehouse. `WarehousesPage.tsx`'s "No of Docks" input
+is now marked required (`*`, with a `title` explaining the auto-generation) matching the backend
+validation. `Warehouse_Master_Import_Template.xlsx` (both `templates/` and `frontend/public/
+templates/` copies) updated to match — header now reads "No of Docks *", "Legend & Rules" and "How
+To Use" both explain the auto-generation, and the two example rows that previously left it blank
+(MH02, DEL01) were filled in so the template still imports cleanly as-is.
+
+Verified via a throwaway-company API script, 28/28: creating a warehouse without `noOfDocks`
+rejected with the right message; creating one with `noOfDocks: 3` producing exactly 3 DockDoors
+coded "1"/"2"/"3", each with its correct `Dock{N}-SA-IB`/`-OB` staging pair
+(zoneType/storageType confirmed); the same via Excel import (`noOfDocks: 2` → 2 auto-generated
+docks); the IB/OB mutual-exclusion rule end-to-end — seeded real stock at a dock's Outbound bin via
+direct Prisma, confirmed Match Order correctly BLOCKED matching that dock's Inbound bin with the
+exact "in use" message, cleared the stock, confirmed the same Match Order then succeeded. Then
+re-verified live through the actual rendered UI (logged in via the API+localStorage token trick):
+confirmed Dock Doors page shows the 2 auto-generated docks for a fresh warehouse with no Add button
+anywhere, confirmed Edit opens with both staging dropdowns correctly pre-filled/scoped to that
+warehouse's own Locations, and confirmed Warehouses' manual-add form renders "No of Docks *" as
+required. **Not independently re-verified**: append-only behavior on a `noOfDocks` increase (no
+Warehouse Edit UI/endpoint exists yet to trigger it) — traced through the code
+(`highestDockNumber()`) rather than exercised live, since there's nothing to edit yet.
+
+**A real bug caught by the client's own live testing, not the script above**: `DockDoorsService.
+findAll()`'s `orderBy: [{ code: 'asc' }]` sorts `code` as a plain Postgres string — fine for a
+handful of docks, but a 10-dock warehouse showed "Dock 10" right after "Dock 1" (lexicographic:
+"1" < "10" < "2"). Fixed by sorting in JS after the fetch instead — numerically when both codes
+parse as numbers (true for every auto-generated dock), falling back to a string compare for a
+non-numeric legacy manual code. Re-verified against a fresh 10-dock warehouse via the API: codes
+now return in true numeric order, 1 through 10.
+
+**A second real gap caught the same way, same live-testing pass**: a vehicle genuinely Docked In at
+Dock 2 still showed that dock as "Available." This directly **reverses** the 2026-08-25 decision
+documented on `model DockDoor` in schema.prisma — "Dock Door status is a manual, staff-driven
+action... don't reintroduce this link without re-confirming the actual workflow first" — a
+deliberate correction now that the page has seen real use, not an oversight. `GateEntriesService`
+gained `setDockDoorStatus()`, looked up by `assignedDockNumber` matching `DockDoor.code` (the same
+free-text match Match Order's staging pre-fill already uses): flips to `OCCUPIED` on Dock In, back
+to `AVAILABLE` on Gate Out — same auto-lifecycle shape `YardSlot` already had. Also handles
+`assignDock()`'s existing "reassignment allowed even after Docked In" behavior — reassigning a
+docked-in vehicle to a different dock now releases the old dock and occupies the new one, so status
+doesn't go stale mid-visit. Never overwrites a dock a staff member has manually set to
+`MAINTENANCE`, either direction — that stays a deliberate manual override. Verified via a
+throwaway-company API script, 10/10: starts `AVAILABLE`, flips to `OCCUPIED` on Dock In, correctly
+moves on reassignment-after-dock-in (old dock releases, new dock occupies), releases on Gate Out,
+and a `MAINTENANCE`-flagged dock stays untouched through a full Dock In cycle.
+
+**Third real gap, same live-testing pass, immediate follow-up to the status auto-flip above**: the
+client's own direct call once they saw Occupied working — "if its occupied i shouldnt be allowed to
+change anything... after dockout only the options should come in." An OCCUPIED dock could still be
+freely edited, manually flipped back to Available, deactivated, or deleted while a real vehicle was
+sitting there — which would have silently defeated the point of the auto-flip. `DockDoorsService`
+gained `assertNotOccupied()`, enforced **server-side** (not just hidden buttons) in `update()`,
+`setStatus()`, `deactivate()`, and `remove()` — each throws a clear "currently occupied" error;
+`removeAll()` now treats an OCCUPIED dock as its own "blocked" case (same skip-and-report shape as
+every other blocking check in this codebase) rather than deleting through it. `AVAILABLE` and
+`MAINTENANCE` docks are unaffected — only OCCUPIED locks. `DockDoorsPage.tsx`'s Actions column
+shows a plain "Locked (occupied)" label instead of Edit/Deactivate/Delete for such a row, and its
+Status `<select>` is disabled — the real enforcement is still the backend check, this is just so
+staff aren't shown a button that will 400. Verified via a throwaway-company API script, 9/9: edit
+allowed while `AVAILABLE`; edit/status-change/deactivate/delete/`removeAll` all correctly BLOCKED
+once genuinely `OCCUPIED` (via a real Dock In, not a manual status set); `removeAll` reporting the
+occupied dock in `blockedCodes` with `deletedCount: 0`; edit allowed again once Gate Out released it
+back to `AVAILABLE`. Then re-verified live through the actual rendered UI (logged in via the
+API+localStorage token trick): ran a real Gate In → Assign Dock → Dock In cycle and confirmed the
+Dock Doors page's Actions column showed "Locked (occupied)" with no Edit/Deactivate/Delete buttons,
+and confirmed via the live DOM that the Status `<select>` itself was `disabled` with value
+`OCCUPIED`.
+
+Also resolved this session: checked the real company's actual Dock Door state directly against the
+dev database rather than guessing — all ~50 companies in the DB read as this project's own test/
+throwaway data (script-generated names, timestamp suffixes), with no company clearly identifiable
+as "the real client tenant." The client confirmed they're not sure either. No backfill was
+attempted against any specific company as a result — `noOfDocks` will simply drive this
+automatically the moment a real client company and warehouse actually get set up.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2358,6 +2479,16 @@ retrieval + Truck Type/Transporter recall columns" above) — it was write-only 
 path anywhere. Gate & Yard's full history table also gained **Truck Type** and **Transporter**
 columns (the Currently Open tracker already had Transporter; both tables now have both), per the
 client's own "practical recall" framing.
+
+**Dock Door + staging Locations are now fully auto-generated, not manual master data** (2026-08-28,
+see "Dock Door + staging Locations now fully auto-generated from Warehouse.noOfDocks" above) — a
+real pivot from the previous session's plan: `Warehouse.noOfDocks` (now required at creation) is the
+sole input; every Dock Door plus its own Inbound (`Dock{N}-SA-IB`)/Outbound (`Dock{N}-SA-OB`)
+staging Location pair is created automatically, append-only. `DockDoorsPage.tsx` is now edit/delete
+only, no manual add. A new mutual-exclusion rule — only one of a dock's Inbound/Outbound staging
+bins can be in use at a time — is enforced at Match Order via real on-hand stock, ready for the
+still-unbuilt Outbound module. Putaway itself (this session's stated next module) has not been
+started yet — this was a prerequisite closed first.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

@@ -43,8 +43,17 @@ export class WarehousesService {
     if (!data.city) errors.push('City Name is required.');
     if (!data.address) errors.push('Address is required.');
     if (!data.pincode || !PINCODE_REGEX.test(String(data.pincode))) errors.push('Pincode is required: 6 digits.');
-    if (data.noOfDocks !== undefined && data.noOfDocks !== null && data.noOfDocks !== '' && Number(data.noOfDocks) < 0) {
-      errors.push('No of Docks cannot be negative.');
+    // Required as of 2026-08-28 (Putaway kickoff conversation) — the client's
+    // own call ("keep the dock entry field as mandatory, so this logic never
+    // fails"), since this is the sole input driving
+    // generateDockDoorsAndStaging() below. Shared by both create() and
+    // bulkImport() (same "one function, two callers" convention as
+    // everywhere else), so an Excel import row without it is rejected the
+    // same way a manual create is.
+    if (data.noOfDocks === undefined || data.noOfDocks === null || data.noOfDocks === '') {
+      errors.push('No of Docks is required.');
+    } else if (!Number.isInteger(Number(data.noOfDocks)) || Number(data.noOfDocks) < 1) {
+      errors.push('No of Docks must be a whole number, 1 or more.');
     }
     if (data.areaSqFt !== undefined && data.areaSqFt !== null && data.areaSqFt !== '' && Number(data.areaSqFt) <= 0) {
       errors.push('Area sq ft must be a positive number.');
@@ -176,6 +185,70 @@ export class WarehousesService {
     });
   }
 
+  // Highest existing dock NUMBER for this warehouse, parsed from DockDoor.code
+  // — not a row count, since a code isn't guaranteed contiguous (a
+  // manually-deleted dock, or a pre-2026-08-28 non-numeric manual code,
+  // shouldn't cause a number to be reused/collide). 0 if none exist yet.
+  private async highestDockNumber(warehouseId: string): Promise<number> {
+    const doors = await this.prisma.dockDoor.findMany({ where: { warehouseId }, select: { code: true } });
+    const nums = doors.map((d) => parseInt(d.code, 10)).filter((n) => Number.isInteger(n));
+    return nums.length ? Math.max(...nums) : 0;
+  }
+
+  // Auto-generates a DockDoor plus its own Inbound/Outbound staging Location
+  // pair for every dock number up to noOfDocks — the client's own explicit
+  // call, 2026-08-28 (Putaway kickoff conversation): "i want you to
+  // automatically make 1 location for inbound and 1 location for outbound
+  // for every dock yourself... i dont want the client doing this activity at
+  // all." Naming is deliberately simple, per the client's own spec:
+  // DockDoor.code stays a bare number ("1", "2"...) so it keeps matching
+  // whatever a Security Supervisor free-types into
+  // VehicleGateEntry.assignedDockNumber; the paired Locations are
+  // "Dock{N}-SA-IB" / "Dock{N}-SA-OB" (zoneType UNLOADING_STAGING /
+  // LOADING_STAGING, storageType GROUND_FLOOR — the client's own choice).
+  // `aisle` is deliberately left unset on these — LocationsPlanView.tsx
+  // filters out any Location with no aisle, so these auto-generated staging
+  // bins don't corrupt the structural floor-plan visualizer (which has no
+  // concept of a dock apron to render).
+  //
+  // Append-only: only NEW dock numbers beyond whatever already exists get
+  // created (see highestDockNumber above) — safe to call again later (e.g.
+  // once Warehouse Edit exists and noOfDocks increases) without touching or
+  // duplicating existing docks. Manual edit/delete of an auto-created
+  // DockDoor or Location stays available through their own pages — this
+  // only ever adds, never overwrites (the client's own explicit ask).
+  //
+  // Known minor side effect, not fixed: these Locations carry no Category,
+  // so they fall into the "Uncategorized" bucket in
+  // WarehousesService.getMappingSummary()'s Storage Type Mapping table —
+  // a warehouse with a planned GROUND_FLOOR/Uncategorized row will show 2
+  // extra "mapped" positions per dock. Cosmetic only (that table is a QA
+  // aid, nothing enforces off it), not worth a special-case exclusion for
+  // now.
+  private async generateDockDoorsAndStaging(warehouseId: string, noOfDocks: number | undefined) {
+    if (!noOfDocks || noOfDocks <= 0) return;
+    const start = (await this.highestDockNumber(warehouseId)) + 1;
+    for (let n = start; n <= noOfDocks; n++) {
+      const [inboundLoc, outboundLoc] = await Promise.all([
+        this.prisma.location.create({
+          data: { warehouse: { connect: { id: warehouseId } }, code: `Dock${n}-SA-IB`, zoneType: 'UNLOADING_STAGING', storageType: 'GROUND_FLOOR', depth: 1, width: 1, height: 1 },
+        }),
+        this.prisma.location.create({
+          data: { warehouse: { connect: { id: warehouseId } }, code: `Dock${n}-SA-OB`, zoneType: 'LOADING_STAGING', storageType: 'GROUND_FLOOR', depth: 1, width: 1, height: 1 },
+        }),
+      ]);
+      await this.prisma.dockDoor.create({
+        data: {
+          warehouse: { connect: { id: warehouseId } },
+          code: String(n),
+          name: `Dock ${n}`,
+          defaultStagingLocation: { connect: { id: inboundLoc.id } },
+          outboundStagingLocation: { connect: { id: outboundLoc.id } },
+        },
+      });
+    }
+  }
+
   async create(data: any, user: any) {
     if (!user.companyId) {
       throw new ForbiddenException('Super admin accounts cannot create warehouses directly — log in as a company admin instead.');
@@ -195,6 +268,7 @@ export class WarehousesService {
       include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
     });
     await this.generateYardSlots(created.id, toNumberOrUndefined(data.yardCapacity));
+    await this.generateDockDoorsAndStaging(created.id, toNumberOrUndefined(data.noOfDocks));
     return created;
   }
 
@@ -247,6 +321,7 @@ export class WarehousesService {
       try {
         const created = await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name, resolvedStorageTypes) });
         await this.generateYardSlots(created.id, toNumberOrUndefined(group.yardCapacity));
+        await this.generateDockDoorsAndStaging(created.id, toNumberOrUndefined(group.noOfDocks));
         const dispatchFlowCount = new Set((group.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType))).size;
         results.push({
           code: upperCode,

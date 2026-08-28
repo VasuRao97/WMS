@@ -443,6 +443,7 @@ export class GateEntriesService {
       if (existing.yardSlotId) {
         await tx.yardSlot.update({ where: { id: existing.yardSlotId }, data: { status: 'AVAILABLE' } });
       }
+      await this.setDockDoorStatus(tx, existing.warehouseId, existing.assignedDockNumber, 'OCCUPIED');
       return entry;
     });
 
@@ -470,6 +471,53 @@ export class GateEntriesService {
   // in the system; this is the first moment staff actually knows where
   // they're unloading it. Required here, not optional — every accepted/
   // approved scan needs somewhere real to post its StockMovement against.
+  // Dock staging bins come in Inbound/Outbound pairs (Dock{N}-SA-IB /
+  // Dock{N}-SA-OB, auto-generated together by
+  // WarehousesService.generateDockDoorsAndStaging — see schema.prisma's
+  // comment on DockDoor.outboundStagingLocationId) that are mutually
+  // exclusive at any given moment — the client's own rule (2026-08-28,
+  // Putaway kickoff conversation): "only one bin can be used at a time, if
+  // unloading is going on, inbound bin is used, that time outbound bin cant
+  // be used." Derived from real on-hand stock at the sibling Location (a
+  // StockMovement sum), same "always derive, never store an occupancy flag"
+  // philosophy as everywhere else in this codebase — not a stored lock. A
+  // Location that doesn't match the Dock{N}-SA-IB/OB naming (i.e. wasn't
+  // auto-generated) has no sibling and is never blocked by this check.
+  private async assertStagingBinAvailable(location: { code: string; warehouseId: string }) {
+    let siblingCode: string | undefined;
+    if (location.code.endsWith('-SA-IB')) siblingCode = location.code.slice(0, -'-SA-IB'.length) + '-SA-OB';
+    else if (location.code.endsWith('-SA-OB')) siblingCode = location.code.slice(0, -'-SA-OB'.length) + '-SA-IB';
+    if (!siblingCode) return;
+
+    const sibling = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: location.warehouseId, code: siblingCode } } });
+    if (!sibling) return;
+    const onHand = await this.prisma.stockMovement.aggregate({ where: { locationId: sibling.id }, _sum: { quantity: true } });
+    const qty = onHand._sum.quantity ? Number(onHand._sum.quantity) : 0;
+    if (qty > 0) {
+      throw new BadRequestException(`"${sibling.code}" is currently in use at this dock — only one of Inbound/Outbound staging can be active per dock at a time.`);
+    }
+  }
+
+  // Auto-flips a Dock Door's status to reflect real vehicle occupancy —
+  // OCCUPIED on Dock In, back to AVAILABLE on Gate Out (2026-08-28, caught
+  // by the client's own live testing: a docked-in vehicle's dock still
+  // showing "Available" was a real, confusing gap). This REVERSES the
+  // 2026-08-25 decision that Dock Door status should stay a manual-only
+  // staff action (see schema.prisma's comment above `model DockDoor`) — a
+  // deliberate correction, not an oversight; that decision predates real
+  // usage of the page. Looked up by assignedDockNumber matching
+  // DockDoor.code (the same free-text match Match Order's staging pre-fill
+  // already uses), so this only ever touches a dock that's actually been
+  // registered — an unrecognized dock number is a harmless no-op. Never
+  // overwrites a dock a staff member has manually set to MAINTENANCE, in
+  // either direction — that stays a deliberate manual override.
+  private async setDockDoorStatus(tx: any, warehouseId: string, dockNumber: string | null | undefined, status: 'AVAILABLE' | 'OCCUPIED') {
+    if (!dockNumber) return;
+    const door = await tx.dockDoor.findUnique({ where: { warehouseId_code: { warehouseId, code: dockNumber } } });
+    if (!door || door.status === 'MAINTENANCE') return;
+    await tx.dockDoor.update({ where: { id: door.id }, data: { status } });
+  }
+
   async matchReceipt(id: string, data: any, user: any) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
@@ -495,6 +543,7 @@ export class GateEntriesService {
     if (!stagingLocation || stagingLocation.warehouseId !== existing.warehouseId) {
       throw new BadRequestException('Staging location not found for this warehouse.');
     }
+    await this.assertStagingBinAvailable(stagingLocation);
     const alreadyClaimed = await this.prisma.vehicleGateEntry.findFirst({ where: { inboundReceiptId: receipt.id } });
     if (alreadyClaimed) throw new BadRequestException('This order has already been matched to a different vehicle.');
 
@@ -656,10 +705,27 @@ export class GateEntriesService {
     const trimmed = dockNumber != null ? String(dockNumber).trim() : '';
     if (!trimmed) throw new BadRequestException('Dock Number is required.');
 
-    const updated = await this.prisma.vehicleGateEntry.update({
-      where: { id },
-      data: { assignedDockNumber: trimmed, dockAssignedAt: new Date() },
-      include: GATE_ENTRY_INCLUDE,
+    const previousDockNumber = existing.assignedDockNumber;
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const entry = await tx.vehicleGateEntry.update({
+        where: { id },
+        data: { assignedDockNumber: trimmed, dockAssignedAt: new Date() },
+        include: GATE_ENTRY_INCLUDE,
+      });
+      // Reassignment after Docked In is explicitly allowed (see this
+      // method's own comment) — a vehicle can genuinely already be
+      // occupying its OLD dock's status when this fires. Release that one
+      // and occupy the new one so status doesn't go stale. A vehicle not
+      // yet docked in has nothing occupying either dock, so this is a
+      // no-op (setDockDoorStatus still runs but there's no real occupancy
+      // to move).
+      if (existing.dockedInAt && previousDockNumber && previousDockNumber !== trimmed) {
+        await this.setDockDoorStatus(tx, existing.warehouseId, previousDockNumber, 'AVAILABLE');
+      }
+      if (existing.dockedInAt) {
+        await this.setDockDoorStatus(tx, existing.warehouseId, trimmed, 'OCCUPIED');
+      }
+      return entry;
     });
 
     await this.driverNotifications.sendDockAssignment({
@@ -785,6 +851,7 @@ export class GateEntriesService {
       if (existing.yardSlotId) {
         await tx.yardSlot.update({ where: { id: existing.yardSlotId }, data: { status: 'AVAILABLE' } });
       }
+      await this.setDockDoorStatus(tx, existing.warehouseId, existing.assignedDockNumber, 'AVAILABLE');
       return entry;
     });
 

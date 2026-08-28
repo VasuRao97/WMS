@@ -2,8 +2,8 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-27 (Inbound deep-dive +
-ERP push + Putaway kickoff).
+what to pick up next. Updated as priorities shift — last updated 2026-08-28 (Dock Door
+auto-generation rebuild; Putaway itself still not started).
 
 Stated direction: cover the basics of every module first (module build order below), then come
 back and deepen each one — rather than gold-plating one module before the rest exist at all.
@@ -18,7 +18,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| Putaway | ⬜ Not started — schema exists (`PutawayTask`), no logic/UI |
+| Putaway | ⬜ Not started — schema exists (`PutawayTask`), no logic/UI. Prerequisite closed 2026-08-28 (Dock Door + staging Locations now auto-generated from Warehouse.noOfDocks) |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |
@@ -106,13 +106,21 @@ when Inventory gets designed, not before.
 receiving works end-to-end) with nowhere further to go — the real, felt gap the module build order
 was always pointing at anyway.
 
-**First thing to close before Putaway itself, your own call**: confirm whether the real company's
-Dock Doors actually have default staging locations configured. The capability was built and
-live-verified this session (Dock Doors page under Masters, a Default Staging Location field per
-dock, Match Order pre-fills from it) — but every verification pass used a throwaway company, so
-it's unconfirmed whether the real warehouse has any real Dock Door records at all, let alone ones
-with staging assigned. That's real data entry, not a code gap — check the Dock Doors page for the
-real company first.
+## Session note (2026-08-28, Dock Door concept rebuilt, Putaway not yet started)
+The "confirm real Dock Door staging config" item above turned into something bigger: checking the
+dev database directly found no company clearly identifiable as "the real client tenant" (~50
+companies, all reading as this project's own test/throwaway data) — the client confirmed they're
+not sure either. Rather than chase that further, the client changed the underlying concept: **Dock
+Doors and their staging Locations are no longer manual master data at all.** `Warehouse.noOfDocks`
+(now required at creation) is the sole input; every Dock Door plus its own Inbound
+(`Dock{N}-SA-IB`)/Outbound (`Dock{N}-SA-OB`) staging Location pair is created automatically,
+append-only, the moment a warehouse is set up — "i dont want the client doing this activity at all,"
+the client's own words. A new rule was also built: only one of a dock's Inbound/Outbound staging
+bins can be in use at a time (enforced via real on-hand stock at Match Order) — ready for the
+still-unbuilt Outbound module. Full detail in `CLAUDE.md`'s "Dock Door + staging Locations now fully
+auto-generated from Warehouse.noOfDocks" section. **Putaway itself has NOT been started yet** — this
+was a prerequisite closed first, the three workflow-alignment questions (task creation trigger, bin
+selection, page location) are still open and unanswered.
 
 The first three candidates below are the module-level options (unchanged from before); the rest
 are smaller items raised in earlier sessions — pick any of them, not a forced order.
