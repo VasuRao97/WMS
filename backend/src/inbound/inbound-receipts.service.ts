@@ -6,7 +6,7 @@ import { PutawayTasksService } from '../putaway/putaway-tasks.service';
 const RECEIPT_INCLUDE = {
   warehouse: { select: { id: true, code: true, name: true, companyId: true } },
   createdBy: { select: { id: true, name: true } },
-  lines: { include: { sku: { select: { id: true, code: true, description: true } }, stagingLocation: { select: { id: true, code: true } } } },
+  lines: { include: { sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } }, stagingLocation: { select: { id: true, code: true } } } },
   stagingLocation: { select: { id: true, code: true } },
   // The order's own expected vehicle (2026-08-27, the 1:1-mapping
   // follow-up) — distinct from gateEntry.vehicle below, which is whichever
@@ -18,7 +18,7 @@ const RECEIPT_INCLUDE = {
 };
 
 const SCAN_INCLUDE = {
-  sku: { select: { id: true, code: true, description: true } },
+  sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } },
   receiptLine: true,
   scannedBy: { select: { id: true, name: true } },
   reviewedBy: { select: { id: true, name: true } },

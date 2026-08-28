@@ -2,10 +2,74 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-28 (Putaway's core task
-logic is now built and live-verified — trigger modes, ABC/multi-deep-lane bin suggestion, scan-driven
-execution, the Multi-SKU Lane Exception workflow. Ground/Stillage's own version, cancel/correction
-paths, and real queue-ordering are still open — see the `wms-putaway-design` memory).
+what to pick up next. Updated as priorities shift — last updated 2026-08-28 (bin suggestion now narrows by `Location.categoryId` too, not just the
+warehouse-level plan — see the session note below. Also same day: the Putaway trigger-mode
+Company Settings gap closed, and Putaway's core task logic itself was built and live-verified —
+trigger modes, ABC/multi-deep-lane bin suggestion, scan-driven execution, the Multi-SKU Lane
+Exception workflow. Ground/Stillage's own version, cancel/correction paths, and real queue-ordering
+are still open — see the `wms-putaway-design` memory).
+
+## Session note (2026-08-28, Location-category-aware bin suggestion + Inbound category visibility)
+A real, previously-unused signal got wired in, from a client-initiated discussion (not a bug
+report): `Location.categoryId` — a real, optional per-rack tag staff can set at generation time,
+already shown on the Plan View and cross-checked by the Storage Type Mapping table — had never
+actually been consulted by `suggestBin()`. Putaway only ever checked the coarser
+`WarehouseStorageType`-level plan ("is Category X planned for SPR at all, with how much capacity"),
+then considered *every* rack of that storage type in the warehouse, ignoring which specific racks
+were individually tagged.
+
+**Now (`putaway-tasks.service.ts`'s `suggestBin()`)**: after the existing warehouse-level plan
+check narrows to eligible storage types, the location query is further narrowed to racks whose own
+`categoryId` matches the SKU's Category — but only when at least one eligible rack is actually
+tagged that way. The moment none are (tagging is optional, a warehouse may never bother), it falls
+back to considering every eligible-storage-type rack exactly as before — confirmed explicitly by
+the client: "if there is no category details given by them, then we need to fall back to [the old
+behavior] or else the putaway will never work." No new lane-level logic was needed — the filter
+sits on the same query that runs before lanes get grouped, so lane-level consistency falls out for
+free (a whole rack range is normally tagged with one Category in one generator call anyway).
+
+**Also, same root cause**: SKU Category was completely missing from the Inbound list — added as a
+new "Category" column on the Receiving modal's expected-lines table (`InboundOrdersPage.tsx`),
+backed by adding `category` to the SKU `select` on both `InboundReceiptsService`'s and
+`GateEntriesService`'s receipt-line/scan includes.
+
+Verified via a two-warehouse throwaway-company API script: one SKU (Category "2W tyres"), one
+warehouse with 2 racks tagged that Category and 2 tagged a different one (Carbonated) — a receipt
+line for that SKU correctly landed the created PutawayTask on the correctly-tagged rack, never the
+mismatched one, despite both being SPR-eligible. A second warehouse with the SPR/Category plan in
+place but **zero** racks actually tagged that Category (only Carbonated-tagged ones) correctly fell
+back to suggesting one of those instead of returning `NEEDS_BIN` — confirming Putaway never
+dead-ends on an untagged warehouse. Then re-verified live in the actual browser: opened the real
+Receiving modal and confirmed the new Category column renders "2W tyres" for the test SKU, reading
+live off the real saved data, not a hardcoded value.
+
+## Session note (2026-08-28, closing the Putaway trigger-mode settings gap)
+Caught right after the Putaway build above shipped: `Company.putawayTriggerMode`/
+`putawayDefaultBatchQty` were real, working schema fields with real logic behind both modes, but
+had never been wired into `CompaniesService`/`CompaniesController`/`CompanySettingsPage.tsx` — every
+company was silently stuck on whatever the schema default happened to be, with zero UI/API to
+change it. Two things resolved:
+1. **A new "Putaway" section on Company Settings** (same shape as Detention/ERP Integration) — a
+   Trigger Mode dropdown (Immediate/Batch) + an optional Immediate-mode batch-size input, wired
+   through `CompaniesService.getSettings()`/`updateSettings()` exactly like every other setting on
+   that page.
+2. **The schema default itself flipped from BATCH to IMMEDIATE** — BATCH had only ever been my own
+   unconfirmed assumption from the original Putaway build session, flagged explicitly rather than
+   silently kept. Asked directly; the client's answer — "if there are 10 cases of same SKUs, even 1
+   case is scanned, we should be able to putaway" — is exactly IMMEDIATE mode with no company-wide
+   batch threshold (`putawayDefaultBatchQty` stays null by default, meaning every accepted/approved
+   scan becomes its own task immediately). Migration
+   `20260828200000_putaway_trigger_mode_default_immediate` only changes the DB default for a
+   newly-created company — it does not retroactively touch any already-existing company's stored
+   value (same "no real client tenant identified in the dev DB yet" situation as the Dock Door
+   auto-generation pass — nothing to backfill against).
+
+Verified via a throwaway-company API script (6/6: a fresh company defaults to IMMEDIATE/null,
+PATCH to BATCH+50 persists and reads back correctly, clearing back to IMMEDIATE/null works, an
+invalid trigger mode and a negative batch qty both correctly 400) plus a live browser pass —
+changed Trigger Mode to Batch and set a batch size of 25 through the real Company Settings form,
+reloaded the page, and confirmed via the live DOM (not just displayed text) that both values
+persisted through a real save → reload round-trip.
 
 Stated direction: cover the basics of every module first (module build order below), then come
 back and deepen each one — rather than gold-plating one module before the rest exist at all.
@@ -201,13 +265,17 @@ are smaller items raised in earlier sessions — pick any of them, not a forced 
 
 Pick one — these are the live options on the table, not a forced order:
 
-1. **Putaway — core logic built and verified (2026-08-28).** Moves received stock from staging to a
-   real final storage bin, via trigger modes, ABC/multi-deep-lane-aware bin suggestion, and a real
-   scan-driven execution flow. Not fully done, though — genuinely open pieces to pick up next:
-   Ground/Stillage's own version of the multi-position logic (racked came first, on purpose), a
-   cancel/exception path for a task that can't be completed, correcting an already-completed
-   mis-putaway, and real queue-ordering/aging-based task prioritization. Also still the natural
-   eventual consumer of `DockLocationDistance` once that has real data to rank bins by.
+1. **Putaway — core logic built and verified (2026-08-28), trigger-mode settings gap closed and
+   bin suggestion now Location-category-aware, both the same day.** Moves received stock from
+   staging to a real final storage bin, via trigger modes (now Company-Settings-configurable,
+   default IMMEDIATE), ABC/multi-deep-lane-aware bin suggestion (now also narrowed by each rack's
+   own `Location.categoryId` tag when set, falling back to the old warehouse-level-only check when
+   untagged), and a real scan-driven execution flow. Not fully done, though — genuinely open pieces
+   to pick up next: Ground/Stillage's own version of the multi-position logic (racked came first,
+   on purpose), a cancel/exception path for a task that can't be completed, correcting an
+   already-completed mis-putaway, and real queue-ordering/aging-based task prioritization. Also
+   still the natural eventual consumer of `DockLocationDistance` once that has real data to rank
+   bins by.
 2. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now (Inbound receiving
    writes to it), but nothing renders it. Even a read-only view would close a real, felt gap.

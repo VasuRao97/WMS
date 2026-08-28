@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 // direction — only the inbound-specific middle of the flow lives here.
 
 type Warehouse = { id: string; code: string; name: string };
-type Sku = { id: string; code: string; description: string };
+type Sku = { id: string; code: string; description: string; category?: { id: string; name: string } };
 type Location = { id: string; code: string; warehouseId: string };
 type Vehicle = { id: string; vehicleNumber: string };
 type DockDoor = { id: string; warehouseId: string; code: string; defaultStagingLocation?: { id: string; code: string } };
@@ -41,7 +41,7 @@ type InboundScan = {
   id: string;
   barcodeScanned: string;
   skuId?: string;
-  sku?: { code: string; description: string };
+  sku?: { code: string; description: string; category?: { id: string; name: string } };
   receiptLineId?: string;
   quantity?: number;
   status: 'ACCEPTED' | 'BLOCKED' | 'APPROVED' | 'REJECTED';
@@ -73,7 +73,7 @@ type GateEntry = {
     referenceNo: string;
     status: string;
     stagingLocation?: { id: string; code: string };
-    lines: { id: string; sku: { id: string; code: string; description: string }; expectedQty: number; receivedQty: number }[];
+    lines: { id: string; sku: { id: string; code: string; description: string; category?: { id: string; name: string } }; expectedQty: number; receivedQty: number }[];
   };
   inboundScans?: InboundScan[];
   // "Complete Inward Process" (2026-08-27) — the deliberate close-out
@@ -696,6 +696,7 @@ function InboundOrdersPage() {
               <thead>
                 <tr style={{ textAlign: 'center', borderBottom: '1px solid #ccc' }}>
                   <th style={{ padding: 6 }}>SKU</th>
+                  <th style={{ padding: 6 }}>Category</th>
                   <th style={{ padding: 6 }}>Expected</th>
                   <th style={{ padding: 6 }}>Received</th>
                   <th style={{ padding: 6 }}>Remaining</th>
@@ -705,6 +706,7 @@ function InboundOrdersPage() {
                 {receivingFor.inboundReceipt.lines.map((l) => (
                   <tr key={l.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                     <td style={{ padding: 6 }}>{l.sku.code} — {l.sku.description}</td>
+                    <td style={{ padding: 6, color: l.sku.category ? undefined : '#888' }}>{l.sku.category?.name || '—'}</td>
                     <td style={{ padding: 6 }}>{l.expectedQty}</td>
                     <td style={{ padding: 6 }}>{l.receivedQty}</td>
                     <td style={{ padding: 6, fontWeight: Number(l.expectedQty) - Number(l.receivedQty) > 0 ? 'bold' : 'normal' }}>{Number(l.expectedQty) - Number(l.receivedQty)}</td>

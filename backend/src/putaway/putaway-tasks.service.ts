@@ -85,10 +85,24 @@ export class PutawayTasksService {
     if (eligibleStorageTypes.length === 0) return null;
     const storageTypeRowByType = new Map(storageTypeRows.map((r: any) => [r.storageType, r]));
 
-    const locations = await tx.location.findMany({
+    const rawLocations = await tx.location.findMany({
       where: { warehouseId, zoneType: 'ACTUAL_STORAGE', storageType: { in: eligibleStorageTypes }, isActive: true },
     });
-    if (locations.length === 0) return null;
+    if (rawLocations.length === 0) return null;
+
+    // Location-level Category narrowing (2026-08-28 — see [[wms-putaway-design]]).
+    // WarehouseStorageType above is only a warehouse-wide PLAN ("SPR is
+    // meant to hold Category X somewhere, N positions worth") — it doesn't
+    // say which specific racks. Location.categoryId is the actual per-rack
+    // tag staff give at generation time; when at least one eligible rack
+    // carries a tag matching this SKU's own Category, narrow to just those
+    // — a much more precise suggestion than "any rack of the right storage
+    // type." The moment NONE of them are tagged (tagging is optional, most
+    // warehouses may never bother), fall back to the full untagged set —
+    // confirmed explicitly: Putaway must never dead-end just because a
+    // warehouse hasn't tagged its racks.
+    const categoryTaggedLocations = sku.categoryId ? rawLocations.filter((l: any) => l.categoryId === sku.categoryId) : [];
+    const locations = categoryTaggedLocations.length > 0 ? categoryTaggedLocations : rawLocations;
 
     const locationIds = locations.map((l: any) => l.id);
     const warehouse = await tx.warehouse.findUnique({ where: { id: warehouseId }, select: { companyId: true } });

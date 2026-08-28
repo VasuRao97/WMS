@@ -32,13 +32,13 @@ const GATE_ENTRY_INCLUDE = {
   // expected lines, and the full scan log for this visit.
   inboundReceipt: {
     include: {
-      lines: { include: { sku: { select: { id: true, code: true, description: true } } } },
+      lines: { include: { sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } } } },
       stagingLocation: { select: { id: true, code: true } },
     },
   },
   inboundScans: {
     include: {
-      sku: { select: { id: true, code: true, description: true } },
+      sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } },
       scannedBy: { select: { id: true, name: true } },
       reviewedBy: { select: { id: true, name: true } },
     },

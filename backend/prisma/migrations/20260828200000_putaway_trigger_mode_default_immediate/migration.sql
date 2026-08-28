@@ -1,0 +1,14 @@
+-- Flips Company.putawayTriggerMode's DEFAULT from BATCH to IMMEDIATE, per
+-- the client's own confirmation (2026-08-28): "if there are 10 cases of
+-- same SKUs, even 1 case is scanned, we should be able to putaway" — i.e.
+-- a brand-new company should start able to putaway in parallel with
+-- unloading, not wait for the whole vehicle.
+--
+-- This only changes the DEFAULT applied to a company row created from now
+-- on. It deliberately does NOT backfill any already-existing company's
+-- stored value — every current company (all reading as this project's own
+-- test/throwaway data, per the 2026-08-28 Dock Door session note; no real
+-- client tenant has been identified in the dev DB) keeps whatever it
+-- already has and can now be changed for real via the new Company Settings
+-- "Putaway" section.
+ALTER TABLE "Company" ALTER COLUMN "putawayTriggerMode" SET DEFAULT 'IMMEDIATE';

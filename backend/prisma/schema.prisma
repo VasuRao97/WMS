@@ -151,8 +151,16 @@ model Company {
   //   IMMEDIATE — tasks are created as material is accepted at staging
   //     (see putawayDefaultBatchQty below), so an operator can start
   //     putting away in parallel with unloading.
-  // Defaults to BATCH — the simpler of the two.
-  putawayTriggerMode PutawayTriggerMode @default(BATCH)
+  // Defaulted to BATCH at first (2026-08-28, this session's own unconfirmed
+  // assumption — never actually checked with the client) then corrected the
+  // same day once asked directly: "if there are 10 cases of same SKUs, even
+  // 1 case is scanned, we should be able to putaway" — i.e. IMMEDIATE, with
+  // no company-wide batching (putawayDefaultBatchQty stays null by default,
+  // see below) is the real wanted default for a brand-new company. This
+  // only changes the default applied to a NEW row — it does not retroactively
+  // change any already-existing company's stored value; see CompaniesService/
+  // CompanySettingsPage for the real per-company toggle now wired up.
+  putawayTriggerMode PutawayTriggerMode @default(IMMEDIATE)
 
   // IMMEDIATE-mode batching threshold, in the SKU's own baseUom
   // (2026-08-28) — company-wide default, overridable per-SKU via

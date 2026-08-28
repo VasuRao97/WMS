@@ -29,6 +29,8 @@ type Settings = {
   detentionEscalationHours?: number | null;
   allowErpInboundPush?: boolean;
   erpApiKey?: string | null;
+  putawayTriggerMode?: 'BATCH' | 'IMMEDIATE';
+  putawayDefaultBatchQty?: number | string | null;
 };
 
 function CompanySettingsPage() {
@@ -38,6 +40,8 @@ function CompanySettingsPage() {
   const [detentionAlertHours, setDetentionAlertHours] = useState('');
   const [detentionEscalationHours, setDetentionEscalationHours] = useState('');
   const [allowErpInboundPush, setAllowErpInboundPush] = useState(false);
+  const [putawayTriggerMode, setPutawayTriggerMode] = useState<'BATCH' | 'IMMEDIATE'>('IMMEDIATE');
+  const [putawayDefaultBatchQty, setPutawayDefaultBatchQty] = useState('');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [keyError, setKeyError] = useState('');
@@ -57,6 +61,8 @@ function CompanySettingsPage() {
         setDetentionAlertHours(data.detentionAlertHours != null ? String(data.detentionAlertHours) : '');
         setDetentionEscalationHours(data.detentionEscalationHours != null ? String(data.detentionEscalationHours) : '');
         setAllowErpInboundPush(!!data.allowErpInboundPush);
+        setPutawayTriggerMode(data.putawayTriggerMode === 'BATCH' ? 'BATCH' : 'IMMEDIATE');
+        setPutawayDefaultBatchQty(data.putawayDefaultBatchQty != null ? String(data.putawayDefaultBatchQty) : '');
       });
   };
 
@@ -79,6 +85,8 @@ function CompanySettingsPage() {
         detentionAlertHours: detentionAlertHours === '' ? null : detentionAlertHours,
         detentionEscalationHours: detentionEscalationHours === '' ? null : detentionEscalationHours,
         allowErpInboundPush,
+        putawayTriggerMode,
+        putawayDefaultBatchQty: putawayDefaultBatchQty === '' ? null : putawayDefaultBatchQty,
       }),
     });
     const data = await res.json();
@@ -151,6 +159,38 @@ function CompanySettingsPage() {
               A valid API key is still checked on every push even with this on — turning it off blocks pushes
               immediately without needing to touch the key itself.
             </p>
+          </div>
+
+          {error && <p style={{ color: 'crimson' }}>{error}</p>}
+          {saved && <p style={{ color: 'green' }}>Saved.</p>}
+          <button type="submit">Save Settings</button>
+        </form>
+      </div>
+
+      <div style={{ marginTop: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+        <h3 style={{ marginTop: 0 }}>Putaway</h3>
+        <p style={{ marginTop: -4, marginBottom: 16, fontSize: 13, color: '#888' }}>
+          Controls when Putaway tasks get created. Immediate lets staff start putting away in parallel with
+          unloading (a task is created as soon as material is accepted at staging); Batch waits until the whole
+          vehicle is fully received first.
+        </p>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Trigger Mode</label>
+            <select value={putawayTriggerMode} onChange={(e) => setPutawayTriggerMode(e.target.value as 'BATCH' | 'IMMEDIATE')} style={{ width: 214, padding: 6 }}>
+              <option value="IMMEDIATE">Immediate (as material is scanned in)</option>
+              <option value="BATCH">Batch (once the whole vehicle is received)</option>
+            </select>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Immediate-mode batch size (optional)</label>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#888' }}>
+              Only used in Immediate mode. Leave blank so every accepted/approved scan becomes its own task right
+              away (e.g. even 1 of 10 cases scanned can be put away immediately). Set a number to instead
+              accumulate scans of the same SKU/line up to this quantity before a task is created — a specific SKU
+              can override this company-wide number individually.
+            </p>
+            <input value={putawayDefaultBatchQty} onChange={(e) => setPutawayDefaultBatchQty(e.target.value)} placeholder="blank = every scan its own task" style={{ width: 200, padding: 6 }} />
           </div>
 
           {error && <p style={{ color: 'crimson' }}>{error}</p>}

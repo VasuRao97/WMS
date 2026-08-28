@@ -34,6 +34,8 @@ export class CompaniesService {
         detentionEscalationHours: true,
         allowErpInboundPush: true,
         erpApiKey: true,
+        putawayTriggerMode: true,
+        putawayDefaultBatchQty: true,
       },
     });
   }
@@ -58,6 +60,15 @@ export class CompaniesService {
     if (data.detentionFreeHours !== undefined && data.detentionFreeHours !== null && data.detentionFreeHours !== '' && Number(data.detentionFreeHours) < 0) {
       errors.push('Detention Free Hours cannot be negative.');
     }
+    // Putaway trigger mode (2026-08-28, wiring the real toggle for the
+    // first time — the schema field/logic have existed since the Putaway
+    // build itself, but had no settings endpoint touching them at all).
+    if (data.putawayTriggerMode !== undefined && data.putawayTriggerMode !== null && !['BATCH', 'IMMEDIATE'].includes(data.putawayTriggerMode)) {
+      errors.push('Putaway Trigger Mode must be BATCH or IMMEDIATE.');
+    }
+    if (data.putawayDefaultBatchQty !== undefined && data.putawayDefaultBatchQty !== null && data.putawayDefaultBatchQty !== '' && Number(data.putawayDefaultBatchQty) <= 0) {
+      errors.push('Putaway Default Batch Qty must be a positive number when given.');
+    }
     if (errors.length > 0) throw new BadRequestException(errors);
 
     return this.prisma.company.update({
@@ -74,6 +85,13 @@ export class CompaniesService {
         // 2026-08-27, ERP push — a plain boolean toggle, same "omitted
         // means unchanged" convention as everything else here.
         allowErpInboundPush: data.allowErpInboundPush === undefined ? undefined : !!data.allowErpInboundPush,
+        // Putaway (2026-08-28) — same "omitted means unchanged, explicit
+        // null clears it back to unconfigured" convention as detention.
+        // putawayTriggerMode has no real "unconfigured" state (it's a
+        // required enum with a DB default), so an empty/null value here is
+        // simply ignored (left unchanged) rather than attempted as a clear.
+        putawayTriggerMode: data.putawayTriggerMode ? data.putawayTriggerMode : undefined,
+        putawayDefaultBatchQty: data.putawayDefaultBatchQty === undefined ? undefined : data.putawayDefaultBatchQty === null || data.putawayDefaultBatchQty === '' ? null : Number(data.putawayDefaultBatchQty),
       },
       select: {
         id: true,
@@ -84,6 +102,8 @@ export class CompaniesService {
         detentionEscalationHours: true,
         allowErpInboundPush: true,
         erpApiKey: true,
+        putawayTriggerMode: true,
+        putawayDefaultBatchQty: true,
       },
     });
   }
