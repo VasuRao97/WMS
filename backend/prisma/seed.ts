@@ -82,12 +82,58 @@ const VEHICLE_TYPES: { name: string; segment: string; lengthFt: number; widthFt:
 // vertical-lift type in Indian warehouses, easy to drop/rename later if it
 // doesn't apply.
 //
-// genericPalletsPerTrip/genericAvgTripMinutes are both placeholder numbers
-// (same "ships with a number, client corrects it later" convention as
-// VehicleType.maxTonnage) — not sourced from this client's real fleet,
-// don't treat them as final. Every real Equipment unit a company registers
-// can override either figure with its own measured value.
-//
+// genericPalletsPerTrip/genericAvgTripMinutes — REVISED 2026-08-28, same
+// session, after the client directly asked whether these were actually
+// researched or just guessed (they were guessed, the first time). Now
+// grounded in real published figures rather than general reasoning, same
+// "ships with a number, client corrects it later" convention as
+// VehicleType.maxTonnage (whose own dimensions WERE sourced from public
+// spec listings — this correction brings EquipmentType's numbers up to
+// that same bar). Still not THIS client's own fleet-measured data — every
+// real Equipment unit a company registers can override either figure.
+// Sources and derivation per type:
+//   - HOPT vs BOPT: a direct, matched comparison — "an employee takes 10
+//     minutes to move a pallet manually [i.e. a hand pallet truck] but
+//     only 3 minutes with an electric truck" (mobilept.com). Used
+//     verbatim: HOPT 10 min, BOPT 3 min, both 1 pallet/trip.
+//   - Forklift (both fuel types) / Reach Truck: general benchmarks cluster
+//     at 16-25 pallet moves/hour (≈2.4-3.75 min/trip) — acclaimhandling.co.uk,
+//     xorosoft.com, raymondcorp.com. Set at 3 min (Electric Forklift, Reach
+//     Truck) / 3.5 min (Diesel/LPG Forklift — larger, more yard/outdoor
+//     duty, still within the same band), all 1 pallet/trip.
+//   - Double Deep Reach Truck: totallift.ca/abelwomack.com cite a 20-30%
+//     productivity drop vs. a standard reach truck (extra handling to move
+//     the front pallet before reaching the second row) — applied as +25%
+//     over Reach Truck's 3 min → 3.75 min, 1 pallet/trip.
+//   - Stacker (Walkie/Rider): sources (raymondcorp.com, toyotaforklift.com)
+//     position it as bridging manual pallet trucks and full forklifts —
+//     powered but walk-behind (slower travel than a ride-on) — no single
+//     published pallets/hour figure found, so its 4.5 min/trip sits between
+//     BOPT (3 min) and a manual-effort tier by that same positioning, not a
+//     hard citation like the others — flagged as the one figure still
+//     closer to reasoned estimate than sourced fact.
+//   - Manual (Hand Carry) / Hand Held Trolley: these move loose cartons,
+//     not pallets, so palletsPerTrip is a fraction derived from cartons-
+//     per-pallet (30-60 for medium consumer goods, ~40 as a working
+//     midpoint — freightamigo.com/getonecart.com) — a 2-carton hand-carry
+//     trip ≈ 2/40 = 0.05 pallet-equivalent, a 6-carton trolley trip ≈
+//     6/40 = 0.15. Trip TIME uses the manual case-picking band (150-250
+//     cases/hour — shipbob.com/optioryx.com) as context for a plausible
+//     short round-trip, not a direct per-trip citation (that benchmark
+//     measures continuous picking, not one carry-and-return trip) — 3 min
+//     (Manual) / 4 min (Trolley, more to load/unload per trip) are the
+//     least strongly sourced of the nine, same caveat as Stacker above.
+const EQUIPMENT_TYPES: { name: string; genericPalletsPerTrip: number; genericAvgTripMinutes: number }[] = [
+  { name: 'Manual (Hand Carry)', genericPalletsPerTrip: 0.05, genericAvgTripMinutes: 3 },
+  { name: 'Hand Held Trolley', genericPalletsPerTrip: 0.15, genericAvgTripMinutes: 4 },
+  { name: 'HOPT (Hand Pallet Truck)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 10 },
+  { name: 'BOPT (Battery Pallet Truck)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3 },
+  { name: 'Stacker (Walkie/Rider)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 4.5 },
+  { name: 'Forklift (Electric, up to 2T)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3 },
+  { name: 'Forklift (Diesel/LPG, 2.5T+)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3.5 },
+  { name: 'Reach Truck (RT)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3 },
+  { name: 'Double Deep Reach Truck (DDRT)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3.75 },
+];
 // The activity-suitability matrix (Putaway/Picking/Loading/Unloading/
 // Consolidation/Inventory Check) is deliberately NOT seeded here — a same-
 // day correction, 2026-08-28: it was first built as a shared column set on
@@ -97,17 +143,6 @@ const VEHICLE_TYPES: { name: string; segment: string; lengthFt: number; widthFt:
 // `common/equipment-suitability-defaults.ts` (consumed by
 // `WarehousesService.generateEquipmentSuitability()`) and
 // `WarehouseEquipmentSuitability` in schema.prisma for where it lives now.
-const EQUIPMENT_TYPES: { name: string; genericPalletsPerTrip: number; genericAvgTripMinutes: number }[] = [
-  { name: 'Manual (Hand Carry)', genericPalletsPerTrip: 0.05, genericAvgTripMinutes: 3 },
-  { name: 'Hand Held Trolley', genericPalletsPerTrip: 0.15, genericAvgTripMinutes: 4 },
-  { name: 'HOPT (Hand Pallet Truck)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 6 },
-  { name: 'BOPT (Battery Pallet Truck)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 4 },
-  { name: 'Stacker (Walkie/Rider)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 4.5 },
-  { name: 'Forklift (Electric, up to 2T)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3 },
-  { name: 'Forklift (Diesel/LPG, 2.5T+)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3.5 },
-  { name: 'Reach Truck (RT)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3 },
-  { name: 'Double Deep Reach Truck (DDRT)', genericPalletsPerTrip: 1, genericAvgTripMinutes: 3.5 },
-];
 
 async function main() {
   for (const name of CATEGORIES) {
@@ -128,10 +163,16 @@ async function main() {
   }
   console.log(`Seeded ${VEHICLE_TYPES.length} vehicle types.`);
 
+  // update: et (not the create-only `{}` VehicleType/ProductCategory use
+  // above) — EquipmentType has no client-facing edit UI at all, so
+  // re-running this seed IS the only correction mechanism for its
+  // throughput numbers (proven necessary the same day this was written:
+  // the numbers above were corrected once already after the client asked
+  // whether they were actually researched).
   for (const et of EQUIPMENT_TYPES) {
     await prisma.equipmentType.upsert({
       where: { name: et.name },
-      update: {},
+      update: et,
       create: et,
     });
   }

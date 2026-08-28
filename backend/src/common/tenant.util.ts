@@ -81,6 +81,18 @@ export const INBOUND_SCAN_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHO
 export const INBOUND_APPROVE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 export const INBOUND_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
 
+// Putaway (2026-08-28) — same tier as Inbound's own floor roles, since it's
+// the direct continuation of receiving work (staging -> bin). Deliberately
+// excludes SECURITY_SUPERVISOR (their surface is the gate). The multi-deep
+// lane exception workflow is NOT role-constant-driven — it's exactly two
+// named roles by the client's own explicit design (WAREHOUSE_MANAGER
+// requests, COMPANY_ADMIN alone decides), so those are checked directly
+// with @Roles('WAREHOUSE_MANAGER') / @Roles('COMPANY_ADMIN') at the
+// controller rather than a broader constant that would blur that
+// distinction.
+export const PUTAWAY_EXECUTE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const PUTAWAY_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+
 export async function assertGateAccessAllowed(prisma: { company: { findUnique: Function } }, user: any): Promise<void> {
   if (GATE_YARD_ALWAYS_ALLOWED_ROLES.includes(user.role)) return;
   if (!user.companyId) return; // SUPER_ADMIN already handled above; nothing else should reach this with no companyId

@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, INBOUND_SCOPED_ROLES } from '../common/tenant.util';
+import { PutawayTasksService } from '../putaway/putaway-tasks.service';
 
 const RECEIPT_INCLUDE = {
   warehouse: { select: { id: true, code: true, name: true, companyId: true } },
@@ -44,7 +45,10 @@ const SCAN_INCLUDE = {
 // assignVehicle() below for how a vehicle gets attached later.
 @Injectable()
 export class InboundReceiptsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private putawayTasks: PutawayTasksService,
+  ) {}
 
   private async assertWarehouseAccess(warehouseId: string, user: any, errors: string[]) {
     const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
@@ -410,11 +414,22 @@ export class InboundReceiptsService {
   // recomputeReceiptStatus is duplicated from GateEntriesService rather
   // than imported cross-module — see that method's own comment for why.
   private async recomputeReceiptStatus(tx: any, receiptId: string) {
+    const before = await tx.inboundReceipt.findUnique({ where: { id: receiptId }, select: { status: true, warehouse: { select: { companyId: true } } } });
     const lines = await tx.inboundReceiptLine.findMany({ where: { receiptId } });
     const allReceived = lines.length > 0 && lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
     const anyReceived = lines.some((l: any) => Number(l.receivedQty) > 0);
     const status = allReceived ? 'RECEIVED' : anyReceived ? 'PARTIALLY_RECEIVED' : 'PENDING';
     await tx.inboundReceipt.update({ where: { id: receiptId }, data: { status } });
+
+    // BATCH putaway trigger mode — see GateEntriesService.recomputeReceiptStatus's
+    // identical comment; duplicated here for the same reason this whole
+    // method is duplicated (each module queries Prisma directly).
+    if (before && before.status !== 'RECEIVED' && status === 'RECEIVED') {
+      const company = await tx.company.findUnique({ where: { id: before.warehouse.companyId }, select: { putawayTriggerMode: true } });
+      if (company?.putawayTriggerMode === 'BATCH') {
+        await this.putawayTasks.createBatchTasksForReceipt(tx, receiptId);
+      }
+    }
   }
 
   // A Supervisor confirms what a BLOCKED scan actually is — never the
@@ -468,6 +483,8 @@ export class InboundReceiptsService {
     const locationId = line.stagingLocationId ?? scan.receipt.stagingLocationId;
     if (!locationId) throw new BadRequestException('This order has no staging location set — match it to a dock/staging spot before approving scans.');
 
+    const receivedDate = await this.putawayTasks.resolveReceivedDate(this.prisma, scan.receiptId);
+
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.inboundReceiptScan.update({
         where: { id: scanId },
@@ -486,9 +503,20 @@ export class InboundReceiptsService {
           referenceId: scanId,
           createdById: user.userId,
           notes: 'Supervisor-approved override of a blocked scan.',
+          receivedDate,
         },
       });
       await this.recomputeReceiptStatus(tx, scan.receiptId);
+      // IMMEDIATE putaway trigger mode only — see GateEntriesService.scan()'s
+      // identical hook for the full comment.
+      await this.putawayTasks.handleAcceptedScan(tx, {
+        receiptLineId,
+        skuId,
+        quantity,
+        locationId,
+        warehouseId: scan.receipt.warehouseId,
+        receiptId: scan.receiptId,
+      });
       return updated;
     });
   }

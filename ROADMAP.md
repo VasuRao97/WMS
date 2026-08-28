@@ -2,8 +2,10 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-28 (MHE/Equipment master
-built as a Putaway prerequisite; Putaway's own task logic still not started).
+what to pick up next. Updated as priorities shift — last updated 2026-08-28 (Putaway's core task
+logic is now built and live-verified — trigger modes, ABC/multi-deep-lane bin suggestion, scan-driven
+execution, the Multi-SKU Lane Exception workflow. Ground/Stillage's own version, cancel/correction
+paths, and real queue-ordering are still open — see the `wms-putaway-design` memory).
 
 Stated direction: cover the basics of every module first (module build order below), then come
 back and deepen each one — rather than gold-plating one module before the rest exist at all.
@@ -18,7 +20,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| Putaway | ⬜ Task logic/UI not started — schema exists (`PutawayTask`). Two prerequisites now closed: Dock Door + staging Locations auto-generation (2026-08-28), and a real MHE/Equipment master (`EquipmentType`/`Equipment`, 2026-08-28 — built because the client wants Putaway's task/suggestion logic designed against real equipment throughput, not guessed at) |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion, scan-driven staging→bin execution (claim/complete, no override), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal. New standalone "Putaway" page. Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |
@@ -163,6 +165,35 @@ batching, claiming) is still NOT started** — a real workflow conversation desi
 against this real, warehouse-specific equipment data is the natural next step, not a re-litigation
 of what's already been decided above.
 
+## Session note (2026-08-28, same day — Putaway's actual logic built and verified)
+Picked the design conversation back up, deliberately slower this time — "lets deep dive, ask as much
+questions you need... so we will think about topics i have not thought about yet." Real ground
+covered before any more schema: the client's own scan-based execution vision (scan the case/pallet
+at staging → system says where → scan the destination to confirm, no override), a full brainstorm of
+gaps the earlier design missed (double-booking, task claiming, the dead `PUTAWAY_COMPLETE` status),
+and — the biggest piece — a real racked-vs-non-racked split that led to the mandatory single-SKU-
+per-multi-deep-lane rule (reusing `maxSkusClass*`, unenforced since 2026-08-24), the Multi-SKU Lane
+Exception request/approve/revoke workflow ("so both the local and HO team knows there is a
+problem"), and "localized aging" (`StockMovement.receivedDate`, sourced from Dock In, a deliberately
+simple stand-in after real manufacturing-date tracking was raised then parked — it ties into the
+already-deferred Batch/Lot topic). Also added, mid-conversation: `EquipmentType`/`Equipment` gained
+nullable loaded/unloaded speed (km/h) fields, schema-only — real numbers are coming from the client
+separately.
+
+All of it got built the same session — schema, then real service logic, then a live UI — not left as
+another skeleton. Full detail in `CLAUDE.md`'s "Putaway — design conversation, schema, and working
+logic" section; the complete design history (including the mid-session schema-before-alignment
+misstep that got caught and reverted) lives in the `wms-putaway-design` memory. Verified 20/20 via a
+throwaway-company API script plus a live browser pass through the real "Putaway" page (claim, a real
+wrong-location hard-block, a correct completion, and the receipt's `PUTAWAY_COMPLETE` flip confirmed
+directly against the database).
+
+**Genuinely still open, not decided**: Ground/Stillage's own version of this logic (deliberately
+deferred — racked came first), a cancel/exception path for a task that can't be completed at all, how
+an already-completed mis-putaway gets corrected, and real queue-ordering/aging-based task
+prioritization (the FIFO discussion got paused for the racked-vs-non-racked detour and was never
+fully resumed).
+
 The first three candidates below are the module-level options (unchanged from before); the rest
 are smaller items raised in earlier sessions — pick any of them, not a forced order.
 
@@ -170,14 +201,13 @@ are smaller items raised in earlier sessions — pick any of them, not a forced 
 
 Pick one — these are the live options on the table, not a forced order:
 
-1. **Putaway — picked, in progress.** The natural next module. Moves received stock from its
-   staging location to a real final storage bin. This is also what would let received Inbound
-   stock actually go somewhere instead of sitting at staging indefinitely. Also the first real
-   consumer of the new `DockLocationDistance` data (dock-suggestion logic was explicitly deferred
-   to land here) and the new MHE/`Equipment` master built this session. `PutawayTask` schema already
-   exists (receiptLine/sku/from/to Location/quantity/status PENDING|COMPLETED) but will need real
-   rework once task logic is actually designed — trigger-mode toggle, system-only bin suggestion,
-   and MHE-aware task sizing all still need a real workflow conversation before touching schema.
+1. **Putaway — core logic built and verified (2026-08-28).** Moves received stock from staging to a
+   real final storage bin, via trigger modes, ABC/multi-deep-lane-aware bin suggestion, and a real
+   scan-driven execution flow. Not fully done, though — genuinely open pieces to pick up next:
+   Ground/Stillage's own version of the multi-position logic (racked came first, on purpose), a
+   cancel/exception path for a task that can't be completed, correcting an already-completed
+   mis-putaway, and real queue-ordering/aging-based task prioritization. Also still the natural
+   eventual consumer of `DockLocationDistance` once that has real data to rank bins by.
 2. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now (Inbound receiving
    writes to it), but nothing renders it. Even a read-only view would close a real, felt gap.

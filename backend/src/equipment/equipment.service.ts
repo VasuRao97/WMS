@@ -9,6 +9,8 @@ const EQUIPMENT_TYPE_SELECT = {
   name: true,
   genericPalletsPerTrip: true,
   genericAvgTripMinutes: true,
+  genericLoadedSpeedKmh: true,
+  genericUnloadedSpeedKmh: true,
 } as const;
 
 const EQUIPMENT_INCLUDE = {
@@ -77,6 +79,8 @@ export class EquipmentService {
     for (const [field, label] of [
       ['palletsPerTrip', 'Pallets Per Trip'],
       ['avgTripMinutes', 'Avg Trip Minutes'],
+      ['loadedSpeedKmh', 'Loaded Speed (km/h)'],
+      ['unloadedSpeedKmh', 'Unloaded Speed (km/h)'],
     ] as const) {
       const v = data[field];
       if (v !== undefined && v !== null && v !== '' && Number(v) <= 0) errors.push(`${label} must be a positive number when given.`);
@@ -108,6 +112,8 @@ export class EquipmentService {
         equipmentType: { connect: { id: data.equipmentTypeId } },
         palletsPerTrip: toNumberOrUndefined(data.palletsPerTrip),
         avgTripMinutes: toNumberOrUndefined(data.avgTripMinutes),
+        loadedSpeedKmh: toNumberOrUndefined(data.loadedSpeedKmh),
+        unloadedSpeedKmh: toNumberOrUndefined(data.unloadedSpeedKmh),
       },
       include: EQUIPMENT_INCLUDE,
     });
@@ -257,6 +263,8 @@ export class EquipmentService {
         equipmentType: { connect: { id: data.equipmentTypeId } },
         palletsPerTrip: toNumberOrUndefined(data.palletsPerTrip) ?? null,
         avgTripMinutes: toNumberOrUndefined(data.avgTripMinutes) ?? null,
+        loadedSpeedKmh: toNumberOrUndefined(data.loadedSpeedKmh) ?? null,
+        unloadedSpeedKmh: toNumberOrUndefined(data.unloadedSpeedKmh) ?? null,
       },
       include: EQUIPMENT_INCLUDE,
     });

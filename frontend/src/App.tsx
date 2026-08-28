@@ -11,6 +11,7 @@ import CompanySettingsPage from './CompanySettingsPage';
 import InboundOrdersPage from './InboundOrdersPage';
 import DockDoorsPage from './DockDoorsPage';
 import EquipmentPage from './EquipmentPage';
+import PutawayPage from './PutawayPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -19,7 +20,7 @@ import EquipmentPage from './EquipmentPage';
 // manage the OPERATOR accounts under it.
 const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -112,6 +113,9 @@ function App() {
         <button onClick={() => setTab('inboundorders')} style={{ fontWeight: tab === 'inboundorders' ? 'bold' : 'normal' }}>
           Inbound Orders
         </button>
+        <button onClick={() => setTab('putaway')} style={{ fontWeight: tab === 'putaway' ? 'bold' : 'normal' }}>
+          Putaway
+        </button>
         {user?.role === 'COMPANY_ADMIN' && (
           <button onClick={() => setTab('companysettings')} style={{ fontWeight: tab === 'companysettings' ? 'bold' : 'normal' }}>
             Company Settings
@@ -138,6 +142,8 @@ function App() {
         <DockDoorsPage />
       ) : tab === 'equipment' ? (
         <EquipmentPage />
+      ) : tab === 'putaway' ? (
+        <PutawayPage />
       ) : tab === 'companysettings' ? (
         <CompanySettingsPage />
       ) : tab === 'inboundorders' ? (

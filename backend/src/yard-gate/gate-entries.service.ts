@@ -4,6 +4,7 @@ import { normalizeCode } from '../common/normalize.util';
 import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
 import { DriverNotificationService } from './driver-notification.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PutawayTasksService } from '../putaway/putaway-tasks.service';
 
 // VEHICLE_ONLY (a non-cargo visit) was considered and dropped 2026-08-25 —
 // no concrete real use case for it, easy to add back later if one shows up.
@@ -59,6 +60,7 @@ export class GateEntriesService {
     private prisma: PrismaService,
     private driverNotifications: DriverNotificationService,
     private notifications: NotificationsService,
+    private putawayTasks: PutawayTasksService,
   ) {}
 
   // Net weight is always derived (gross - tare) at read time, never stored —
@@ -599,6 +601,7 @@ export class GateEntriesService {
 
     if (candidates.length === 1) {
       const c = candidates[0];
+      const receivedDate = await this.putawayTasks.resolveReceivedDate(this.prisma, receiptId);
       const scan = await this.prisma.$transaction(async (tx) => {
         const created = await tx.inboundReceiptScan.create({
           data: { receiptId, gateEntryId: id, barcodeScanned: trimmed, skuId: c.skuId, receiptLineId: c.receiptLineId, quantity: c.quantity, status: 'ACCEPTED', scannedById: user.userId },
@@ -616,9 +619,20 @@ export class GateEntriesService {
             referenceType: 'InboundReceiptScan',
             referenceId: created.id,
             createdById: user.userId,
+            receivedDate,
           },
         });
         await this.recomputeReceiptStatus(tx, receiptId);
+        // IMMEDIATE putaway trigger mode only — a no-op in BATCH mode,
+        // which instead creates tasks at the RECEIVED transition above.
+        await this.putawayTasks.handleAcceptedScan(tx, {
+          receiptLineId: c.receiptLineId,
+          skuId: c.skuId,
+          quantity: c.quantity,
+          locationId,
+          warehouseId: existing.warehouseId,
+          receiptId,
+        });
         return created;
       });
       return scan;
@@ -648,11 +662,23 @@ export class GateEntriesService {
   // exception, NotificationsService, was made because duplicating a whole
   // send/adapter/audit pipeline was a much bigger cost than this one query).
   async recomputeReceiptStatus(tx: any, receiptId: string) {
+    const before = await tx.inboundReceipt.findUnique({ where: { id: receiptId }, select: { status: true, warehouseId: true, warehouse: { select: { companyId: true } } } });
     const lines = await tx.inboundReceiptLine.findMany({ where: { receiptId } });
     const allReceived = lines.length > 0 && lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
     const anyReceived = lines.some((l: any) => Number(l.receivedQty) > 0);
     const status = allReceived ? 'RECEIVED' : anyReceived ? 'PARTIALLY_RECEIVED' : 'PENDING';
     await tx.inboundReceipt.update({ where: { id: receiptId }, data: { status } });
+
+    // BATCH putaway trigger mode: create every line's task the moment the
+    // whole receipt is fully reconciled, once, on the transition into
+    // RECEIVED — a no-op in IMMEDIATE mode, which handles task creation
+    // per-scan instead (see handleAcceptedScan in scan() above).
+    if (before && before.status !== 'RECEIVED' && status === 'RECEIVED') {
+      const company = await tx.company.findUnique({ where: { id: before.warehouse.companyId }, select: { putawayTriggerMode: true } });
+      if (company?.putawayTriggerMode === 'BATCH') {
+        await this.putawayTasks.createBatchTasksForReceipt(tx, receiptId);
+      }
+    }
   }
 
   // "Complete Inward Process" (2026-08-27) — a deliberate human close-out,

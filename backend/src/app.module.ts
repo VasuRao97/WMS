@@ -19,6 +19,7 @@ import { CompaniesModule } from './companies/companies.module';
 import { InboundModule } from './inbound/inbound.module';
 import { EquipmentTypesModule } from './equipment-types/equipment-types.module';
 import { EquipmentModule } from './equipment/equipment.module';
+import { PutawayModule } from './putaway/putaway.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { EquipmentModule } from './equipment/equipment.module';
     InboundModule,
     EquipmentTypesModule,
     EquipmentModule,
+    PutawayModule,
   ],
   controllers: [AppController],
   providers: [AppService],

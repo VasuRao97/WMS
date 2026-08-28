@@ -23,7 +23,14 @@ import { useEffect, useState } from 'react';
 
 type Suitability = 'PRIMARY' | 'SECONDARY' | 'NOT_USED';
 type Warehouse = { id: string; code: string; name: string };
-type EquipmentType = { id: string; name: string; genericPalletsPerTrip: number; genericAvgTripMinutes: number };
+type EquipmentType = {
+  id: string;
+  name: string;
+  genericPalletsPerTrip: number;
+  genericAvgTripMinutes: number;
+  genericLoadedSpeedKmh?: number;
+  genericUnloadedSpeedKmh?: number;
+};
 type MatrixRow = {
   equipmentTypeId: string;
   equipmentTypeName: string;
@@ -43,6 +50,8 @@ type Equipment = {
   equipmentType: EquipmentType;
   palletsPerTrip?: number;
   avgTripMinutes?: number;
+  loadedSpeedKmh?: number;
+  unloadedSpeedKmh?: number;
   isActive: boolean;
 };
 
@@ -68,7 +77,7 @@ function errorText(data: any, fallback: string) {
   return Array.isArray(data?.message) ? data.message.join(' | ') : data?.message || fallback;
 }
 
-const emptyForm = { warehouseId: '', code: '', name: '', equipmentTypeId: '', palletsPerTrip: '', avgTripMinutes: '' };
+const emptyForm = { warehouseId: '', code: '', name: '', equipmentTypeId: '', palletsPerTrip: '', avgTripMinutes: '', loadedSpeedKmh: '', unloadedSpeedKmh: '' };
 
 function EquipmentPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -173,6 +182,8 @@ function EquipmentPage() {
       equipmentTypeId: e.equipmentType.id,
       palletsPerTrip: e.palletsPerTrip !== undefined && e.palletsPerTrip !== null ? String(e.palletsPerTrip) : '',
       avgTripMinutes: e.avgTripMinutes !== undefined && e.avgTripMinutes !== null ? String(e.avgTripMinutes) : '',
+      loadedSpeedKmh: e.loadedSpeedKmh !== undefined && e.loadedSpeedKmh !== null ? String(e.loadedSpeedKmh) : '',
+      unloadedSpeedKmh: e.unloadedSpeedKmh !== undefined && e.unloadedSpeedKmh !== null ? String(e.unloadedSpeedKmh) : '',
     });
     setFormError('');
     setShowForm(true);
@@ -188,6 +199,8 @@ function EquipmentPage() {
       equipmentTypeId: form.equipmentTypeId,
       palletsPerTrip: form.palletsPerTrip || undefined,
       avgTripMinutes: form.avgTripMinutes || undefined,
+      loadedSpeedKmh: form.loadedSpeedKmh || undefined,
+      unloadedSpeedKmh: form.unloadedSpeedKmh || undefined,
     };
     const url = editingId ? `http://localhost:3000/equipment/${editingId}` : 'http://localhost:3000/equipment';
     const res = await fetch(url, { method: editingId ? 'PATCH' : 'POST', headers: jsonHeaders(), body: JSON.stringify(body) });
@@ -343,6 +356,23 @@ function EquipmentPage() {
               {selectedType && (
                 <span style={{ fontSize: 12, color: '#888' }}>
                   Leave blank to use {selectedType.name}'s generic values ({Number(selectedType.genericPalletsPerTrip)} pallets/trip, {Number(selectedType.genericAvgTripMinutes)} min/trip).
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+              <input
+                type="number" step="0.1" placeholder="Loaded Speed override (km/h)"
+                value={form.loadedSpeedKmh} onChange={(e) => setForm({ ...form, loadedSpeedKmh: e.target.value })} style={{ width: 210 }}
+              />
+              <input
+                type="number" step="0.1" placeholder="Unloaded Speed override (km/h)"
+                value={form.unloadedSpeedKmh} onChange={(e) => setForm({ ...form, unloadedSpeedKmh: e.target.value })} style={{ width: 220 }}
+              />
+              {selectedType && (
+                <span style={{ fontSize: 12, color: '#888' }}>
+                  {selectedType.genericLoadedSpeedKmh != null
+                    ? `Leave blank to use the generic ${Number(selectedType.genericLoadedSpeedKmh)} km/h loaded / ${Number(selectedType.genericUnloadedSpeedKmh)} km/h unloaded.`
+                    : 'No generic speed set yet for this type — real figures pending.'}
                 </span>
               )}
             </div>

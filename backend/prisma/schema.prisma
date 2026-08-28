@@ -141,6 +141,50 @@ model Company {
   // yet, same caveat as everywhere else secrets are mentioned) — a known,
   // flagged simplification, not an oversight.
   erpApiKey           String? @unique
+
+  // Putaway trigger mode (2026-08-28 design conversation, skeleton only —
+  // see [[wms-putaway-design]] in memory) — two real warehouse patterns,
+  // both wanted, toggled per company rather than picking one:
+  //   BATCH — PutawayTasks are only created once an InboundReceipt reaches
+  //     RECEIVED (every line fully reconciled), i.e. once the whole
+  //     vehicle is unloaded.
+  //   IMMEDIATE — tasks are created as material is accepted at staging
+  //     (see putawayDefaultBatchQty below), so an operator can start
+  //     putting away in parallel with unloading.
+  // Defaults to BATCH — the simpler of the two.
+  putawayTriggerMode PutawayTriggerMode @default(BATCH)
+
+  // IMMEDIATE-mode batching threshold, in the SKU's own baseUom
+  // (2026-08-28) — company-wide default, overridable per-SKU via
+  // Sku.putawayBatchQty (same override-then-fall-back-to-company-default
+  // chain as detentionCostPerDay). Once a still-accumulating PENDING task
+  // for a receipt line reaches this quantity, it locks and becomes real,
+  // workable queue work; a fresh accumulator opens for whatever's scanned
+  // after that. Null means "every accepted/approved scan is its own task
+  // immediately" — a sensible batch size genuinely differs by industry/
+  // UOM, so nothing platform-wide is assumed.
+  putawayDefaultBatchQty Decimal?
+
+  // "Same aging" comparison granularity (2026-08-28, skeleton only) — how
+  // close two receivedDate values (StockMovement.receivedDate) need to be
+  // before they're treated as "the same age" for the multi-deep-lane
+  // same-SKU top-up exception ("anything made in that month is same
+  // aging... this toggle has to be obtained by client"). Null means no
+  // tolerance configured yet — the safe default is to require the lane be
+  // fully emptied before any new stock enters, same as if no exception
+  // existed at all. Real comparison logic isn't built yet.
+  agingGranularity AgingGranularity?
+}
+
+enum AgingGranularity {
+  DAY
+  WEEK
+  MONTH
+}
+
+enum PutawayTriggerMode {
+  BATCH
+  IMMEDIATE
 }
 
 enum GatePassResetPeriod {
@@ -182,19 +226,23 @@ model User {
   assignedWarehouses Warehouse[]
   loginEvents        LoginEvent[]
 
-  receiptsCreated       InboundReceipt[]     @relation("ReceiptCreatedBy")
-  putawaysCompleted     PutawayTask[]        @relation("PutawayCompletedBy")
-  ordersCreated         OutboundOrder[]      @relation("OrderCreatedBy")
-  picksCompleted        PickTask[]           @relation("PickedBy")
-  dispatches            Dispatch[]           @relation("DispatchedBy")
-  movements             StockMovement[]      @relation("MovementCreatedBy")
-  gateEntriesIn         VehicleGateEntry[]   @relation("GateInBy")
-  gateEntriesOut        VehicleGateEntry[]   @relation("GateOutBy")
-  gateEntriesDocked     VehicleGateEntry[]   @relation("DockedInBy")
-  gateEntriesSealedBy   VehicleGateEntry[]   @relation("SealCapturedBy")
-  inboundScansPerformed InboundReceiptScan[] @relation("InboundScannedBy")
-  inboundScansReviewed  InboundReceiptScan[] @relation("InboundScanReviewedBy")
-  inwardCompletions     VehicleGateEntry[]   @relation("InwardCompletedBy")
+  receiptsCreated               InboundReceipt[]        @relation("ReceiptCreatedBy")
+  putawayTripsClaimed           PutawayTrip[]           @relation("PutawayTripClaimedBy")
+  putawayReassignmentsRequested PutawayReassignment[]   @relation("PutawayReassignmentRequestedBy")
+  multiSkuLaneRequestsRequested MultiSkuLaneException[] @relation("MultiSkuLaneRequestedBy")
+  multiSkuLaneRequestsReviewed  MultiSkuLaneException[] @relation("MultiSkuLaneReviewedBy")
+  multiSkuLaneRequestsRevoked   MultiSkuLaneException[] @relation("MultiSkuLaneRevokedBy")
+  ordersCreated                 OutboundOrder[]         @relation("OrderCreatedBy")
+  picksCompleted                PickTask[]              @relation("PickedBy")
+  dispatches                    Dispatch[]              @relation("DispatchedBy")
+  movements                     StockMovement[]         @relation("MovementCreatedBy")
+  gateEntriesIn                 VehicleGateEntry[]      @relation("GateInBy")
+  gateEntriesOut                VehicleGateEntry[]      @relation("GateOutBy")
+  gateEntriesDocked             VehicleGateEntry[]      @relation("DockedInBy")
+  gateEntriesSealedBy           VehicleGateEntry[]      @relation("SealCapturedBy")
+  inboundScansPerformed         InboundReceiptScan[]    @relation("InboundScannedBy")
+  inboundScansReviewed          InboundReceiptScan[]    @relation("InboundScanReviewedBy")
+  inwardCompletions             VehicleGateEntry[]      @relation("InwardCompletedBy")
 
   notificationsReceived       NotificationLog[]    @relation("NotificationRecipient")
   notificationsEscalatedTo    NotificationLog[]    @relation("NotificationEscalatedTo")
@@ -271,21 +319,22 @@ model Warehouse {
 
   assignedUsers User[]
 
-  shipToAssignments    CustomerShipTo[]
-  locations            Location[]
-  inboundReceipts      InboundReceipt[]
-  outboundOrders       OutboundOrder[]
-  stockMovements       StockMovement[]
-  storageTypes         WarehouseStorageType[]
-  dispatchFlows        WarehouseDispatchFlow[]
-  dockDoors            DockDoor[]
-  gateEntries          VehicleGateEntry[]
-  yardSlots            YardSlot[]
-  gatePassSequences    GatePassSequence[]
-  notificationLogs     NotificationLog[]
-  selfCheckInRequests  SelfCheckInRequest[]
-  equipment            Equipment[]
-  equipmentSuitability WarehouseEquipmentSuitability[]
+  shipToAssignments      CustomerShipTo[]
+  locations              Location[]
+  inboundReceipts        InboundReceipt[]
+  outboundOrders         OutboundOrder[]
+  stockMovements         StockMovement[]
+  storageTypes           WarehouseStorageType[]
+  dispatchFlows          WarehouseDispatchFlow[]
+  dockDoors              DockDoor[]
+  gateEntries            VehicleGateEntry[]
+  yardSlots              YardSlot[]
+  gatePassSequences      GatePassSequence[]
+  notificationLogs       NotificationLog[]
+  selfCheckInRequests    SelfCheckInRequest[]
+  equipment              Equipment[]
+  equipmentSuitability   WarehouseEquipmentSuitability[]
+  multiSkuLaneExceptions MultiSkuLaneException[]
 
   @@unique([companyId, code])
 }
@@ -499,6 +548,9 @@ model Location {
   stockMovements          StockMovement[]
   putawayFrom             PutawayTask[]          @relation("PutawayFromLocation")
   putawayTo               PutawayTask[]          @relation("PutawayToLocation")
+  putawayTripsScanned     PutawayTrip[]          @relation("PutawayTripScannedLocation")
+  putawayReassignedFrom   PutawayReassignment[]  @relation("PutawayReassignmentFrom")
+  putawayReassignedTo     PutawayReassignment[]  @relation("PutawayReassignmentTo")
   receiptLinesStaged      InboundReceiptLine[]
   // A receipt-level default staging spot, chosen once the vehicle is
   // actually at the dock (2026-08-27 — see InboundReceipt.stagingLocationId's
@@ -544,6 +596,13 @@ model Sku {
   // so a correction to "Car Tyres' case size" doesn't require editing every
   // Car Tyres SKU individually.
   primaryStorageUnit String?
+  // Per-SKU override of Company.putawayDefaultBatchQty, in this SKU's own
+  // baseUom (2026-08-28, skeleton only — see [[wms-putaway-design]]) —
+  // e.g. "release a putaway task every 6 cases" for one SKU vs. a much
+  // higher number of loose eaches for another. Falls back to the
+  // company-wide default, then to "every scan is its own task" when
+  // neither is set. Only consulted in IMMEDIATE putaway trigger mode.
+  putawayBatchQty    Decimal?
   createdAt          DateTime             @default(now())
   companyId          String
   company            Company              @relation(fields: [companyId], references: [id])
@@ -631,6 +690,26 @@ model StockMovement {
   createdById   String
   createdBy     User         @relation("MovementCreatedBy", fields: [createdById], references: [id])
   createdAt     DateTime     @default(now())
+
+  // "Localized aging" (2026-08-28, Putaway design conversation — see
+  // [[wms-putaway-design]] in memory) — a deliberately simple stand-in for
+  // real manufacturing-date/batch tracking, which stays parked (a bigger,
+  // separate topic depending on capture infrastructure that doesn't exist
+  // yet). The date material was actually RECEIVED (case-level, from the
+  // Inbound scan that first brought it in), carried forward on every
+  // subsequent movement for that same stock — copied, never recalculated,
+  // so "how old is what's currently at Location X" is always a direct
+  // field read on whatever movement is relevant, not a trace back through
+  // history. Set on the originating RECEIPT movement (same as its own
+  // createdAt there), then threaded through PUTAWAY_OUT/PUTAWAY_IN now,
+  // and PICK/DISPATCH once those modules exist — this is why it lives on
+  // StockMovement itself rather than a Putaway-specific table: it's the
+  // one ledger that already threads through the whole lifecycle. Nullable
+  // — existing pre-2026-08-28 RECEIPT rows honestly have no captured
+  // value, and the actual copy-forward logic isn't built yet (skeleton
+  // only). Comparison granularity (exact day vs. week vs. month) is a
+  // separate per-company setting, see Company.agingGranularity below.
+  receivedDate DateTime?
 
   @@index([skuId, locationId])
   @@index([warehouseId])
@@ -924,6 +1003,24 @@ model EquipmentType {
   genericPalletsPerTrip Decimal
   genericAvgTripMinutes Decimal
 
+  // Loaded/unloaded travel speed, km/h (2026-08-28, same session — the
+  // client's own follow-up: "i can give you average speed of these MHEs
+  // during moving both loaded / non loaded, lets consider that and store
+  // it"). Real speed data, once populated, is meant to combine with
+  // DockLocationDistance's real measured meters (schema-only today, no
+  // data-entry tooling exists yet) to compute an actual trip time —
+  // distance ÷ speed — instead of a flat guessed average. Stored in km/h
+  // (the unit the client is giving these in, and the more human-editable
+  // one) rather than pre-converted to meters/minute — convert at the point
+  // of calculation instead. Nullable, deliberately unpopulated as of
+  // 2026-08-28 — the client is providing real figures separately (evening
+  // follow-up); genericAvgTripMinutes stays the fallback estimate used
+  // everywhere real distance data doesn't exist yet (which today is
+  // everywhere). Every real Equipment unit can override either speed with
+  // its own measured value, same pattern as the throughput fields above.
+  genericLoadedSpeedKmh   Decimal?
+  genericUnloadedSpeedKmh Decimal?
+
   equipment            Equipment[]
   warehouseSuitability WarehouseEquipmentSuitability[]
 }
@@ -991,8 +1088,14 @@ model Equipment {
   // Optional per-unit overrides of the type's generic numbers — same
   // override-when-known/fall-back-to-generic pattern as Vehicle overriding
   // VehicleType's dimensions/maxTonnage.
-  palletsPerTrip Decimal?
-  avgTripMinutes Decimal?
+  palletsPerTrip   Decimal?
+  avgTripMinutes   Decimal?
+  // Same override pattern for loaded/unloaded speed, km/h — see
+  // EquipmentType.genericLoadedSpeedKmh's comment. Deliberately unpopulated
+  // as of 2026-08-28 (schema laid down ahead of the client's real figures,
+  // due separately).
+  loadedSpeedKmh   Decimal?
+  unloadedSpeedKmh Decimal?
 
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -1626,7 +1729,25 @@ model InboundReceiptScan {
 // PUTAWAY
 // ------------------------------------------------------------
 
+// Putaway (2026-08-28, skeleton only — schema laid down after a long
+// workflow design conversation, real service/controller/frontend logic
+// deliberately NOT built yet, "finish this skeleton coding first then we
+// put actual logics" per the client's own explicit sequencing). See
+// [[wms-putaway-design]] in memory for the full conversation this schema
+// came out of — settled decisions, the scan-based execution vision, and
+// what's still genuinely open (cancel/exception path, correcting a
+// completed-but-wrong putaway, role gating, queue ordering/aging). Don't
+// treat anything below as final business logic — it's the data shape the
+// agreed design needs, nothing more.
+//
+// NEEDS_BIN (2026-08-28) — the system suggests every bin, by explicit
+// instruction ("it can never be operator's decision"), so a task must be
+// able to land somewhere honest when the slotting algorithm finds no
+// eligible bin at all (e.g. the warehouse hasn't configured that
+// category's storage type yet) rather than either blocking receiving
+// entirely or silently picking something wrong.
 enum PutawayStatus {
+  NEEDS_BIN
   PENDING
   COMPLETED
 }
@@ -1639,14 +1760,153 @@ model PutawayTask {
   sku            Sku                @relation(fields: [skuId], references: [id])
   fromLocationId String
   fromLocation   Location           @relation("PutawayFromLocation", fields: [fromLocationId], references: [id])
-  toLocationId   String
-  toLocation     Location           @relation("PutawayToLocation", fields: [toLocationId], references: [id])
+  // Nullable — see PutawayStatus.NEEDS_BIN above. Always set for a PENDING
+  // or COMPLETED task; the system-suggested bin, never an operator's own
+  // choice.
+  toLocationId   String?
+  toLocation     Location?          @relation("PutawayToLocation", fields: [toLocationId], references: [id])
+  // Total quantity this task needs moved. How much has actually moved so
+  // far is deliberately NOT a stored counter here — it's derived by
+  // summing this task's own COMPLETED PutawayTrip rows, same "always
+  // derive rather than risk a field drifting out of sync with its own
+  // ledger" philosophy as on-hand stock. `status` is still a real,
+  // explicitly-maintained field (recomputed after each trip, same
+  // convention as InboundReceipt.status), not derived on every read.
   quantity       Decimal
   status         PutawayStatus      @default(PENDING)
-  completedById  String?
-  completedBy    User?              @relation("PutawayCompletedBy", fields: [completedById], references: [id])
-  completedAt    DateTime?
-  createdAt      DateTime           @default(now())
+
+  // IMMEDIATE trigger mode only (2026-08-28) — while a task is still an
+  // open accumulator, further accepted/approved scans on the SAME receipt
+  // line add to its quantity instead of opening a new task, until
+  // Company.putawayDefaultBatchQty / Sku.putawayBatchQty's threshold is
+  // reached, at which point this flips to false and the task becomes
+  // real, workable queue work. Always false for a BATCH-mode task
+  // (created once, already final) and for an IMMEDIATE-mode task created
+  // with no threshold configured (released immediately, one scan = one
+  // task).
+  openForAccumulation Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  trips         PutawayTrip[]
+  reassignments PutawayReassignment[]
+}
+
+// One row per physical trip — the scan-driven execution unit (2026-08-28,
+// "the operator doing the putaway should scan the case/pallet... travels
+// to that location, scans the location id... only a correct scan would
+// complete the process"). A task needing N trips (quantity ÷ the
+// warehouse's assumed equipment capacity for this SKU, see
+// [[wms-putaway-design]]) needs N of these rows to reach COMPLETED.
+// Distinct from InboundReceiptScan (that's the truck→staging leg; this is
+// the staging→bin leg) but the same "capture every physical scan event"
+// shape.
+//
+// Claiming happens implicitly at the STAGING scan (there's no separate
+// "take this task" action) — IN_PROGRESS is the claimed state, scoped to
+// one trip, not the whole task (so a multi-trip task can be split across
+// several operators). A trip left IN_PROGRESS too long (operator scanned
+// the item, never completed the location scan) is meant to auto-expire to
+// ABANDONED, freeing that trip back up — the actual expiry job is real
+// logic, not built yet.
+enum PutawayTripStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
+model PutawayTrip {
+  id     String      @id @default(uuid())
+  taskId String
+  task   PutawayTask @relation(fields: [taskId], references: [id])
+
+  // This trip's quantity — sized by the assumed equipment's per-trip
+  // capacity for this SKU at the time of claiming, stored as a real fact
+  // (what this trip actually moved), not recomputed later even if the
+  // warehouse's equipment/matrix changes afterward.
+  quantity Decimal
+  status   PutawayTripStatus @default(IN_PROGRESS)
+
+  // The staging scan — claims this trip. barcodeScanned is kept for audit
+  // same as InboundReceiptScan.barcodeScanned, even though skuId is
+  // already known via the parent task.
+  claimedById           String
+  claimedBy             User     @relation("PutawayTripClaimedBy", fields: [claimedById], references: [id])
+  claimedAt             DateTime @default(now())
+  stagingBarcodeScanned String?
+
+  // The location scan — completes this trip. Only a scan matching the
+  // task's own toLocationId is ever accepted ("only a correct scan would
+  // complete the process... doesnt allow operator to override") — a
+  // mismatched scan is rejected outright, not recorded here at all.
+  scannedLocationId String?
+  scannedLocation   Location? @relation("PutawayTripScannedLocation", fields: [scannedLocationId], references: [id])
+  completedAt       DateTime?
+}
+
+// Audit trail of "request a different bin" (2026-08-28) — a task can
+// legitimately go through more than one re-suggestion over its life (the
+// first suggested bin turns out damaged, the next one's blocked by a
+// forklift, etc.), so this is a real child table, not a single
+// overwritten field — same "more than one of, make it a child table"
+// convention as SkuBarcode/CustomerShipTo. The bin suggestion itself is
+// always system-decided (excluding every bin this task has already been
+// assigned to previously so a re-suggestion can't loop back to the same
+// physically-unusable bin) — this table only records that it happened, by
+// whom, and why, never lets a human type in their own destination.
+model PutawayReassignment {
+  id                 String      @id @default(uuid())
+  taskId             String
+  task               PutawayTask @relation(fields: [taskId], references: [id])
+  // Null when reassigning away from a NEEDS_BIN task that had no bin yet.
+  previousLocationId String?
+  previousLocation   Location?   @relation("PutawayReassignmentFrom", fields: [previousLocationId], references: [id])
+  // Null when the system still couldn't find any eligible bin on retry —
+  // the task stays NEEDS_BIN.
+  newLocationId      String?
+  newLocation        Location?   @relation("PutawayReassignmentTo", fields: [newLocationId], references: [id])
+  reason             String? // e.g. "Bin physically blocked", "Damaged pallet position"
+  requestedById      String
+  requestedBy        User        @relation("PutawayReassignmentRequestedBy", fields: [requestedById], references: [id])
+  requestedAt        DateTime    @default(now())
+}
+
+// The one way the mandatory single-SKU-per-multi-deep-lane rule (see
+// [[wms-putaway-design]]) is ever bypassed (2026-08-28) — a real
+// request/approve/revoke audit record, not a self-service toggle. Scope is
+// warehouse-wide (not per-lane), requested only by a WAREHOUSE_MANAGER,
+// approved/rejected/revoked only by a COMPANY_ADMIN — "so both the local
+// and HO team knows there is a problem." A warehouse's "is mixing
+// currently allowed" state is derived from whether it has a row with
+// status APPROVED that hasn't since been REVOKED — never a separate flag
+// that could drift out of sync with this history. No auto-expiry —
+// confirmed explicitly, stays in force until a COMPANY_ADMIN revokes it.
+enum MultiSkuLaneExceptionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REVOKED
+}
+
+model MultiSkuLaneException {
+  id          String    @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  reason      String
+
+  status        MultiSkuLaneExceptionStatus @default(PENDING)
+  requestedById String
+  requestedBy   User                        @relation("MultiSkuLaneRequestedBy", fields: [requestedById], references: [id])
+  requestedAt   DateTime                    @default(now())
+
+  reviewedById String?
+  reviewedBy   User?     @relation("MultiSkuLaneReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  reviewNote   String?
+
+  revokedById String?
+  revokedBy   User?     @relation("MultiSkuLaneRevokedBy", fields: [revokedById], references: [id])
+  revokedAt   DateTime?
 }
 
 // ------------------------------------------------------------

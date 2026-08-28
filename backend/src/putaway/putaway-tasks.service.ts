@@ -1,0 +1,558 @@
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
+
+// Rack storage types share the LIFO depth constraint (see schema.prisma's
+// comment on Location.depth and [[wms-putaway-design]] in memory) — SPR,
+// Drive-in, and ASRS all use `depth`; the constraint is keyed off whether a
+// given (aisle, rack, level) group actually HAS more than one depth
+// position, never off the storageType label itself (a single-deep SPR bay
+// behaves exactly like a random-access bin; a double-deep SPR bay behaves
+// exactly like a drive-in lane).
+const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+
+const TASK_INCLUDE = {
+  receiptLine: { select: { id: true, skuId: true, receiptId: true } },
+  sku: { select: { id: true, code: true, description: true } },
+  fromLocation: { select: { id: true, code: true } },
+  toLocation: { select: { id: true, code: true } },
+} as const;
+
+// The Putaway module — see [[wms-putaway-design]] in memory for the full
+// design conversation this comes out of (2026-08-28). Covers: bin
+// suggestion (ABC/multi-deep-lane-aware), BATCH/IMMEDIATE task creation
+// hooked from Inbound's own scan/receipt-status code, the scan-driven
+// execution flow (staging scan claims a trip, location scan completes it),
+// "request different bin", and the receipt-level PUTAWAY_COMPLETE signal.
+// Claim-expiry and the MultiSkuLaneException workflow live in their own
+// files (putaway-claim-expiry.scheduler.ts, multi-sku-lane-exceptions.*).
+@Injectable()
+export class PutawayTasksService {
+  constructor(private prisma: PrismaService) {}
+
+  // ------------------------------------------------------------
+  // Bin suggestion
+  // ------------------------------------------------------------
+
+  private laneKeyOf(loc: { id: string; storageType: string; aisle: string | null; rack: string | null; level: string | null }): string {
+    return RACK_STORAGE_TYPES.includes(loc.storageType) && loc.aisle && loc.rack && loc.level
+      ? `${loc.aisle}|${loc.rack}|${loc.level}`
+      : `single|${loc.id}`;
+  }
+
+  // "Same age" comparison — see Company.agingGranularity's schema comment.
+  // Null granularity (nothing configured) means exact-match-only, the safe
+  // default that in practice only ever matches trips within the same
+  // continuous putaway operation.
+  private sameAgeBucket(a: Date, b: Date, granularity: string | null): boolean {
+    if (!granularity) return a.getTime() === b.getTime();
+    if (granularity === 'DAY') return a.toDateString() === b.toDateString();
+    if (granularity === 'MONTH') return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+    if (granularity === 'WEEK') {
+      const weekStart = (d: Date) => {
+        const x = new Date(d);
+        const day = (x.getDay() + 6) % 7; // Monday = 0
+        x.setDate(x.getDate() - day);
+        x.setHours(0, 0, 0, 0);
+        return x.getTime();
+      };
+      return weekStart(a) === weekStart(b);
+    }
+    return false;
+  }
+
+  private maxSkusForClass(row: { maxSkusClassA: number | null; maxSkusClassB: number | null; maxSkusClassC: number | null }, abcClass: string): number | null {
+    if (abcClass === 'A') return row.maxSkusClassA;
+    if (abcClass === 'B') return row.maxSkusClassB;
+    return row.maxSkusClassC;
+  }
+
+  // The core slotting algorithm. Returns a Location id, or null if nothing
+  // eligible exists (the caller sets the task to NEEDS_BIN in that case).
+  // excludeLocationIds — "request different bin" passes every location this
+  // task has already been assigned to, so a re-suggestion can't loop back.
+  // newStockDate — this putaway's own "age" (see resolveReceivedDate below)
+  // for the same-SKU-top-up aging check.
+  async suggestBin(tx: any, params: { warehouseId: string; skuId: string; excludeLocationIds?: string[]; newStockDate?: Date | null }): Promise<string | null> {
+    const { warehouseId, skuId, excludeLocationIds = [], newStockDate = null } = params;
+
+    const sku = await tx.sku.findUnique({ where: { id: skuId } });
+    if (!sku) return null;
+    const abcClass = (sku.abcClass || 'C').toUpperCase(); // unclassified defaults to C — confirmed 2026-08-28
+
+    const storageTypeRows = await tx.warehouseStorageType.findMany({ where: { warehouseId, categoryId: sku.categoryId } });
+    const eligibleStorageTypes: string[] = storageTypeRows.map((r: any) => r.storageType).filter((t: string) => t !== 'MIX');
+    if (eligibleStorageTypes.length === 0) return null;
+    const storageTypeRowByType = new Map(storageTypeRows.map((r: any) => [r.storageType, r]));
+
+    const locations = await tx.location.findMany({
+      where: { warehouseId, zoneType: 'ACTUAL_STORAGE', storageType: { in: eligibleStorageTypes }, isActive: true },
+    });
+    if (locations.length === 0) return null;
+
+    const locationIds = locations.map((l: any) => l.id);
+    const warehouse = await tx.warehouse.findUnique({ where: { id: warehouseId }, select: { companyId: true } });
+    const [movements, openTaskTargets, companyRow, exception] = await Promise.all([
+      tx.stockMovement.findMany({
+        where: { locationId: { in: locationIds } },
+        select: { locationId: true, skuId: true, quantity: true, receivedDate: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      tx.putawayTask.findMany({ where: { toLocationId: { in: locationIds }, status: { in: ['PENDING', 'NEEDS_BIN'] } }, select: { toLocationId: true } }),
+      warehouse ? tx.company.findUnique({ where: { id: warehouse.companyId }, select: { agingGranularity: true } }) : null,
+      tx.multiSkuLaneException.findFirst({ where: { warehouseId, status: 'APPROVED' } }),
+    ]);
+
+    const agingGranularity: string | null = companyRow?.agingGranularity ?? null;
+    const exceptionActive = !!exception;
+
+    // balance + last receivedDate per (location, sku)
+    const balanceByLocSku = new Map<string, number>();
+    const lastReceivedDateByLocSku = new Map<string, Date | null>();
+    for (const m of movements) {
+      const key = `${m.locationId}|${m.skuId}`;
+      balanceByLocSku.set(key, (balanceByLocSku.get(key) || 0) + Number(m.quantity));
+      if (Number(m.quantity) > 0 && m.receivedDate) lastReceivedDateByLocSku.set(key, m.receivedDate);
+    }
+    const targetedLocationIds = new Set(openTaskTargets.map((t: any) => t.toLocationId).filter(Boolean));
+
+    // group into lanes
+    const lanes = new Map<string, any[]>();
+    for (const loc of locations) {
+      const key = this.laneKeyOf(loc);
+      if (!lanes.has(key)) lanes.set(key, []);
+      lanes.get(key)!.push(loc);
+    }
+
+    type Candidate = { locationId: string; sameSku: boolean; flankNumber: number | null };
+    const candidates: Candidate[] = [];
+
+    for (const laneLocations of lanes.values()) {
+      const storageType = laneLocations[0].storageType;
+      const row: any = storageTypeRowByType.get(storageType);
+      if (!row) continue;
+
+      // Distinct occupant SKUs across the WHOLE lane (every depth position
+      // pooled together — see [[wms-putaway-design]]'s "whole lane, not
+      // per-position" resolution).
+      const occupantSkuIds = new Set<string>();
+      for (const loc of laneLocations) {
+        for (const [key, qty] of balanceByLocSku) {
+          if (qty > 0 && key.startsWith(`${loc.id}|`)) occupantSkuIds.add(key.split('|')[1]);
+        }
+      }
+
+      let laneEligible = true;
+      let sameSku = false;
+
+      if (occupantSkuIds.size === 0) {
+        laneEligible = true;
+      } else if (occupantSkuIds.size === 1 && occupantSkuIds.has(skuId)) {
+        // Same-SKU top-up — always eligible on distinct-SKU-count grounds;
+        // gated instead by the aging check (rule: only if age matches, or
+        // no prior age is on file to compare against).
+        sameSku = true;
+        let existingDate: Date | null = null;
+        for (const loc of laneLocations) {
+          const d = lastReceivedDateByLocSku.get(`${loc.id}|${skuId}`);
+          if (d) existingDate = d;
+        }
+        if (existingDate && newStockDate && !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)) {
+          laneEligible = false; // must fully empty before a different-age batch can enter
+        }
+      } else {
+        // Cross-SKU mixing — governed by maxSkusClass*, most-restrictive-
+        // class-wins across every occupant AND the incoming SKU, UNLESS an
+        // approved MultiSkuLaneException is currently active for this
+        // warehouse (the only bypass, per [[wms-putaway-design]]).
+        if (!exceptionActive) {
+          const occupantClasses = await Promise.all(
+            [...occupantSkuIds].map(async (id) => {
+              const s = await tx.sku.findUnique({ where: { id }, select: { abcClass: true } });
+              return (s?.abcClass || 'C').toUpperCase();
+            }),
+          );
+          const caps = [abcClass, ...occupantClasses].map((cls) => this.maxSkusForClass(row, cls));
+          // null = unbounded; the most restrictive (lowest, non-null) cap wins.
+          const finiteCaps = caps.filter((c): c is number => c !== null);
+          const effectiveCap = finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
+          if (effectiveCap !== null && occupantSkuIds.size >= effectiveCap) laneEligible = false;
+          // An A-class occupant's own cap (1) makes effectiveCap 1 the
+          // moment it's present, which — combined with occupantSkuIds.size
+          // already being >=1 — always blocks a different SKU. Matches
+          // "till a A class is there... it should get empty" exactly.
+        }
+      }
+
+      if (!laneEligible) continue;
+      if (excludeLocationIds.includes(laneLocations[0].id) && laneLocations.length === 1) continue;
+
+      // Deepest-first fill: among this lane's positions, pick the one with
+      // the HIGHEST depth that's currently empty, not already targeted by
+      // another open task, and not in the excluded list.
+      const sorted = [...laneLocations].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0));
+      const target = sorted.find(
+        (loc) => (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 && !targetedLocationIds.has(loc.id) && !excludeLocationIds.includes(loc.id) && [...balanceByLocSku.keys()].every((k) => !(k.startsWith(`${loc.id}|`) && (balanceByLocSku.get(k) || 0) > 0)),
+      );
+      if (!target) continue; // lane has no genuinely free position right now (sealed if full, or all free ones excluded/targeted)
+
+      candidates.push({ locationId: target.id, sameSku, flankNumber: target.flankNumber ?? null });
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Prefer topping up an already-open same-SKU lane; then order by
+    // flankNumber as the distance proxy until DockLocationDistance has
+    // real data — A-class prefers low (near), C-class prefers high (far),
+    // B defaults near same as A (no strong signal either way yet).
+    candidates.sort((a, b) => {
+      if (a.sameSku !== b.sameSku) return a.sameSku ? -1 : 1;
+      const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
+      const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
+      return abcClass === 'C' ? fb - fa : fa - fb;
+    });
+
+    return candidates[0].locationId;
+  }
+
+  // The vehicle's own Dock In time, per receipt — confirmed as "the" date
+  // for the simple localized-aging stand-in (one shared date per vehicle,
+  // not per case — see [[wms-putaway-design]]).
+  async resolveReceivedDate(tx: any, receiptId: string): Promise<Date | null> {
+    const receipt = await tx.inboundReceipt.findUnique({ where: { id: receiptId }, select: { gateEntry: { select: { dockedInAt: true } } } });
+    return receipt?.gateEntry?.dockedInAt ?? null;
+  }
+
+  // ------------------------------------------------------------
+  // Equipment assumption (trips/time estimate) — never stored, always
+  // derived, same "always derive" philosophy as on-hand stock.
+  // ------------------------------------------------------------
+
+  // The warehouse's own assumed Primary equipment type's per-trip capacity
+  // for Putaway — null when nothing is rated Primary there yet (matrix
+  // unconfigured), in which case callers treat a "trip" as the whole
+  // remaining quantity (no MHE-aware splitting to fall back on).
+  private async assumedCapacity(warehouseId: string): Promise<{ capacity: number; avgTripMinutes: number; equipmentTypeName: string } | null> {
+    const primaryRow = await this.prisma.warehouseEquipmentSuitability.findFirst({
+      where: { warehouseId, putawaySuitability: 'PRIMARY' },
+      include: { equipmentType: true },
+    });
+    if (!primaryRow) return null;
+    return {
+      capacity: Number(primaryRow.equipmentType.genericPalletsPerTrip) || 1,
+      avgTripMinutes: Number(primaryRow.equipmentType.genericAvgTripMinutes || 0),
+      equipmentTypeName: primaryRow.equipmentType.name,
+    };
+  }
+
+  async estimateTrips(warehouseId: string, quantity: number): Promise<{ trips: number; equipmentTypeName: string | null; estimatedMinutes: number | null }> {
+    const assumed = await this.assumedCapacity(warehouseId);
+    if (!assumed) return { trips: 1, equipmentTypeName: null, estimatedMinutes: null };
+    const trips = Math.max(1, Math.ceil(quantity / assumed.capacity));
+    return { trips, equipmentTypeName: assumed.equipmentTypeName, estimatedMinutes: trips * assumed.avgTripMinutes };
+  }
+
+  // ------------------------------------------------------------
+  // Task creation — BATCH mode
+  // ------------------------------------------------------------
+
+  // Called from GateEntriesService/InboundReceiptsService's own
+  // recomputeReceiptStatus, only on the PARTIALLY_RECEIVED/PENDING ->
+  // RECEIVED transition, only when the company is in BATCH trigger mode.
+  // One task per line with real receivedQty > 0. Guarded against double-
+  // creation (checks for an existing task per line first) so a duplicate
+  // call is a harmless no-op.
+  async createBatchTasksForReceipt(tx: any, receiptId: string) {
+    const receipt = await tx.inboundReceipt.findUnique({
+      where: { id: receiptId },
+      include: { lines: true, warehouse: { select: { id: true } }, stagingLocation: { select: { id: true } } },
+    });
+    if (!receipt) return;
+    const receivedDate = await this.resolveReceivedDate(tx, receiptId);
+
+    for (const line of receipt.lines) {
+      const qty = Number(line.receivedQty);
+      if (qty <= 0) continue;
+      const existingTask = await tx.putawayTask.findFirst({ where: { receiptLineId: line.id } });
+      if (existingTask) continue;
+
+      const fromLocationId = line.stagingLocationId ?? receipt.stagingLocationId;
+      if (!fromLocationId) continue; // shouldn't happen — matchReceipt requires staging
+
+      const toLocationId = await this.suggestBin(tx, { warehouseId: receipt.warehouse.id, skuId: line.skuId, newStockDate: receivedDate });
+      await tx.putawayTask.create({
+        data: {
+          receiptLineId: line.id,
+          skuId: line.skuId,
+          fromLocationId,
+          toLocationId: toLocationId ?? undefined,
+          quantity: qty,
+          status: toLocationId ? 'PENDING' : 'NEEDS_BIN',
+        },
+      });
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Task creation/accumulation — IMMEDIATE mode
+  // ------------------------------------------------------------
+
+  // Called right after GateEntriesService.scan() / InboundReceiptsService.
+  // approveScan() write their RECEIPT StockMovement — only does anything
+  // when the company is in IMMEDIATE trigger mode (a no-op otherwise, since
+  // BATCH mode handles everything at the RECEIVED transition instead).
+  async handleAcceptedScan(tx: any, params: { receiptLineId: string; skuId: string; quantity: number; locationId: string; warehouseId: string; receiptId: string }) {
+    const warehouse = await tx.warehouse.findUnique({ where: { id: params.warehouseId }, select: { companyId: true } });
+    if (!warehouse) return;
+    const company = await tx.company.findUnique({ where: { id: warehouse.companyId }, select: { putawayTriggerMode: true, putawayDefaultBatchQty: true } });
+    if (!company || company.putawayTriggerMode !== 'IMMEDIATE') return;
+
+    const sku = await tx.sku.findUnique({ where: { id: params.skuId }, select: { putawayBatchQty: true } });
+    const thresholdRaw = sku?.putawayBatchQty ?? company.putawayDefaultBatchQty;
+    const threshold = thresholdRaw != null ? Number(thresholdRaw) : null;
+    const receivedDate = await this.resolveReceivedDate(tx, params.receiptId);
+
+    const createTask = async (quantity: number, openForAccumulation: boolean) => {
+      const toLocationId = await this.suggestBin(tx, { warehouseId: params.warehouseId, skuId: params.skuId, newStockDate: receivedDate });
+      return tx.putawayTask.create({
+        data: {
+          receiptLineId: params.receiptLineId,
+          skuId: params.skuId,
+          fromLocationId: params.locationId,
+          toLocationId: toLocationId ?? undefined,
+          quantity,
+          status: toLocationId ? 'PENDING' : 'NEEDS_BIN',
+          openForAccumulation,
+        },
+      });
+    };
+
+    if (threshold == null) {
+      // No threshold configured — every scan is its own task, released immediately.
+      await createTask(params.quantity, false);
+      return;
+    }
+
+    const open = await tx.putawayTask.findFirst({ where: { receiptLineId: params.receiptLineId, openForAccumulation: true } });
+    if (open) {
+      const newQty = Number(open.quantity) + params.quantity;
+      await tx.putawayTask.update({ where: { id: open.id }, data: { quantity: newQty, openForAccumulation: newQty < threshold } });
+      return;
+    }
+    await createTask(params.quantity, params.quantity < threshold);
+  }
+
+  // ------------------------------------------------------------
+  // Read
+  // ------------------------------------------------------------
+
+  async findAll(user: any, warehouseId?: string) {
+    const where: any = { receiptLine: { receipt: { warehouse: { ...companyFilter(user) } } } };
+    if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      where.receiptLine.receipt.warehouse.id = { in: ids };
+    }
+    if (warehouseId) where.receiptLine.receipt.warehouseId = warehouseId;
+    const tasks = await this.prisma.putawayTask.findMany({
+      where,
+      include: { ...TASK_INCLUDE, trips: { orderBy: { claimedAt: 'asc' } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    return tasks
+      .filter((t: any) => !t.openForAccumulation)
+      .map((t: any) => {
+        const movedQuantity = t.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((sum: number, tr: any) => sum + Number(tr.quantity), 0);
+        const inProgressTrip = t.trips.find((tr: any) => tr.status === 'IN_PROGRESS');
+        return { ...t, movedQuantity, inProgressTrip };
+      });
+  }
+
+  private async assertTaskAccess(id: string, user: any) {
+    const task = await this.prisma.putawayTask.findUnique({
+      where: { id },
+      include: { ...TASK_INCLUDE, receiptLine: { include: { receipt: { include: { warehouse: true } } } }, trips: true },
+    });
+    if (!task) throw new NotFoundException('Putaway task not found.');
+    const warehouse = (task.receiptLine as any).receipt.warehouse;
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this task.');
+    if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouse.id)) throw new ForbiddenException('You do not have access to this task.');
+    }
+    return task;
+  }
+
+  // ------------------------------------------------------------
+  // Execution — scan-driven
+  // ------------------------------------------------------------
+
+  // The staging scan — claims one trip. Resolves the barcode to a SKU
+  // (same SkuBarcode/SkuStorageUnit resolution as Inbound scanning, no new
+  // label concept — confirmed 2026-08-28), finds the oldest still-workable
+  // PENDING task for that SKU at that staging location, and opens an
+  // IN_PROGRESS trip sized by the warehouse's assumed equipment capacity
+  // for this SKU (never more than what's left on the task).
+  async claimTrip(barcode: any, user: any) {
+    const trimmed = barcode != null ? String(barcode).trim() : '';
+    if (!trimmed) throw new BadRequestException('A barcode is required.');
+
+    const barcodeMatches = await this.prisma.skuBarcode.findMany({
+      where: { barcode: trimmed, sku: { companyId: user.companyId } },
+      select: { skuId: true },
+    });
+    if (barcodeMatches.length === 0) throw new BadRequestException('Unrecognized barcode.');
+    const skuIds = [...new Set(barcodeMatches.map((b: any) => b.skuId))];
+
+    const scopedWarehouseIds = PUTAWAY_SCOPED_ROLES.includes(user.role) ? await ownWarehouseIds(this.prisma, user.userId) : null;
+
+    const candidateTasks = await this.prisma.putawayTask.findMany({
+      where: {
+        skuId: { in: skuIds },
+        status: 'PENDING',
+        openForAccumulation: false,
+        receiptLine: { receipt: { warehouse: { companyId: user.companyId, ...(scopedWarehouseIds ? { id: { in: scopedWarehouseIds } } : {}) } } },
+      },
+      include: { trips: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const task = candidateTasks.find((t: any) => {
+      const moved = t.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
+      const hasOpenTrip = t.trips.some((tr: any) => tr.status === 'IN_PROGRESS');
+      return moved < Number(t.quantity) && !hasOpenTrip;
+    });
+    if (!task) throw new BadRequestException('No workable putaway task found for this SKU — it may already be fully claimed or completed.');
+
+    const moved = task.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
+    const remaining = Number(task.quantity) - moved;
+    const warehouseId = (await this.prisma.location.findUnique({ where: { id: task.fromLocationId }, select: { warehouseId: true } }))!.warehouseId;
+    const assumed = await this.assumedCapacity(warehouseId);
+    // One trip moves whatever the assumed equipment can carry, capped at
+    // what's actually left on the task — the last trip of a task is
+    // naturally smaller than a full capacity load. No equipment configured
+    // for this warehouse yet -> one trip covers everything remaining.
+    const tripQuantity = assumed ? Math.min(remaining, assumed.capacity) : remaining;
+
+    return this.prisma.putawayTrip.create({
+      data: { taskId: task.id, quantity: tripQuantity, claimedById: user.userId, stagingBarcodeScanned: trimmed },
+      include: { task: { include: TASK_INCLUDE } },
+    });
+  }
+
+  // The location scan — completes a trip. Only a scan matching the task's
+  // own toLocationId is ever accepted; a mismatch hard-blocks with no
+  // override, per the client's explicit "doesnt allow operator to
+  // override." Writes the real PUTAWAY_OUT/PUTAWAY_IN StockMovement pair
+  // for this trip's quantity, carrying receivedDate forward unchanged.
+  async completeTrip(tripId: string, locationCode: any, user: any) {
+    const trip = await this.prisma.putawayTrip.findUnique({ where: { id: tripId }, include: { task: true } });
+    if (!trip) throw new NotFoundException('Trip not found.');
+    if (trip.status !== 'IN_PROGRESS') throw new BadRequestException('This trip is not awaiting a location scan.');
+    if (trip.claimedById !== user.userId) throw new ForbiddenException('Only the operator who claimed this trip can complete it.');
+
+    const task = trip.task as any;
+    if (!task.toLocationId) throw new BadRequestException('This task has no assigned bin yet.');
+
+    const fromLocation = await this.prisma.location.findUnique({ where: { id: task.fromLocationId }, select: { warehouseId: true } });
+    const trimmed = locationCode != null ? String(locationCode).trim().toUpperCase() : '';
+    const scannedLocation = await this.prisma.location.findFirst({ where: { warehouseId: fromLocation!.warehouseId, code: trimmed } });
+
+    if (!scannedLocation || scannedLocation.id !== task.toLocationId) {
+      throw new BadRequestException(`Wrong location — this must be put away at the assigned bin, not "${trimmed}".`);
+    }
+
+    const receivedDate = await this.resolveReceivedDate(this.prisma, (await this.prisma.inboundReceiptLine.findUnique({ where: { id: task.receiptLineId }, select: { receiptId: true } }))!.receiptId);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updatedTrip = await tx.putawayTrip.update({
+        where: { id: tripId },
+        data: { status: 'COMPLETED', scannedLocationId: scannedLocation.id, completedAt: new Date() },
+      });
+
+      await tx.stockMovement.create({
+        data: {
+          warehouseId: scannedLocation.warehouseId,
+          skuId: task.skuId,
+          locationId: task.fromLocationId,
+          quantity: -Number(trip.quantity),
+          movementType: 'PUTAWAY_OUT',
+          referenceType: 'PutawayTrip',
+          referenceId: tripId,
+          createdById: user.userId,
+          receivedDate,
+        },
+      });
+      await tx.stockMovement.create({
+        data: {
+          warehouseId: scannedLocation.warehouseId,
+          skuId: task.skuId,
+          locationId: task.toLocationId,
+          quantity: Number(trip.quantity),
+          movementType: 'PUTAWAY_IN',
+          referenceType: 'PutawayTrip',
+          referenceId: tripId,
+          createdById: user.userId,
+          receivedDate,
+        },
+      });
+
+      const allTrips = await tx.putawayTrip.findMany({ where: { taskId: task.id } });
+      const moved = allTrips.filter((t: any) => t.status === 'COMPLETED').reduce((s: number, t: any) => s + Number(t.quantity), 0);
+      if (moved >= Number(task.quantity)) {
+        await tx.putawayTask.update({ where: { id: task.id }, data: { status: 'COMPLETED' } });
+        await this.maybeCompleteReceiptPutaway(tx, task.receiptLineId);
+      }
+
+      return updatedTrip;
+    });
+  }
+
+  // Flips InboundReceipt.status to PUTAWAY_COMPLETE once every task tied to
+  // it is COMPLETED — closes the loop completeInward() already checks for
+  // but nothing has ever set (see [[wms-putaway-design]]).
+  private async maybeCompleteReceiptPutaway(tx: any, receiptLineId: string) {
+    const line = await tx.inboundReceiptLine.findUnique({ where: { id: receiptLineId }, select: { receiptId: true } });
+    if (!line) return;
+    const receiptTasks = await tx.putawayTask.findMany({ where: { receiptLine: { receiptId: line.receiptId } } });
+    if (receiptTasks.length === 0 || receiptTasks.some((t: any) => t.status !== 'COMPLETED')) return;
+    const receipt = await tx.inboundReceipt.findUnique({ where: { id: line.receiptId }, select: { status: true } });
+    if (receipt?.status === 'RECEIVED') {
+      await tx.inboundReceipt.update({ where: { id: line.receiptId }, data: { status: 'PUTAWAY_COMPLETE' } });
+    }
+  }
+
+  // "Request different bin" — only when the suggested location is
+  // physically unusable, never a manual pick. Re-suggests excluding every
+  // location this task has already been assigned to.
+  async requestDifferentBin(taskId: string, reason: any, user: any) {
+    const task = await this.assertTaskAccess(taskId, user);
+    if (task.status === 'COMPLETED') throw new BadRequestException('This task is already completed.');
+    if (task.trips.some((t: any) => t.status === 'IN_PROGRESS')) throw new BadRequestException('Complete or abandon the in-progress trip before requesting a different bin.');
+
+    const priorReassignments = await this.prisma.putawayReassignment.findMany({ where: { taskId }, select: { previousLocationId: true, newLocationId: true } });
+    const excludeLocationIds = [
+      ...new Set([task.toLocationId, ...priorReassignments.flatMap((r: any) => [r.previousLocationId, r.newLocationId])].filter(Boolean) as string[]),
+    ];
+
+    const warehouseId = (await this.prisma.location.findUnique({ where: { id: task.fromLocationId }, select: { warehouseId: true } }))!.warehouseId;
+    const receivedDate = await this.resolveReceivedDate(this.prisma, (await this.prisma.inboundReceiptLine.findUnique({ where: { id: task.receiptLineId }, select: { receiptId: true } }))!.receiptId);
+    const newLocationId = await this.suggestBin(this.prisma, { warehouseId, skuId: task.skuId, excludeLocationIds, newStockDate: receivedDate });
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.putawayReassignment.create({
+        data: {
+          taskId,
+          previousLocationId: task.toLocationId,
+          newLocationId: newLocationId ?? undefined,
+          reason: reason ? String(reason).trim() : undefined,
+          requestedById: user.userId,
+        },
+      });
+      return tx.putawayTask.update({
+        where: { id: taskId },
+        data: { toLocationId: newLocationId ?? null, status: newLocationId ? 'PENDING' : 'NEEDS_BIN' },
+        include: TASK_INCLUDE,
+      });
+    });
+  }
+}

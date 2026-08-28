@@ -2438,6 +2438,153 @@ persisted as `PRIMARY` after the save round-trip; switched the browse table's Wa
 that same warehouse and confirmed the "Suitable For (this warehouse)" column immediately reflected
 the just-saved edit ("Putaway (Primary), Picking (Primary)").
 
+### MHE loaded/unloaded speed fields — schema only (2026-08-28, same session)
+The client's own follow-up, mid-Putaway-conversation: "i can give you average speed of these MHEs
+during moving both loaded / non loaded, lets consider that and store it" — real speed data (km/h,
+loaded vs. unloaded) to eventually combine with `DockLocationDistance`'s real measured meters
+(schema-only, still no data-entry tooling) and compute an actual trip time — distance ÷ speed —
+instead of `genericAvgTripMinutes`'s flat guess. Schema laid down ahead of the real numbers, which
+the client is providing separately: `EquipmentType.genericLoadedSpeedKmh`/`genericUnloadedSpeedKmh`
+(both nullable, currently unpopulated) + the same override pair on `Equipment`
+(`loadedSpeedKmh`/`unloadedSpeedKmh`). Stored in km/h (the unit given, and the more human-editable
+one) rather than pre-converted to meters/minute — convert at the point of calculation instead.
+`genericAvgTripMinutes` stays the fallback estimate everywhere real distance data doesn't exist yet
+(which today is everywhere). Migration `20260828170000_add_equipment_speed_fields`. Wired through
+`EquipmentService`'s validate/create/update and `EquipmentPage.tsx`'s form (two new override
+inputs) exactly like `palletsPerTrip`/`avgTripMinutes` already were — no real logic consumes these
+yet, purely storage ready to receive real figures.
+
+### Putaway — design conversation, schema, and working logic (2026-08-28, same session)
+The actual next module after MHE, picked back up per the stated build order. This was a long,
+genuinely iterative design conversation — including one real process misstep (schema written before
+the conversation had actually finished, caught immediately: "who told you to code???", reverted
+before continuing) — see the `wms-putaway-design` memory for the full blow-by-blow; this section is
+the settled result plus what's actually built and verified.
+
+**Trigger & batching.** `Company.putawayTriggerMode` (`BATCH`/`IMMEDIATE`, default `BATCH`): BATCH
+creates one task per line the moment an `InboundReceipt` reaches `RECEIVED` (hooked into both
+`GateEntriesService`'s and `InboundReceiptsService`'s own `recomputeReceiptStatus`, firing exactly
+once on the transition into `RECEIVED`, never on a duplicate call); IMMEDIATE creates/accumulates a
+task per scan instead (hooked into `GateEntriesService.scan()` and `InboundReceiptsService.
+approveScan()`, right after each writes its `RECEIPT` `StockMovement`). `Sku.putawayBatchQty`
+overrides `Company.putawayDefaultBatchQty` as the accumulation threshold — unset means every scan
+is its own task, immediately.
+
+**Bin suggestion (`PutawayTasksService.suggestBin`)** — always system-decided, never operator-picked.
+Only `ACTUAL_STORAGE` locations whose `storageType` matches a `WarehouseStorageType` row for the
+SKU's category are eligible. Locations group into "lanes" — `SPR`/`DRIVE_IN`/`ASRS` group by
+(aisle, rack, level) since their `depth` positions share one physical access point; every other
+storage type is a lane of one. Two real corrections came out of discussing this with the client:
+- **The LIFO constraint is keyed off `depth`, not the `storageType` label** — a double-deep SPR bay
+  is exactly as LIFO-constrained as a Drive-in lane; a genuinely single-deep SPR bay isn't
+  constrained at all. One rule handles all three types uniformly: within a lane, always target the
+  deepest currently-empty position, never a shallower one while a deeper one sits open.
+- **SKU-mixing eligibility reuses `WarehouseStorageType.maxSkusClassA/B/C`** (built 2026-08-24,
+  unenforced until now) — treating a whole lane's depths as one shared pool, not per-position (a
+  single depth position never holds more than one SKU on its own anyway). The effective cap for a
+  lane is the MOST RESTRICTIVE class among the incoming SKU and every current occupant — an A-class
+  occupant's own cap of 1 blocks anything else the moment it's present, confirmed by a concrete
+  example the client gave (2 of 3 Innova Tyres pallets dispatched, 1 remains — a different A-class
+  SKU still can't use the now-partially-empty lane until that last pallet is gone). The only bypass
+  is an approved `MultiSkuLaneException` for that warehouse (see below).
+- **Same-SKU top-up of a partially-emptied lane is gated by "localized aging"**, not blocked
+  outright — real manufacturing-date tracking was raised then explicitly parked (ties into the
+  already-deferred Batch/Lot topic, and would need "Reading B" barcode parsing too); the simple
+  stand-in is `StockMovement.receivedDate` (nullable, migration
+  `20260828190000_add_stock_movement_received_date`), one shared date per vehicle (not per case —
+  a single multi-case `PutawayTrip` can't represent several different ages in one row), sourced from
+  **Dock In** time, copied forward — never recalculated — onto every movement for that stock
+  (`RECEIPT` → `PUTAWAY_OUT`/`PUTAWAY_IN` now, `PICK`/`DISPATCH` once those modules exist). Company-
+  level comparison tolerance is `AgingGranularity` (`DAY`/`WEEK`/`MONTH`, nullable — null means
+  exact-match-only, the safe default). A lane with a same-SKU occupant is eligible only if the
+  incoming batch's date matches per this tolerance; otherwise the lane stays closed until fully
+  emptied.
+- Also excludes any bin already the destination of another still-open task (no double-booking), and
+  orders remaining candidates by `flankNumber` as the distance proxy (A-class near, C-class far)
+  until `DockLocationDistance` has real data, preferring an already-open same-SKU lane over a fresh
+  one.
+- No eligible bin anywhere → `PutawayStatus.NEEDS_BIN`.
+
+**Equipment assumption.** No per-task equipment picking — the warehouse's own Primary-rated
+`WarehouseEquipmentSuitability` type for the Putaway activity is assumed; its `genericPalletsPerTrip`
+gives `trips = ceil(quantity ÷ capacity)`, feeding `PutawayTrip` sizing below. No equipment
+configured for a warehouse yet → one trip covers whatever's left, no MHE-aware splitting to fall
+back on.
+
+**Execution — scan-driven (`PutawayTrip`), the real shift from a plain task-list UI.** The client's
+own vision, walked through in detail: scan the case/pallet at staging (same `SkuBarcode` as Inbound,
+no new label/LPN concept) → that scan resolves to the oldest workable `PENDING` task for that SKU
+and opens an `IN_PROGRESS` trip, sized by the assumed equipment's capacity, capped at whatever's
+left on the task → the handheld shows the destination → scanning the location completes the trip —
+**only a scan matching `PutawayTask.toLocationId` is ever accepted; a mismatch hard-blocks with no
+override**, confirmed explicitly ("doesnt allow operator to override"). A completed trip writes the
+real `PUTAWAY_OUT`/`PUTAWAY_IN` `StockMovement` pair (carrying `receivedDate` forward unchanged) and
+recomputes the task's moved quantity by summing its own `COMPLETED` trips — deliberately not a
+separate stored counter, same "always derive rather than risk drift" philosophy as on-hand stock.
+Claiming happens implicitly at the staging scan (no separate "take this task" action), scoped to one
+trip at a time — not the whole task — so a multi-trip task can be split across several operators,
+staying consistent with the earlier "don't gate multi-operator/multi-dock work" decision.
+`PutawayClaimExpiryScheduler` (`@Cron(EVERY_5_MINUTES)`, same pattern as `DetentionAlertScheduler`)
+auto-expires a claimed-but-never-completed trip to `ABANDONED` after 30 minutes (a placeholder
+timeout, not a client-specified number) so it can be reclaimed.
+
+**Receipt completion signal.** A real, previously-dead loop closed: `ReceiptStatus.PUTAWAY_COMPLETE`
+has existed since Inbound receiving shipped and `GateEntriesService.completeInward()` already
+checked for it, but nothing ever set it. Now, the moment every `PutawayTask` tied to a receipt
+reaches `COMPLETED`, `PutawayTasksService.maybeCompleteReceiptPutaway()` flips the receipt from
+`RECEIVED` to `PUTAWAY_COMPLETE`.
+
+**"Request different bin"** — only for a suggested location that's physically unusable, never a
+manual pick; re-runs `suggestBin` excluding every location the task has already been assigned to
+(via its `PutawayReassignment` history), logged as a new row each time.
+
+**Multi-SKU Lane Exception — the only bypass for the mandatory single-SKU-per-multi-deep-lane
+rule.** A real request/approve/revoke audit workflow, not a self-service toggle, per the client's
+own design: a `WAREHOUSE_MANAGER` requests it (with a reason) for their own warehouse — never
+initiated by HO unprompted — and only a `COMPANY_ADMIN` can approve, reject, or later revoke it
+("so both the local and HO team knows there is a problem"). Warehouse-wide scope (not per-lane), no
+auto-expiry — stays in force until explicitly revoked. `suggestBin` checks for a live
+`APPROVED`-and-not-`REVOKED` row for the warehouse and, if found, ignores the `maxSkusClass*` cap
+entirely for that warehouse's lanes.
+
+**Backend**: new `putaway/` module (`PutawayTasksService`/`Controller`, `MultiSkuLaneExceptionsService`/
+`Controller`, `PutawayClaimExpiryScheduler`) — exports `PutawayTasksService` so `InboundModule`/
+`YardGateModule` can call into task creation, same cross-module reuse pattern `NotificationsModule`
+established. New `PUTAWAY_EXECUTE_ROLES`/`PUTAWAY_SCOPED_ROLES` in `tenant.util.ts` (same tier as
+Inbound's own scanning roles); the exception workflow uses two named roles directly
+(`@Roles('WAREHOUSE_MANAGER')`/`@Roles('COMPANY_ADMIN')`) rather than a broader constant, since the
+client's design names exactly those two, not a tier. Migration `20260828180000_putaway_skeleton`
+(the schema) plus the two above (speed fields, `receivedDate`).
+
+**Frontend**: new standalone `PutawayPage.tsx` (top-level nav tab, not under Masters — a daily
+workflow) — a "Scan Putaway" panel (barcode input → claim → shows the assumed destination → location
+input → complete), the task queue table (SKU/From/To/Qty/Moved/Status/Request-Different-Bin), and a
+Multi-SKU Lane Exception section (request form for Warehouse Manager, approve/reject/revoke table
+for Company Admin, visible history to both).
+
+Verified via a comprehensive throwaway-company API script, 20/20: `suggestBin` correctly picks the
+deepest empty position in an empty 2-deep lane; a claimed trip's quantity respects the assumed
+equipment's capacity; completing against the wrong location hard-blocks with the exact message,
+against the correct one succeeds; exactly the right `PUTAWAY_OUT`/`PUTAWAY_IN` pair gets written
+with `receivedDate` carried forward; a second trip correctly completes the task and cascades to
+`PutawayTask.COMPLETED` → `InboundReceipt.PUTAWAY_COMPLETE`; a different A-class SKU is correctly
+blocked from a lane still holding 1 leftover pallet of another SKU even with an empty depth position
+available; the full exception workflow (Operator blocked from requesting, Manager can request but
+not approve their own, Admin approves, the blocked lane immediately becomes usable, Admin revokes).
+Then re-verified live through the actual rendered UI (logged in via the API+localStorage token
+trick): clicked through Request Different Bin (real suggestion, real bin assigned), a real barcode
+claim (showed the correct "take 1 from STAGE-1 to A01-R01-L01-D1" instruction), a wrong-location
+scan rendering the exact hard-block message inline, and a correct-location scan completing the trip
+and updating the task row to `Completed`, `1/1` moved — confirmed the receipt's `PUTAWAY_COMPLETE`
+flip directly against the database afterward. Throwaway company cleaned up.
+
+**Explicitly not built this pass** — flagged as genuinely open in the `wms-putaway-design` memory,
+not decided: a cancel/exception path for a task that can't be completed at all (distinct from
+"wrong bin, re-suggest"); how a mis-putaway gets corrected after the fact once already completed;
+queue ordering/prioritization beyond plain creation order (the FIFO-vs-aging discussion was paused
+mid-conversation for the racked-vs-non-racked detour and never fully resumed); and Ground/Stillage's
+own version of this logic (explicitly deferred — "let's finish racked first").
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2640,9 +2787,17 @@ to warehouse) — `GET /equipment?activity=X&warehouseId=Y` gives an instant, Pr
 which registered units in that warehouse are usable for a given activity (see "MHE activity
 suitability matrix" above for the correction story — it was first built as a shared platform-wide
 matrix with no edit path, then moved to be warehouse-scoped and editable the same session).
-**Putaway's actual task logic (trigger modes, bin suggestion, batching, claiming) is still not
-started** — a real workflow conversation covering multi-dock parallelism, operator assignment, and
-MHE-aware task sizing is still needed before any of that gets built.
+**Putaway itself is now real, working, and live-verified** (2026-08-28, same session — see
+"Putaway — design conversation, schema, and working logic" above for the full design and what's
+verified): BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (with the
+existing `maxSkusClass*` co-location config finally enforced), the scan-driven staging→bin execution
+flow (claim at staging scan, complete only on a matching location scan, no operator override),
+`PutawayClaimExpiryScheduler` for abandoned claims, the `MultiSkuLaneException` request/approve/
+revoke workflow, and the receipt-level `PUTAWAY_COMPLETE` signal are all built on a new standalone
+"Putaway" page. Ground/Stillage's own version of the multi-position logic, a cancel path for an
+undoable task, correcting an already-completed mis-putaway, and real queue-ordering/aging-based
+prioritization are all explicitly not built yet — see the `wms-putaway-design` memory for the exact
+open list.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
