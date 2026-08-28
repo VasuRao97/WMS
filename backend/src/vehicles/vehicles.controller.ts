@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
 import { VehiclesService } from './vehicles.service';
@@ -21,8 +21,8 @@ export class VehiclesController {
 
   @Get()
   @Roles(...GATE_YARD_READ_ROLES)
-  findAll(@CurrentUser() user: any) {
-    return this.vehiclesService.findAll(user);
+  findAll(@CurrentUser() user: any, @Query('warehouseId') warehouseId?: string) {
+    return this.vehiclesService.findAll(user, warehouseId);
   }
 
   @Get('export')

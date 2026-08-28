@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
+import { assertGateAccessAllowed, companyFilter, gateYardAccessibleWarehouseIds } from '../common/tenant.util';
 
 // Yard Management (2026-08-26, extended 2026-08-27) — the summary/tracker
 // read side of the yard-slot tracking built in GateEntriesService.
@@ -12,9 +12,11 @@ import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOP
 export class YardService {
   constructor(private prisma: PrismaService) {}
 
-  private async accessibleWarehouseIds(user: any): Promise<string[] | undefined> {
-    if (GATE_YARD_SCOPED_ROLES.includes(user.role)) return ownWarehouseIds(this.prisma, user.userId);
-    return undefined; // undefined = no extra restriction beyond companyFilter
+  // Extracted to tenant.util.ts's gateYardAccessibleWarehouseIds() 2026-08-28
+  // so Vehicle/Driver's own new home-warehouse scoping can share it — thin
+  // wrapper kept here so every call site in this file is unaffected.
+  private accessibleWarehouseIds(user: any): Promise<string[] | undefined> {
+    return gateYardAccessibleWarehouseIds(this.prisma, user);
   }
 
   // Per warehouse: total slots, how many occupied/available, and whether

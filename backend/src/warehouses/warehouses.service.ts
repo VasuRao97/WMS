@@ -405,6 +405,14 @@ export class WarehousesService {
             // stockMovements/inboundReceipts/outboundOrders — blocks
             // deletion the same way those do.
             gateEntries: true,
+            // vehicles/drivers added 2026-08-28, proactively this time (not
+            // caught as a bug) — Vehicle.warehouseId/Driver.warehouseId's
+            // FK is ON DELETE RESTRICT, same as every other relation here;
+            // applying the "go back and add it" lesson from the gateEntries
+            // fix above rather than waiting to hit the same class of raw-500
+            // a third time.
+            vehicles: true,
+            drivers: true,
           },
         },
       },
@@ -413,7 +421,7 @@ export class WarehousesService {
     const blocked: string[] = [];
     for (const wh of warehouses) {
       const c = wh._count;
-      const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries;
+      const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers;
       if (totalLinked > 0) blocked.push(wh.code);
       else deletable.push(wh.id);
     }
@@ -459,16 +467,18 @@ export class WarehousesService {
             outboundOrders: true,
             stockMovements: true,
             gateEntries: true, // see removeAll()'s comment — same 2026-08-27 fix
+            vehicles: true, // see removeAll()'s comment — added 2026-08-28
+            drivers: true,
           },
         },
       },
     });
     if (!warehouse) throw new NotFoundException('Warehouse not found.');
     const c = warehouse._count;
-    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries;
+    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers;
     if (totalLinked > 0) {
       throw new BadRequestException(
-        `Cannot permanently delete "${warehouse.code}" — it has ${totalLinked} linked record(s) (users, ship-tos, locations, gate entries, or transactions). Deactivate it instead.`,
+        `Cannot permanently delete "${warehouse.code}" — it has ${totalLinked} linked record(s) (users, ship-tos, locations, gate entries, vehicles, drivers, or transactions). Deactivate it instead.`,
       );
     }
     await this.prisma.$transaction([

@@ -114,3 +114,18 @@ export async function ownWarehouseIds(prisma: { user: { findUnique: Function } }
   });
   return (self?.assignedWarehouses || []).map((w: any) => w.id);
 }
+
+/**
+ * GATE_YARD_SCOPED_ROLES' own accessible-warehouse set — undefined means
+ * "no extra restriction beyond companyFilter" (Admin/SuperAdmin), an array
+ * means "only these ids" (Manager/Supervisor/SecuritySupervisor/Operator).
+ * Extracted 2026-08-28 from YardService.tracker()'s own private copy so
+ * Vehicle/Driver's new home-warehouse scoping (same reasoning: "TN08 only
+ * should see it," a real data-privacy call once warehouses can belong to
+ * different 3PLs under one company) can share the exact same logic rather
+ * than a third hand-rolled copy.
+ */
+export async function gateYardAccessibleWarehouseIds(prisma: { user: { findUnique: Function } }, user: any): Promise<string[] | undefined> {
+  if (GATE_YARD_SCOPED_ROLES.includes(user.role)) return ownWarehouseIds(prisma, user.userId);
+  return undefined;
+}

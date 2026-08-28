@@ -857,8 +857,11 @@ Vehicle Type dropdown from; `VehicleType` itself was seeded weeks ago but never 
 **Role gating**: `GATE_YARD_OPERATE_ROLES` (Operator included) can register/edit — this is closer to
 Gate Entry's own access shape than to Warehouse/Customer's `MASTER_DATA_WRITE_ROLES`, since the same
 gate/security staff who log a vehicle in are exactly who'd register a new one showing up for the
-first time. Delete stays `COMPANY_ADMIN`-only per the established convention. Both are company-scoped
-only (`companyFilter`, no `ownWarehouseIds` restriction) — a vehicle isn't tied to one warehouse.
+first time. Delete stays `COMPANY_ADMIN`-only per the established convention. **Was company-scoped
+only (no per-warehouse restriction) until 2026-08-28 — see "Vehicle/Driver: warehouse-scoped
+visibility" below for the reversal**; a vehicle isn't tied to one warehouse physically, but this
+project's own client caught the real consequence of that choice before it got tested against real
+data.
 
 **Validation notes**: `Vehicle.vehicleNumber` is uppercased and checked unique per company (a real
 natural key); blacklisting either entity requires a `blacklistReason` (enforced by the API returning
@@ -2599,6 +2602,63 @@ not decided: a cancel/exception path for a task that can't be completed at all (
 queue ordering/prioritization beyond plain creation order (the FIFO-vs-aging discussion was paused
 mid-conversation for the racked-vs-non-racked detour and never fully resumed); and Ground/Stillage's
 own version of this logic (explicitly deferred — "let's finish racked first").
+
+### Vehicle/Driver: warehouse-scoped visibility (2026-08-28, live-testing follow-up)
+A real design reversal, caught while live-testing rather than planned: `Vehicle`/`Driver` were
+company-wide from their original 2026-08-26 build ("a truck roams between warehouses, so scoping
+would just force re-registering the same real vehicle everywhere it visits"). The client's own
+counter-reason, once asked directly: different warehouses under one company tenant can be run by
+**different 3PLs** — one 3PL's registered fleet being visible to another's staff is a genuine
+data-privacy leak, not just noise. "if its registered in TN08, TN08 only should see it... can be
+data privacy." Confirmed explicitly this trades away the original cross-warehouse-reuse convenience
+— a vehicle now needs re-registering at every warehouse it genuinely visits, by design.
+
+**Schema**: `Vehicle.warehouseId`/`Driver.warehouseId` (nullable, FK to `Warehouse`, `ON DELETE
+RESTRICT` matching every other warehouse relation) — nullable only for pre-existing rows created
+before this field existed; every new registration requires one going forward. A null-warehouse row
+is invisible to any warehouse-scoped role (same "no link = no visibility" conservative default
+Customer already uses for a ship-to-less record, not a fallback to full visibility) until an Admin
+assigns one via the Vehicle & Driver Master edit form. Migration
+`20260828210000_add_vehicle_driver_home_warehouse`.
+
+**Backend**: `VehiclesService`/`DriversService` gained a `resolveWarehouseId()` (required on
+create/update, validated against the caller's own `GATE_YARD_SCOPED_ROLES` access same as every
+other warehouse-scoped write), a warehouse-scoped `findAll(user, warehouseId?)` (an explicit
+`?warehouseId=` is checked against the caller's own accessible set before being trusted — same real
+bug class `YardService.tracker()` already had to fix once, proactively avoided here), and a
+warehouse-scoped `assertAccess()` (a scoped role can't reach a vehicle/driver outside their own
+warehouse just by knowing its id, same pattern as `DockDoorsService.assertAccess`). New shared
+`gateYardAccessibleWarehouseIds()` in `tenant.util.ts`, extracted from `YardService`'s own private
+copy of the exact same logic so a third hand-rolled copy wasn't needed — `YardService` now delegates
+to it, no behavior change there. **Proactively added `vehicles`/`drivers` to `WarehousesService`'s
+`removeAll()`/`remove()` blocking check** — applying the "go back and add it" lesson from the
+`gateEntries` bug documented under "Every master-data entity gets a Delete All" rather than waiting
+to hit the same raw-500 class of bug a third time.
+
+**Frontend**: `GateYardPage.tsx`'s Register Vehicle/Register Driver modals gained a required
+Warehouse dropdown (defaults from whichever warehouse is already selected on the Gate In form, but
+always editable — the modals are top-level buttons, not nested inside the Gate In form, so a
+warehouse isn't always already chosen). The Gate In vehicle/driver `<input list>` pickers now
+re-fetch scoped to whichever warehouse is selected on the form (`handleGateInWarehouseChange()`,
+deliberately a plain handler rather than a `useEffect` watching `warehouseId` — an effect would also
+fire, and wrongly clear the fresh pick, right after the "auto-select the vehicle/driver just
+registered" convenience syncs the form's own warehouse to match). `InboundOrdersPage.tsx`'s New
+Order vehicle picker narrows the same way, client-side against the already-fetched (and already
+server-scoped) vehicle list. `VehicleDriverPage.tsx` gained a Warehouse column on both tables, a
+warehouse filter dropdown, and a required Warehouse field on both edit forms — the only way a
+pre-existing null-warehouse row (or a genuine reassignment) gets fixed, since this page has no
+create path of its own.
+
+Verified via a throwaway-two-warehouse API script (7/7 for Vehicle, mirrored for Driver): creating
+either without a `warehouseId` rejected; a Manager scoped to TN08 only sees TN08's vehicle via
+`GET /vehicles`, not TN09's; an explicit `?warehouseId=` for TN09 (out of the Manager's scope) 403s,
+the same param for TN08 (in scope) succeeds; the Manager registering to TN09 directly is rejected;
+the Manager reaching TN09's vehicle by id (`PATCH`) 403s even though they'd never see it listed; an
+unscoped Admin's own `GET /vehicles` still sees both. `WarehousesService.removeAll()` correctly
+reported both throwaway warehouses as blocked (not a raw 500) once each had a linked vehicle/driver.
+Then re-verified live through the actual rendered UI: Register Vehicle's modal showed the real
+Warehouse dropdown; Vehicle & Driver Master's table and filter both correctly showed/narrowed by the
+real saved warehouse for each row.
 
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components

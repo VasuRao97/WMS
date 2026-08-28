@@ -13,11 +13,13 @@ import { useEffect, useState } from 'react';
 // popup. No bulk Excel import either (confirmed) — registering a
 // vehicle/driver is a one-time-per-record manual step, export only.
 
+type Warehouse = { id: string; code: string; name: string };
 type VehicleType = { id: string; name: string; segment: string; maxTonnage: number; detentionCostPerDay?: number };
 type Vehicle = {
   id: string;
   vehicleNumber: string;
   vehicleType: VehicleType;
+  warehouse?: Warehouse;
   maxTonnage?: number;
   detentionCostPerDay?: number;
   lengthFt?: number;
@@ -38,6 +40,7 @@ type Vehicle = {
 type Driver = {
   id: string;
   name: string;
+  warehouse?: Warehouse;
   phone?: string;
   licenseNumber?: string;
   licenseExpiry?: string;
@@ -61,11 +64,11 @@ function fmtDate(d?: string) {
 }
 
 const emptyVehicleForm = {
-  vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '', detentionCostPerDay: '',
+  warehouseId: '', vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '', detentionCostPerDay: '',
   rcNumber: '', rcExpiry: '', insuranceNumber: '', insuranceExpiry: '', pucNumber: '', pucExpiry: '', fitnessNumber: '', fitnessExpiry: '',
   isBlacklisted: false, blacklistReason: '',
 };
-const emptyDriverForm = { name: '', phone: '', licenseNumber: '', licenseExpiry: '', isBlacklisted: false, blacklistReason: '' };
+const emptyDriverForm = { warehouseId: '', name: '', phone: '', licenseNumber: '', licenseExpiry: '', isBlacklisted: false, blacklistReason: '' };
 
 const cardStyle: React.CSSProperties = {
   border: '1px solid #ccc',
@@ -79,9 +82,17 @@ function VehicleDriverPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>([]);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
 
   const [vehicleSearch, setVehicleSearch] = useState('');
   const [driverSearch, setDriverSearch] = useState('');
+  // Warehouse filter (2026-08-28) — Vehicle/Driver are now warehouse-scoped
+  // (each visible only at its own registered warehouse), so a browse page
+  // that can potentially span several of the caller's own warehouses (an
+  // Admin, or a Manager assigned to more than one) benefits from a quick
+  // way to narrow to just one, same as every other master-data list here.
+  const [vehicleWarehouseFilter, setVehicleWarehouseFilter] = useState('');
+  const [driverWarehouseFilter, setDriverWarehouseFilter] = useState('');
   const [showVehicleList, setShowVehicleList] = useState(true);
   const [showDriverList, setShowDriverList] = useState(true);
 
@@ -117,16 +128,23 @@ function VehicleDriverPage() {
       .then((r) => (r.status === 401 ? [] : r.json()))
       .then((d) => setVehicleTypes(Array.isArray(d) ? d : []));
 
+  const loadWarehouses = () =>
+    fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
+      .then((r) => (r.status === 401 ? [] : r.json()))
+      .then((d) => setWarehouses(Array.isArray(d) ? d : []));
+
   useEffect(() => {
     loadVehicles();
     loadDrivers();
     loadVehicleTypes();
+    loadWarehouses();
   }, []);
 
   // ---------- Vehicles ----------
 
   const startEditVehicle = (v: Vehicle) => {
     setVehicleForm({
+      warehouseId: v.warehouse?.id || '',
       vehicleNumber: v.vehicleNumber,
       vehicleTypeId: v.vehicleType.id,
       lengthFt: v.lengthFt != null ? String(v.lengthFt) : '',
@@ -227,6 +245,7 @@ function VehicleDriverPage() {
   };
 
   const filteredVehicles = vehicles.filter((v) => {
+    if (vehicleWarehouseFilter && v.warehouse?.id !== vehicleWarehouseFilter) return false;
     const q = vehicleSearch.toLowerCase();
     return (
       v.vehicleNumber.toLowerCase().includes(q) ||
@@ -239,6 +258,7 @@ function VehicleDriverPage() {
 
   const startEditDriver = (d: Driver) => {
     setDriverForm({
+      warehouseId: d.warehouse?.id || '',
       name: d.name,
       phone: d.phone || '',
       licenseNumber: d.licenseNumber || '',
@@ -315,6 +335,7 @@ function VehicleDriverPage() {
   };
 
   const filteredDrivers = drivers.filter((d) => {
+    if (driverWarehouseFilter && d.warehouse?.id !== driverWarehouseFilter) return false;
     const q = driverSearch.toLowerCase();
     return d.name.toLowerCase().includes(q) || (d.phone || '').toLowerCase().includes(q) || (d.licenseNumber || '').toLowerCase().includes(q);
   });
@@ -341,6 +362,12 @@ function VehicleDriverPage() {
           <h3 style={{ marginTop: 0 }}>Edit Vehicle — {vehicleForm.vehicleNumber}</h3>
           <form onSubmit={handleVehicleSubmit}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              <select value={vehicleForm.warehouseId} onChange={(e) => setVehicleForm({ ...vehicleForm, warehouseId: e.target.value })} required style={{ width: 220 }}>
+                <option value="">Warehouse *</option>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+                ))}
+              </select>
               <input placeholder="Vehicle Number *" value={vehicleForm.vehicleNumber} onChange={(e) => setVehicleForm({ ...vehicleForm, vehicleNumber: e.target.value })} required style={{ width: 160 }} />
               <select value={vehicleForm.vehicleTypeId} onChange={(e) => setVehicleForm({ ...vehicleForm, vehicleTypeId: e.target.value })} required style={{ width: 260 }}>
                 <option value="">Vehicle Type *</option>
@@ -416,16 +443,25 @@ function VehicleDriverPage() {
 
       {showVehicleList && (
         <>
-          <input
-            placeholder="Search by vehicle number, type, or segment..."
-            value={vehicleSearch}
-            onChange={(e) => setVehicleSearch(e.target.value)}
-            style={{ width: '100%', padding: 8, marginBottom: 16, boxSizing: 'border-box' }}
-          />
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <input
+              placeholder="Search by vehicle number, type, or segment..."
+              value={vehicleSearch}
+              onChange={(e) => setVehicleSearch(e.target.value)}
+              style={{ flex: 1, padding: 8, boxSizing: 'border-box' }}
+            />
+            <select value={vehicleWarehouseFilter} onChange={(e) => setVehicleWarehouseFilter(e.target.value)} style={{ padding: 8 }}>
+              <option value="">All Warehouses</option>
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+              ))}
+            </select>
+          </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
             <thead>
               <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
                 <th style={{ padding: 8 }}>Vehicle Number</th>
+                <th style={{ padding: 8 }}>Warehouse</th>
                 <th style={{ padding: 8 }}>Type</th>
                 <th style={{ padding: 8 }}>Max Capacity</th>
                 <th style={{ padding: 8 }}>Detention Rate</th>
@@ -438,6 +474,7 @@ function VehicleDriverPage() {
               {filteredVehicles.map((v) => (
                 <tr key={v.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                   <td style={{ padding: 8, fontWeight: 'bold' }}>{v.vehicleNumber}</td>
+                  <td style={{ padding: 8, color: v.warehouse ? undefined : '#888' }}>{v.warehouse?.code ?? '— (needs assigning)'}</td>
                   <td style={{ padding: 8 }}>{v.vehicleType.name} ({v.vehicleType.segment})</td>
                   <td style={{ padding: 8 }}>{v.maxTonnage ?? v.vehicleType.maxTonnage} T</td>
                   <td style={{ padding: 8 }}>{v.detentionCostPerDay ?? v.vehicleType.detentionCostPerDay ? `₹${v.detentionCostPerDay ?? v.vehicleType.detentionCostPerDay}/day` : '—'}</td>
@@ -473,6 +510,12 @@ function VehicleDriverPage() {
           <h3 style={{ marginTop: 0 }}>Edit Driver — {driverForm.name}</h3>
           <form onSubmit={handleDriverSubmit}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              <select value={driverForm.warehouseId} onChange={(e) => setDriverForm({ ...driverForm, warehouseId: e.target.value })} required style={{ width: 220 }}>
+                <option value="">Warehouse *</option>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+                ))}
+              </select>
               <input placeholder="Name *" value={driverForm.name} onChange={(e) => setDriverForm({ ...driverForm, name: e.target.value })} required style={{ width: 200 }} />
               <input placeholder="Phone" value={driverForm.phone} onChange={(e) => setDriverForm({ ...driverForm, phone: e.target.value })} style={{ width: 150 }} />
             </div>
@@ -511,16 +554,25 @@ function VehicleDriverPage() {
 
       {showDriverList && (
         <>
-          <input
-            placeholder="Search by name, phone, or license number..."
-            value={driverSearch}
-            onChange={(e) => setDriverSearch(e.target.value)}
-            style={{ width: '100%', padding: 8, marginBottom: 16, boxSizing: 'border-box' }}
-          />
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <input
+              placeholder="Search by name, phone, or license number..."
+              value={driverSearch}
+              onChange={(e) => setDriverSearch(e.target.value)}
+              style={{ flex: 1, padding: 8, boxSizing: 'border-box' }}
+            />
+            <select value={driverWarehouseFilter} onChange={(e) => setDriverWarehouseFilter(e.target.value)} style={{ padding: 8 }}>
+              <option value="">All Warehouses</option>
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+              ))}
+            </select>
+          </div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
                 <th style={{ padding: 8 }}>Name</th>
+                <th style={{ padding: 8 }}>Warehouse</th>
                 <th style={{ padding: 8 }}>Phone</th>
                 <th style={{ padding: 8 }}>License Number</th>
                 <th style={{ padding: 8 }}>Blacklisted</th>
@@ -532,6 +584,7 @@ function VehicleDriverPage() {
               {filteredDrivers.map((d) => (
                 <tr key={d.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
                   <td style={{ padding: 8, fontWeight: 'bold' }}>{d.name}</td>
+                  <td style={{ padding: 8, color: d.warehouse ? undefined : '#888' }}>{d.warehouse?.code ?? '— (needs assigning)'}</td>
                   <td style={{ padding: 8 }}>{d.phone || '—'}</td>
                   <td style={{ padding: 8 }}>{d.licenseNumber || '—'} {d.licenseExpiry ? `(exp. ${fmtDate(d.licenseExpiry)})` : ''}</td>
                   <td style={{ padding: 8, color: d.isBlacklisted ? 'crimson' : undefined }}>{d.isBlacklisted ? `Yes — ${d.blacklistReason}` : 'No'}</td>

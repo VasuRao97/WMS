@@ -2,12 +2,36 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-28 (bin suggestion now narrows by `Location.categoryId` too, not just the
-warehouse-level plan — see the session note below. Also same day: the Putaway trigger-mode
-Company Settings gap closed, and Putaway's core task logic itself was built and live-verified —
-trigger modes, ABC/multi-deep-lane bin suggestion, scan-driven execution, the Multi-SKU Lane
-Exception workflow. Ground/Stillage's own version, cancel/correction paths, and real queue-ordering
-are still open — see the `wms-putaway-design` memory).
+what to pick up next. Updated as priorities shift — last updated 2026-08-28 (Vehicle/Driver
+visibility is now warehouse-scoped, not company-wide — a real data-privacy reversal, see the
+session note below. Also same day: bin suggestion now narrows by `Location.categoryId` too, not
+just the warehouse-level plan; the Putaway trigger-mode Company Settings gap closed; and Putaway's
+core task logic itself was built and live-verified — trigger modes, ABC/multi-deep-lane bin
+suggestion, scan-driven execution, the Multi-SKU Lane Exception workflow. Ground/Stillage's own
+version, cancel/correction paths, and real queue-ordering are still open — see the
+`wms-putaway-design` memory).
+
+## Session note (2026-08-28, Vehicle/Driver warehouse-scoped visibility — a real reversal)
+Live-testing (not a design conversation) surfaced this: different warehouses under one company can
+be run by different 3PLs, so Vehicle/Driver being visible company-wide (the original 2026-08-26
+design, chosen because "a truck roams between warehouses") was a real privacy leak — "if its
+registered in TN08, TN08 only should see it... can be data privacy." Reversed: `Vehicle.warehouseId`/
+`Driver.warehouseId` (required going forward), `findAll()`/`assertAccess()` scoped the same way
+Warehouse/Customer/User already are for Manager/Supervisor, registration modals and pickers on Gate
+& Yard/Inbound Orders re-scoped to match, and Vehicle & Driver Master gained a Warehouse column,
+filter, and edit-form field (the fix path for a pre-existing null-warehouse row). Confirmed
+trade-off, accepted explicitly: a vehicle now needs re-registering at every warehouse it genuinely
+visits — no more free cross-warehouse reuse. `WarehousesService`'s Delete All blocking check also
+proactively gained `vehicles`/`drivers` (same "go back and add it" lesson this project already
+learned once with `gateEntries`, applied before hitting the bug this time, not after).
+
+Same session, a separate real fix from live-testing: an unregistered barcode (zero `SkuBarcode`
+rows anywhere) used to allow a free, unrestricted Supervisor override onto any SKU during Inbound
+receiving — reversed to a hard block ("an unregistered barcode is a MORE serious problem than one
+registered to the wrong SKU, not a lesser one"). A blocked scan with an unrecognized barcode can now
+only be Rejected, never Approved — register the barcode against the right SKU first if it's a
+genuinely valid product. See `CLAUDE.md`'s matching sections for both — full verification detail in
+each.
 
 ## Session note (2026-08-28, Location-category-aware bin suggestion + Inbound category visibility)
 A real, previously-unused signal got wired in, from a client-initiated discussion (not a bug

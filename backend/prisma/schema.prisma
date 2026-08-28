@@ -343,6 +343,8 @@ model Warehouse {
   equipment              Equipment[]
   equipmentSuitability   WarehouseEquipmentSuitability[]
   multiSkuLaneExceptions MultiSkuLaneException[]
+  vehicles               Vehicle[]
+  drivers                Driver[]
 
   @@unique([companyId, code])
 }
@@ -899,6 +901,22 @@ model Vehicle {
   vehicleTypeId String
   vehicleType   VehicleType @relation(fields: [vehicleTypeId], references: [id])
 
+  // Home warehouse, added 2026-08-28 — REVERSES the original "company-wide,
+  // not warehouse-scoped" design (see this model's own file-level intro).
+  // The client's own real reason: different warehouses under the same
+  // company tenant can be run by different 3PLs, and one 3PL's registered
+  // fleet showing up to another's staff is a genuine data-privacy leak, not
+  // just an inconvenience — "TN08 only should see it." Nullable only for
+  // pre-existing rows created before this field existed; every new
+  // registration requires one (captured from the Gate In form's already-
+  // selected warehouse, no extra picker needed). A null-warehouse row is
+  // invisible to any warehouse-scoped role (same conservative "no link = no
+  // visibility" default Customer already uses for a ship-to-less record,
+  // not a fallback to full visibility) until fixed via the Vehicle & Driver
+  // Master edit form — visible only to COMPANY_ADMIN/SUPER_ADMIN until then.
+  warehouseId String?
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+
   // Actual measured dimensions of THIS specific vehicle, nullable — when
   // known, these override VehicleType's generic segment dimensions for any
   // load/volume calculation; when the registrar doesn't know them, callers
@@ -963,15 +981,20 @@ model Vehicle {
 // operator selects/searches an existing Driver manually rather than the
 // system matching on one of these fields automatically.
 model Driver {
-  id            String    @id @default(uuid())
-  companyId     String
-  company       Company   @relation(fields: [companyId], references: [id])
+  id        String  @id @default(uuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  // Home warehouse — same reasoning/nullability/visibility rule as
+  // Vehicle.warehouseId above (added the same day, same reversal).
+  warehouseId   String?
+  warehouse     Warehouse? @relation(fields: [warehouseId], references: [id])
   name          String
   phone         String?
   licenseNumber String?
   licenseExpiry DateTime?
-  isActive      Boolean   @default(true)
-  createdAt     DateTime  @default(now())
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
 
   // Same bar-from-entry flag as Vehicle.isBlacklisted, confirmed needed for
   // both 2026-08-25.

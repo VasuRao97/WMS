@@ -165,11 +165,11 @@ const emptyGateInForm = {
   warehouseId: '', vehicleId: '', driverId: '', purpose: '', transporterName: '', referenceNo: '', destinationCity: '', commodityDescription: '', grossWeightKg: '',
 };
 const emptyVehicleForm = {
-  vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '', detentionCostPerDay: '',
+  warehouseId: '', vehicleNumber: '', vehicleTypeId: '', lengthFt: '', widthFt: '', heightFt: '', maxTonnage: '', detentionCostPerDay: '',
   rcNumber: '', rcExpiry: '', insuranceNumber: '', insuranceExpiry: '', pucNumber: '', pucExpiry: '', fitnessNumber: '', fitnessExpiry: '',
   isBlacklisted: false, blacklistReason: '',
 };
-const emptyDriverForm = { name: '', phone: '', licenseNumber: '', licenseExpiry: '', isBlacklisted: false, blacklistReason: '' };
+const emptyDriverForm = { warehouseId: '', name: '', phone: '', licenseNumber: '', licenseExpiry: '', isBlacklisted: false, blacklistReason: '' };
 const emptyGateOutForm = { tareWeightKg: '', eWayBillNo: '', invoiceWeightKg: '', materialReceivedConfirmed: false, sealNumber: '', sealSignatureData: '' };
 // physicalConditionOk stays `null` until the guard actually picks OK/Flagged
 // — distinct from "left unset," same reasoning as the schema field itself.
@@ -293,8 +293,12 @@ function GateYardPage() {
   const [viewingSignature, setViewingSignature] = useState<GateEntry | null>(null);
 
   const loadWarehouses = () => fetch('http://localhost:3000/warehouses', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setWarehouses(Array.isArray(d) ? d : []));
-  const loadVehicles = () => fetch('http://localhost:3000/vehicles', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setVehicles(Array.isArray(d) ? d : []));
-  const loadDrivers = () => fetch('http://localhost:3000/drivers', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setDrivers(Array.isArray(d) ? d : []));
+  // warehouseId param (2026-08-28) — Vehicle/Driver are now warehouse-scoped
+  // (data-privacy call: different warehouses can be run by different 3PLs),
+  // so the Gate In picker only ever offers what's actually registered to
+  // the currently-selected warehouse, not the whole company's fleet.
+  const loadVehicles = (warehouseId?: string) => fetch(`http://localhost:3000/vehicles${warehouseId ? `?warehouseId=${warehouseId}` : ''}`, { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setVehicles(Array.isArray(d) ? d : []));
+  const loadDrivers = (warehouseId?: string) => fetch(`http://localhost:3000/drivers${warehouseId ? `?warehouseId=${warehouseId}` : ''}`, { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setDrivers(Array.isArray(d) ? d : []));
   const loadVehicleTypes = () => fetch('http://localhost:3000/vehicle-types', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setVehicleTypes(Array.isArray(d) ? d : []));
   const loadYardSummary = () => fetch('http://localhost:3000/yard/summary', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setYardSummary(Array.isArray(d) ? d : []));
   const loadTracker = () => fetch('http://localhost:3000/yard/tracker', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setTracker(Array.isArray(d) ? d : []));
@@ -306,12 +310,30 @@ function GateYardPage() {
 
   useEffect(() => { loadAll(); }, []);
 
+  // Re-scope the Vehicle/Driver pickers whenever the Gate In form's own
+  // Warehouse changes (2026-08-28) — a manual pick from the dropdown below
+  // calls this directly (not a generic effect watching warehouseId, which
+  // would also fire — and wrongly clear the fresh selection — right after
+  // the "convenience: auto-select the vehicle/driver just registered"
+  // handlers below sync the form's warehouse to match). Falls back to the
+  // caller's own full accessible set (everything for Admin, own warehouses
+  // for a scoped role) once no warehouse is chosen yet.
+  const handleGateInWarehouseChange = (warehouseId: string) => {
+    setGateInForm((f) => ({ ...f, warehouseId, vehicleId: '', driverId: '' }));
+    setVehicleText(''); setDriverText('');
+    loadVehicles(warehouseId || undefined);
+    loadDrivers(warehouseId || undefined);
+  };
+
   // Default to the user's only warehouse if they have exactly one — the
   // dropdown already only ever lists what GET /warehouses scopes them to.
   useEffect(() => {
     if (warehouses.length === 1 && !gateInForm.warehouseId) {
       setGateInForm((f) => ({ ...f, warehouseId: warehouses[0].id }));
+      loadVehicles(warehouses[0].id);
+      loadDrivers(warehouses[0].id);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [warehouses]);
 
   // Yard-full banner — shown before submit, not as a popup after.
@@ -387,10 +409,14 @@ function GateYardPage() {
     }
     setVehicleForm(emptyVehicleForm);
     setShowVehicleModal(false);
-    await loadVehicles();
-    // Convenience: if the Gate In form is open, select the vehicle just registered.
+    // Convenience: if the Gate In form is open, select the vehicle just
+    // registered — also syncs the form's own warehouse to match (2026-08-28,
+    // now that the picker is warehouse-scoped, otherwise a vehicle
+    // registered to a different warehouse than currently selected on the
+    // Gate In form would never show up in it).
+    await loadVehicles(data.warehouseId);
     setVehicleText(data.vehicleNumber);
-    setGateInForm((f) => ({ ...f, vehicleId: data.id }));
+    setGateInForm((f) => ({ ...f, vehicleId: data.id, warehouseId: data.warehouseId }));
   };
 
   const handleDriverSubmit = async (e: React.FormEvent) => {
@@ -405,9 +431,10 @@ function GateYardPage() {
     }
     setDriverForm(emptyDriverForm);
     setShowDriverModal(false);
-    await loadDrivers();
+    // Convenience + warehouse sync — see handleVehicleSubmit's identical comment.
+    await loadDrivers(data.warehouseId);
     setDriverText(`${data.name}${data.phone ? ` (${data.phone})` : ''}`);
-    setGateInForm((f) => ({ ...f, driverId: data.id }));
+    setGateInForm((f) => ({ ...f, driverId: data.id, warehouseId: data.warehouseId }));
   };
 
   const openGateOut = (entry: GateEntry) => {
@@ -585,8 +612,8 @@ function GateYardPage() {
         <button type="button" onClick={() => (showGateInForm ? resetGateInForm() : setShowGateInForm(true))}>
           {showGateInForm ? '▾ Hide Gate In form' : '▸ + Gate In'}
         </button>
-        <button type="button" onClick={() => setShowVehicleModal(true)}>Register Vehicle</button>
-        <button type="button" onClick={() => setShowDriverModal(true)}>Register Driver</button>
+        <button type="button" onClick={() => { setVehicleForm((f) => ({ ...f, warehouseId: gateInForm.warehouseId || f.warehouseId })); setShowVehicleModal(true); }}>Register Vehicle</button>
+        <button type="button" onClick={() => { setDriverForm((f) => ({ ...f, warehouseId: gateInForm.warehouseId || f.warehouseId })); setShowDriverModal(true); }}>Register Driver</button>
       </div>
 
       {showGateInForm && (
@@ -594,7 +621,7 @@ function GateYardPage() {
           <h3 style={{ marginTop: 0 }}>Gate In</h3>
           <form onSubmit={handleGateInSubmit}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-              <select value={gateInForm.warehouseId} onChange={(e) => setGateInForm({ ...gateInForm, warehouseId: e.target.value })} required style={{ width: 220 }}>
+              <select value={gateInForm.warehouseId} onChange={(e) => handleGateInWarehouseChange(e.target.value)} required style={{ width: 220 }}>
                 <option value="">Warehouse *</option>
                 {warehouses.map((w) => (
                   <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
@@ -710,8 +737,17 @@ function GateYardPage() {
         <div style={overlayStyle}>
           <div style={modalStyle}>
             <h3 style={{ marginTop: 0 }}>Register Vehicle</h3>
+            <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>
+              Only visible at the warehouse it's registered to — different warehouses can be run by different 3PLs.
+            </p>
             <form onSubmit={handleVehicleSubmit}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                <select value={vehicleForm.warehouseId} onChange={(e) => setVehicleForm({ ...vehicleForm, warehouseId: e.target.value })} required style={{ width: 220 }}>
+                  <option value="">Warehouse *</option>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+                  ))}
+                </select>
                 <input placeholder="Vehicle Number *" value={vehicleForm.vehicleNumber} onChange={(e) => setVehicleForm({ ...vehicleForm, vehicleNumber: e.target.value })} required style={{ width: 160 }} />
                 <select value={vehicleForm.vehicleTypeId} onChange={(e) => setVehicleForm({ ...vehicleForm, vehicleTypeId: e.target.value })} required style={{ width: 260 }}>
                   <option value="">Vehicle Type *</option>
@@ -785,8 +821,17 @@ function GateYardPage() {
         <div style={overlayStyle}>
           <div style={modalStyle}>
             <h3 style={{ marginTop: 0 }}>Register Driver</h3>
+            <p style={{ marginTop: -4, marginBottom: 12, fontSize: 12, color: '#888' }}>
+              Only visible at the warehouse it's registered to — different warehouses can be run by different 3PLs.
+            </p>
             <form onSubmit={handleDriverSubmit}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                <select value={driverForm.warehouseId} onChange={(e) => setDriverForm({ ...driverForm, warehouseId: e.target.value })} required style={{ width: 220 }}>
+                  <option value="">Warehouse *</option>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+                  ))}
+                </select>
                 <input placeholder="Name *" value={driverForm.name} onChange={(e) => setDriverForm({ ...driverForm, name: e.target.value })} required style={{ width: 200 }} />
                 <input placeholder="Phone" value={driverForm.phone} onChange={(e) => setDriverForm({ ...driverForm, phone: e.target.value })} style={{ width: 150 }} />
               </div>

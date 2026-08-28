@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 type Warehouse = { id: string; code: string; name: string };
 type Sku = { id: string; code: string; description: string; category?: { id: string; name: string } };
 type Location = { id: string; code: string; warehouseId: string };
-type Vehicle = { id: string; vehicleNumber: string };
+type Vehicle = { id: string; vehicleNumber: string; warehouseId?: string };
 type DockDoor = { id: string; warehouseId: string; code: string; defaultStagingLocation?: { id: string; code: string } };
 type ReceiptLine = { id: string; sku: Sku; expectedQty: number; receivedQty: number; stagingLocation?: Location };
 type Receipt = {
@@ -519,8 +519,15 @@ function InboundOrdersPage() {
                 required
                 style={{ width: 180 }}
               />
+              {/* Narrowed to the order's own selected Warehouse (2026-08-28
+                  — Vehicle is now warehouse-scoped, a different warehouse's
+                  fleet shouldn't even be offered here as an option) —
+                  privacy is already enforced server-side by what `vehicles`
+                  contains at all (findAll() itself scopes to the caller's
+                  own accessible warehouses), this is just picking the right
+                  one for THIS order among what the caller can see. */}
               <datalist id="vehicle-options">
-                {vehicles.map((v) => (
+                {vehicles.filter((v) => !form.warehouseId || v.warehouseId === form.warehouseId).map((v) => (
                   <option key={v.id} value={v.vehicleNumber} />
                 ))}
               </datalist>

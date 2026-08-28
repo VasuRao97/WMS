@@ -1,15 +1,17 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { assertGateAccessAllowed, companyFilter } from '../common/tenant.util';
+import { assertGateAccessAllowed, companyFilter, gateYardAccessibleWarehouseIds, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
 import { toNumberOrUndefined } from '../common/xlsx-parse.util';
 
 // Registered vehicle master — see schema.prisma's comment on the Vehicle
 // model for the full "register once, reuse" reasoning (2026-08-25 design
-// conversation). Company-scoped, not warehouse-scoped — a vehicle can visit
-// any of a company's warehouses, so every operational role in that company
-// can see/register one (gated via GATE_YARD_* roles in the controller, not
-// MASTER_DATA_* — this is closer to Gate Entry's own access shape than to
-// Warehouse/Customer's).
+// conversation). Was company-scoped, not warehouse-scoped, until 2026-08-28
+// — REVERSED per the client's own real reason: different warehouses under
+// one company can be run by different 3PLs, so one 3PL's fleet showing up
+// to another's staff is a genuine privacy leak, not just noise ("TN08 only
+// should see it"). Now warehouse-scoped the same way Warehouse/Customer/User
+// already are for Manager/Supervisor (GATE_YARD_SCOPED_ROLES here, since
+// registration/edit is still gated by GATE_YARD_* roles, not MASTER_DATA_*).
 @Injectable()
 export class VehiclesService {
   private toDate(v: any): Date | undefined {
@@ -50,6 +52,31 @@ export class VehiclesService {
     if (!vt) errors.push('Vehicle Type not found.');
   }
 
+  // Resolves + validates the home warehouse (2026-08-28) — required on
+  // every new registration going forward (captured from the Gate In form's
+  // already-selected warehouse, no extra picker needed). A scoped role can
+  // only register/reassign to a warehouse they themselves have access to,
+  // same check every other warehouse-scoped write in this codebase runs.
+  private async resolveWarehouseId(warehouseId: any, user: any, errors: string[]): Promise<string | undefined> {
+    if (!warehouseId) {
+      errors.push('Warehouse is required.');
+      return undefined;
+    }
+    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+    if (!warehouse || (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)) {
+      errors.push('Warehouse not found.');
+      return undefined;
+    }
+    if (GATE_YARD_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouseId)) {
+        errors.push('You can only register a vehicle to your own assigned warehouse(s).');
+        return undefined;
+      }
+    }
+    return warehouseId;
+  }
+
   async create(data: any, user: any) {
     await assertGateAccessAllowed(this.prisma, user);
     if (!user.companyId) {
@@ -58,6 +85,7 @@ export class VehiclesService {
     const errors: string[] = [];
     const vehicleNumber = this.validate(data, errors);
     await this.assertVehicleType(data.vehicleTypeId, errors);
+    const warehouseId = await this.resolveWarehouseId(data.warehouseId, user, errors);
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const existing = await this.prisma.vehicle.findUnique({
@@ -68,6 +96,7 @@ export class VehiclesService {
     return this.prisma.vehicle.create({
       data: {
         company: { connect: { id: user.companyId } },
+        warehouse: { connect: { id: warehouseId! } },
         vehicleNumber,
         vehicleType: { connect: { id: data.vehicleTypeId } },
         lengthFt: toNumberOrUndefined(data.lengthFt),
@@ -90,11 +119,32 @@ export class VehiclesService {
     });
   }
 
-  async findAll(user: any) {
+  // warehouseId (2026-08-28) — an explicit filter (e.g. the Gate In form's
+  // own selected warehouse) is checked against the caller's own accessible
+  // set before being trusted, same real-bug-class fix YardService.tracker()
+  // already had to make (a scoped role could otherwise pass a DIFFERENT
+  // warehouse's id and bypass their own restriction entirely). No explicit
+  // id → falls back to the caller's own full accessible set (every
+  // warehouse for Admin, only assignedWarehouses for a scoped role) — same
+  // shape as every other warehouse-scoped findAll in this codebase. A
+  // warehouseId: null row (pre-2026-08-28 legacy data) is only ever visible
+  // to Admin/SuperAdmin — the conservative default, not a fallback to
+  // full visibility, same as Customer's own no-ship-to case.
+  async findAll(user: any, warehouseId?: string) {
     await assertGateAccessAllowed(this.prisma, user);
+    const accessibleIds = await gateYardAccessibleWarehouseIds(this.prisma, user);
+    if (warehouseId && accessibleIds && !accessibleIds.includes(warehouseId)) {
+      throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+    const where: any = { ...companyFilter(user) };
+    if (warehouseId) where.warehouseId = warehouseId;
+    else if (accessibleIds) where.warehouseId = { in: accessibleIds };
     return this.prisma.vehicle.findMany({
-      where: companyFilter(user),
-      include: { vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true, detentionCostPerDay: true } } },
+      where,
+      include: {
+        vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true, detentionCostPerDay: true } },
+        warehouse: { select: { id: true, code: true, name: true } },
+      },
       orderBy: { vehicleNumber: 'asc' },
     });
   }
@@ -107,6 +157,7 @@ export class VehiclesService {
     const vehicles = await this.findAll(user);
     return vehicles.map((v) => ({
       'Vehicle Number': v.vehicleNumber,
+      'Warehouse': (v as any).warehouse?.code ?? '',
       'Vehicle Type': v.vehicleType.name,
       'Segment': v.vehicleType.segment,
       'Max Capacity (Ton)': v.maxTonnage ?? v.vehicleType.maxTonnage,
@@ -128,11 +179,22 @@ export class VehiclesService {
     }));
   }
 
+  // Warehouse-scoped 2026-08-28 (same pattern as DockDoorsService.
+  // assertAccess) — a scoped role can't reach a vehicle outside their own
+  // warehouse(s) just by knowing its id, even though findAll() already
+  // wouldn't have listed it. A null-warehouse legacy row is inaccessible to
+  // a scoped role until an Admin assigns it one.
   private async assertAccess(id: string, user: any) {
     const vehicle = await this.prisma.vehicle.findUnique({ where: { id } });
     if (!vehicle) throw new NotFoundException('Vehicle not found.');
     if (user.role !== 'SUPER_ADMIN' && vehicle.companyId !== user.companyId) {
       throw new ForbiddenException('You do not have access to this vehicle.');
+    }
+    if (GATE_YARD_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!vehicle.warehouseId || !ids.includes(vehicle.warehouseId)) {
+        throw new ForbiddenException('You do not have access to this vehicle.');
+      }
     }
     return vehicle;
   }
@@ -143,6 +205,10 @@ export class VehiclesService {
     const errors: string[] = [];
     const vehicleNumber = this.validate(data, errors);
     await this.assertVehicleType(data.vehicleTypeId, errors);
+    // Also required on edit, same as create — this is deliberately the
+    // fix path for a pre-2026-08-28 legacy row with no warehouse at all
+    // (assertAccess above already lets an Admin reach it regardless).
+    const warehouseId = await this.resolveWarehouseId(data.warehouseId, user, errors);
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const duplicate = await this.prisma.vehicle.findUnique({
@@ -155,6 +221,7 @@ export class VehiclesService {
       data: {
         vehicleNumber,
         vehicleType: { connect: { id: data.vehicleTypeId } },
+        warehouse: { connect: { id: warehouseId! } },
         lengthFt: toNumberOrUndefined(data.lengthFt) ?? null,
         widthFt: toNumberOrUndefined(data.widthFt) ?? null,
         heightFt: toNumberOrUndefined(data.heightFt) ?? null,
