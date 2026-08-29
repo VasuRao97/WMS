@@ -6,8 +6,9 @@ what to pick up next. Updated as priorities shift — last updated 2026-08-29 (a
 on Putaway's bin-suggestion logic found and fixed three real, distinct bugs — a pending-reservation
 blind spot, a lane-fullness preference that took two attempts to get right, and a flank-merging bug
 on mirrored aisles — plus Rack Name display, a Gate In duplicate-vehicle block, a Putaway queue
-filter, and a genuine Delete All for Inbound Orders. See the session note below and the
-`wms-putaway-design` memory for full detail).
+filter, a genuine Delete All for Inbound Orders, and — closing the loop — real printable Code128
+barcode labels for locations. See the session note below and the `wms-putaway-design` memory for full
+detail).
 
 ## Session note (2026-08-29, Putaway live-testing: three real bin-suggestion bugs, plus four smaller items)
 A live-testing session (not a design conversation) working from real screenshots of the actual
@@ -54,6 +55,18 @@ A real process note, worth being honest about: this session had several rounds o
 explicit go-ahead, each one caught and corrected by the client directly — not a one-off, a repeated
 pattern across the same session despite the standing rule being well-established (see
 `[[wms-align-before-coding]]`, updated with this instance).
+
+**Same session, a real follow-up once testing surfaced the next gap**: closing the Putaway loop end-
+to-end raised a genuine question — how do you actually scan a location's destination in production,
+not just by typing the on-screen Rack Name for testing? A short discussion settled it: no new
+schema/table needed (unlike `SkuBarcode`, a location has no externally-sourced multiple-barcode
+problem — we're the only party assigning its identity), just a real printable barcode encoding the
+location's own existing Rack Name. Built as **Location Labels** — `POST /locations/labels` generates
+a downloadable ZIP of individual Code128 PNG barcodes (via `bwip-js`/`archiver`), one per requested
+location, available both right after the range generator (labels for the just-created batch) and as
+a standalone "Download Labels" action on the Table View's already-filtered list. Verified directly
+against real location data — a real ZIP, correctly named files, one barcode visually confirmed as a
+readable Code128 image. See `CLAUDE.md`'s "Location Labels" section for full detail.
 
 ## Session note (2026-08-28, Vehicle/Driver warehouse-scoped visibility — a real reversal)
 Live-testing (not a design conversation) surfaced this: different warehouses under one company can

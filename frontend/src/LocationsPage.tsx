@@ -28,7 +28,7 @@ export type Location = {
   isActive: boolean;
 };
 
-type RowResult = { code?: string; status: 'success' | 'error'; errors?: string[] };
+type RowResult = { id?: string; code?: string; status: 'success' | 'error'; errors?: string[] };
 type BatchSummary = { totalRequested?: number; totalRows?: number; successCount: number; failCount: number; results: RowResult[] };
 
 // Zone Type = what a bin is FOR. Same 14-value list as LocationZoneType in
@@ -455,6 +455,33 @@ function LocationsPage() {
       });
   };
 
+  // Location Labels (2026-08-29) — a ZIP of one Code128 barcode PNG per
+  // location, encoding its Rack Name. Used both right after the range
+  // generator (labels for the just-created batch, see genResult below) and
+  // as a standalone "Download Labels" action on the currently-filtered
+  // Table View list.
+  const [labelsError, setLabelsError] = useState('');
+  const handleDownloadLabels = async (locationIds: string[]) => {
+    setLabelsError('');
+    const res = await fetch('http://localhost:3000/locations/labels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ locationIds }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      setLabelsError(Array.isArray(data?.message) ? data.message.join(' | ') : data?.message || 'Could not generate labels.');
+      return;
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Location_Labels.zip';
+    a.click();
+    window.URL.revokeObjectURL(url);
+  };
+
   const isRack = RACK_STORAGE_TYPES.includes(storageType);
   const isGround = storageType === 'GROUND_FLOOR';
   const isStillage = storageType === 'STILLAGE';
@@ -665,6 +692,17 @@ function LocationsPage() {
             </div>
           </form>
           {genResult && <BatchResultList summary={genResult} totalLabel="locations requested" />}
+          {genResult && genResult.successCount > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                onClick={() => handleDownloadLabels(genResult.results.filter((r) => r.status === 'success' && r.id).map((r) => r.id!))}
+              >
+                Download Labels for {genResult.successCount} generated location(s)
+              </button>
+              {labelsError && <p style={{ color: 'crimson' }}>{labelsError}</p>}
+            </div>
+          )}
         </div>
       )}
 
@@ -825,7 +863,14 @@ function LocationsPage() {
             <span style={{ fontSize: 13, color: '#666' }}>
               Showing {filteredLocations.length} of {locations.length}
             </span>
+            <button
+              type="button" disabled={filteredLocations.length === 0}
+              onClick={() => handleDownloadLabels(filteredLocations.map((l) => l.id))}
+            >
+              Download Labels for {filteredLocations.length} shown
+            </button>
           </div>
+          {labelsError && <p style={{ textAlign: 'center', color: 'crimson' }}>{labelsError}</p>}
 
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>
             <thead>

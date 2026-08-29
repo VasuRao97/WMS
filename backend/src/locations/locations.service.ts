@@ -2,6 +2,9 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
 import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import { displayCode } from '../common/rack-name.util';
+import * as bwipjs from 'bwip-js';
+import { ZipArchive } from 'archiver';
 
 // Function tag (what a bin is FOR) — see schema.prisma's LocationZoneType enum
 // and CLAUDE.md's Locations/Bins design-pass notes for the full reasoning.
@@ -389,7 +392,10 @@ export class LocationsService {
       throw new BadRequestException([`This range would generate ${rows.length} locations in one batch — narrow it down (max ${MAX_GENERATE_BATCH} per generation).`]);
     }
 
-    const results: { code?: string; status: 'success' | 'error'; errors?: string[] }[] = [];
+    // `id` added to a success row 2026-08-29 — Location Labels needs the
+    // real ids of just-generated locations to offer "download labels for
+    // this batch" right after generation, without a second round-trip.
+    const results: { id?: string; code?: string; status: 'success' | 'error'; errors?: string[] }[] = [];
     const codesSeenInBatch = new Set<string>();
     for (const row of rows) {
       const rowData = { ...data, ...row };
@@ -408,7 +414,7 @@ export class LocationsService {
         continue;
       }
       try {
-        await this.prisma.location.create({
+        const created = await this.prisma.location.create({
           data: {
             warehouse: { connect: { id: prepared.warehouseId } },
             code: prepared.code!,
@@ -419,7 +425,7 @@ export class LocationsService {
             ...prepared.fields,
           },
         });
-        results.push({ code: prepared.code, status: 'success' });
+        results.push({ id: created.id, code: prepared.code, status: 'success' });
         codesSeenInBatch.add(prepared.code!);
       } catch (err: any) {
         results.push({ code: prepared.code, status: 'error', errors: [err.message || 'Unknown error'] });
@@ -526,6 +532,65 @@ export class LocationsService {
       orderBy: { code: 'asc' },
     });
     return locations.map((l) => this.attachCapacity(l));
+  }
+
+  // Location Labels (2026-08-29) — a genuine, simple stand-in for a real
+  // barcode: since we're the sole source of a bin's identity (unlike a
+  // SKU, which can have multiple manufacturer-printed barcodes across pack
+  // levels — see SkuBarcode), a location doesn't need its own separate
+  // barcode value at all. This just prints the location's own existing
+  // Rack Name (falling back to the raw `code` for Ground/Stillage) as a
+  // Code128 barcode image — matching the same hardware keyboard-wedge
+  // scanners already used everywhere else in this codebase (Inbound
+  // receiving, SKU barcodes), and exactly the string completeTrip() and
+  // every other Putaway screen already accept. One PNG per location,
+  // zipped — used both right after the range generator (labels for the
+  // just-created batch) and as a standalone reprint action for any
+  // already-existing set of locations. Explicit ids are checked against
+  // the caller's own accessible warehouses, same "don't trust a client-
+  // supplied id blindly" pattern as every other scoped lookup in this
+  // codebase.
+  async buildLabelsZip(locationIds: string[], user: any): Promise<Buffer> {
+    if (!Array.isArray(locationIds) || locationIds.length === 0) {
+      throw new BadRequestException('At least one location id is required.');
+    }
+    if (locationIds.length > MAX_GENERATE_BATCH) {
+      throw new BadRequestException(`Too many locations at once — narrow it down (max ${MAX_GENERATE_BATCH} per label batch).`);
+    }
+    const where: any = { id: { in: locationIds }, warehouse: { ...companyFilter(user) } };
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      where.warehouseId = { in: await ownWarehouseIds(this.prisma, user.userId) };
+    }
+    const locations = await this.prisma.location.findMany({ where });
+    if (locations.length === 0) throw new BadRequestException('None of the given locations were found, or you do not have access to them.');
+
+    return new Promise((resolve, reject) => {
+      const archive = new ZipArchive({ zlib: { level: 9 } });
+      const chunks: Buffer[] = [];
+      archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+      archive.on('error', reject);
+      archive.on('end', () => resolve(Buffer.concat(chunks)));
+
+      const usedFilenames = new Set<string>();
+      Promise.all(
+        locations.map(async (loc: any) => {
+          const text = displayCode(loc);
+          const png = await bwipjs.toBuffer({ bcid: 'code128', text, scale: 3, height: 12, includetext: true, textxalign: 'center' });
+          // Two different locations could share a display label in a
+          // genuinely pathological case (e.g. a legacy row with no
+          // flankNumber falling back to a code that collides after
+          // sanitization) — a numeric suffix keeps the zip from silently
+          // dropping one file for another with the same name.
+          let filename = `${text.replace(/[^A-Za-z0-9_-]/g, '_')}.png`;
+          let n = 2;
+          while (usedFilenames.has(filename)) filename = `${text.replace(/[^A-Za-z0-9_-]/g, '_')}_${n++}.png`;
+          usedFilenames.add(filename);
+          archive.append(png, { name: filename });
+        }),
+      )
+        .then(() => archive.finalize())
+        .catch(reject);
+    });
   }
 
   // One row per Location, columns matching the Excel import exactly — an

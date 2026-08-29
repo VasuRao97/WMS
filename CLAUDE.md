@@ -2757,6 +2757,48 @@ several rounds of coding ahead of explicit go-ahead — not a one-off slip, a re
 the same evening despite the standing rule being well-established and repeatedly reinforced in the
 moment. See `[[wms-align-before-coding]]` in memory, updated with this instance.
 
+### Location Labels — closing the loop on the real barcode gap (2026-08-29, same session)
+Closes the item the Rack Name work above flagged: Putaway's location-scan step accepted a typed Rack
+Name for testing, but there was still no real physical barcode to scan in production. A short design
+conversation first (see `[[wms-putaway-design]]`'s matching entry) settled the key question: does a
+location need its own separate barcode value (a new table, like `SkuBarcode`)? **No** — `SkuBarcode`
+is a child table because a SKU can have multiple *externally*-sourced barcodes (a manufacturer prints
+a different one per pack level, out of our control). A location has no such external source — we're
+the only party that assigns its identity, and it only ever needs one. So there's no new field/table
+at all; this just prints the location's **existing** Rack Name (falling back to the raw `code` for
+Ground/Stillage) as a real Code128 barcode image, matching the same hardware keyboard-wedge scanners
+already used everywhere else in this codebase (Inbound receiving, SKU barcodes).
+
+**`LocationsService.buildLabelsZip(locationIds, user)`** (`POST /locations/labels`,
+`MASTER_DATA_READ_ROLES`-gated like Export — this doesn't mutate data) builds a ZIP of one Code128
+PNG per requested location (via `bwip-js`, zipped via `archiver` v8's newer class-based
+`ZipArchive` API — note this is a real breaking-change rewrite from the classic `archiver('zip')`
+factory function most examples/docs still show). Filenames and encoded barcode content are both the
+location's Rack Name (`R1-01-L05-D2.png`) — exactly what `completeTrip()` already accepts, so
+whatever gets printed and scanned matches what's shown on screen and what the backend checks.
+Explicit ids are checked against the caller's own accessible warehouses, same pattern as every other
+scoped lookup. Capped at `MAX_GENERATE_BATCH` (2000) per call, same limit the range generator uses.
+
+**`buildRackName()` moved out of `PutawayTasksService` into a new shared `common/rack-name.util.ts`**
+once `LocationsService` needed the identical formula — per this codebase's "one function, many
+callers" convention rather than a second hand-typed copy. `PutawayTasksService` now imports it (and
+`RACK_STORAGE_TYPES`) instead of keeping its own private copy; behavior is unchanged, confirmed via a
+full clean Nest restart with zero errors.
+
+**Two entry points, one shared action**: a "Download Labels for N generated location(s)" button
+appears on `LocationsPage.tsx` right after a successful range-generate (`generate()`'s per-row
+success results now also carry the created `id`, not just `code`, so this needs no second round-trip)
+— and a general "Download Labels for N shown" button on the Table View operates on whatever's
+currently visible under the existing Warehouse/Zone Type/Storage Type/search filters, covering
+reprints and older, pre-existing batches too.
+
+Verified by directly invoking the real, unmodified `buildLabelsZip()` against two real locations in
+the live dev DB via a short-lived diagnostic script (same technique as tonight's other fixes): a
+valid ZIP (`PK` header confirmed), exactly 2 files with the correct Rack-Name-derived filenames
+(`R1-01-L05-D2.png`, `R2-01-L05-D2.png`), and one extracted and visually confirmed as a real,
+readable 501×126 Code128 PNG. Both `tsc -b` (frontend) and the Nest watch process (backend) compile
+clean. New dependencies: `bwip-js`, `archiver` (plus `@types/archiver`, `@types/bwip-js`).
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2975,7 +3017,10 @@ pending-reservation blind spot, a lane-fullness preference that took two attempt
 a flank-merging bug on mirrored aisles — plus added human-readable Rack Name display, a Truck No./PO
 Number filter on the task queue, and (same session, on Inbound Orders) a genuine Delete All that
 actually clears ledger data, and (on Gate & Yard) a hard block on gating in a vehicle that already
-has an open entry elsewhere.
+has an open entry elsewhere. **Same session, a real physical barcode for locations now exists** (see
+"Location Labels" above) — no new schema, just a real printable Code128 label per location encoding
+its existing Rack Name, closing the "nothing to actually scan in production" gap the Rack Name work
+itself had flagged.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

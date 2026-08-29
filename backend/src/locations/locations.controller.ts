@@ -78,6 +78,22 @@ export class LocationsController {
     return this.locationsService.findAll(user);
   }
 
+  // Location Labels (2026-08-29) — a ZIP of one Code128 PNG per requested
+  // location, encoding its Rack Name (or raw code as fallback). POST, not
+  // GET, since a real batch of ids is too long for a query string. Read-
+  // gated like Export — this doesn't change any data. See
+  // LocationsService.buildLabelsZip()'s own comment for the full reasoning.
+  @Post('labels')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  async labels(@Body('locationIds') locationIds: string[], @Res() res: Response, @CurrentUser() user: any) {
+    const buffer = await this.locationsService.buildLabelsZip(locationIds, user);
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="Location_Labels.zip"',
+    });
+    res.send(buffer);
+  }
+
   @Get('export')
   @Roles(...MASTER_DATA_READ_ROLES)
   async export(@Res() res: Response, @CurrentUser() user: any) {

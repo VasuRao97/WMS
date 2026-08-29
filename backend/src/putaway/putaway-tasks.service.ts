@@ -1,15 +1,19 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
+import { RACK_STORAGE_TYPES, buildRackName } from '../common/rack-name.util';
 
-// Rack storage types share the LIFO depth constraint (see schema.prisma's
-// comment on Location.depth and [[wms-putaway-design]] in memory) — SPR,
-// Drive-in, and ASRS all use `depth`; the constraint is keyed off whether a
-// given (aisle, rack, level) group actually HAS more than one depth
-// position, never off the storageType label itself (a single-deep SPR bay
-// behaves exactly like a random-access bin; a double-deep SPR bay behaves
-// exactly like a drive-in lane).
-const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+// Rack storage types (imported above) share the LIFO depth constraint (see
+// schema.prisma's comment on Location.depth and [[wms-putaway-design]] in
+// memory) — SPR, Drive-in, and ASRS all use `depth`; the constraint is
+// keyed off whether a given (aisle, rack, level) group actually HAS more
+// than one depth position, never off the storageType label itself (a
+// single-deep SPR bay behaves exactly like a random-access bin; a
+// double-deep SPR bay behaves exactly like a drive-in lane). Also, not
+// coincidentally, the same set of storage types Rack Name applies to
+// (rack-name.util.ts) — pulled into a shared const 2026-08-29 once
+// Location Label generation needed the identical list, rather than a
+// second hand-typed copy.
 
 const TASK_INCLUDE = {
   // receipt.referenceNo (PO Number) and receipt.vehicle.vehicleNumber
@@ -59,22 +63,6 @@ export class PutawayTasksService {
     return RACK_STORAGE_TYPES.includes(loc.storageType) && loc.aisle && loc.rack && loc.level
       ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}|${loc.level}`
       : `single|${loc.id}`;
-  }
-
-  // Human "Rack Name" (R{flank}-{rack}-L{level}[-D{depth}]) — the same
-  // R{flank}-{rack}[-D{depth}] formula LocationsPlanView.tsx already uses
-  // for the Plan View, extended with Level: the Plan View can leave Level
-  // out since it's shown separately as spatial height, but a flat task
-  // list/scan target has no such context, so Level has to be baked into
-  // the string here. Returns null (caller falls back to the raw `code`)
-  // for Ground/Stillage or a legacy row with no flankNumber yet — Rack
-  // Name was only ever built for rack-type storage. 2026-08-29 — see the
-  // client's own "R2, not R01B" correction on TASK_INCLUDE above.
-  private buildRackName(loc: { storageType: string; flankNumber: number | null; rack: string | null; level: string | null; depth: number | null } | null | undefined): string | null {
-    if (!loc || !RACK_STORAGE_TYPES.includes(loc.storageType) || loc.flankNumber == null || !loc.rack || !loc.level) return null;
-    const parts = [`R${loc.flankNumber}`, loc.rack, `L${loc.level}`];
-    if (loc.depth != null) parts.push(`D${loc.depth}`);
-    return parts.join('-');
   }
 
   // "Same age" comparison — see Company.agingGranularity's schema comment.
@@ -550,7 +538,7 @@ export class PutawayTasksService {
     // raw code, so whatever's displayed must be exactly what completes
     // the trip when typed/scanned back.
     const scannedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
-    const rackName = this.buildRackName(scannedLocation as any);
+    const rackName = buildRackName(scannedLocation as any);
     const matches = !!scannedLocation && (scannedLocation.code.toUpperCase() === trimmed || (rackName != null && rackName.toUpperCase() === trimmed));
 
     if (!matches) {
