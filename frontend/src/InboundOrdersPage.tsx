@@ -196,6 +196,7 @@ function InboundOrdersPage() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ totalOrders: number; successCount: number; failCount: number; results: any[] } | null>(null);
+  const [deleteAllResult, setDeleteAllResult] = useState('');
 
   // Dock In (physical condition + seal) — moved here from Gate & Yard,
   // Inbound only (2026-08-27).
@@ -287,6 +288,22 @@ function InboundOrdersPage() {
     setImportResult(data);
     setImporting(false);
     setImportFile(null);
+    load();
+  };
+
+  // Delete All (2026-08-29) — see InboundReceiptsService.removeAll()'s own
+  // comment for why this one genuinely deletes ledger data, unlike every
+  // other Delete All in this app.
+  const handleDeleteAll = async () => {
+    if (!confirm('Permanently delete ALL Inbound orders — including their scans, putaway tasks, and the stock movements they generated? This cannot be undone.')) return;
+    setDeleteAllResult('');
+    const res = await fetch('http://localhost:3000/inbound-receipts/all', { method: 'DELETE', headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) {
+      setDeleteAllResult(`Delete All failed: ${errorText(data, 'Unknown error.')}`);
+      return;
+    }
+    setDeleteAllResult(`Deleted ${data.deletedCount} order(s).`);
     load();
   };
 
@@ -483,7 +500,10 @@ function InboundOrdersPage() {
         <button onClick={handleImport} disabled={!importFile || importing}>
           {importing ? 'Importing...' : 'Import Orders'}
         </button>
+        <button onClick={handleDeleteAll} style={{ color: 'crimson' }}>Delete All</button>
       </div>
+
+      {deleteAllResult && <p style={{ textAlign: 'center' }}>{deleteAllResult}</p>}
 
       {importResult && (
         <div style={{ marginBottom: 24, padding: 12, border: '1px solid #ccc', borderRadius: 8 }}>

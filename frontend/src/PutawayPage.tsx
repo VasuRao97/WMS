@@ -11,16 +11,41 @@ import { useEffect, useState } from 'react';
 // lane rule.
 
 type Warehouse = { id: string; code: string; name: string };
+type LocationRef = { id: string; code: string; storageType?: string; rack?: string | null; level?: string | null; depth?: number | null; flankNumber?: number | null };
 type PutawayTask = {
   id: string;
   sku: { id: string; code: string; description: string };
-  fromLocation: { id: string; code: string };
-  toLocation?: { id: string; code: string } | null;
+  fromLocation: LocationRef;
+  toLocation?: LocationRef | null;
   quantity: number;
   movedQuantity: number;
   status: 'NEEDS_BIN' | 'PENDING' | 'COMPLETED';
   inProgressTrip?: { id: string; quantity: number } | null;
+  // Truck No. / PO Number — added 2026-08-29 for the queue's own filter,
+  // same client-side-filter-over-already-fetched-list pattern
+  // LocationsPage.tsx already uses for its own search row.
+  receiptLine?: { receipt?: { referenceNo?: string | null; vehicle?: { vehicleNumber?: string | null } | null } | null };
 };
+
+// Rack storage types (mirrors backend RACK_STORAGE_TYPES) — only these get
+// a Rack Name; Ground/Stillage fall back to the raw code.
+const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+// Human "Rack Name" (R{flank}-{rack}-L{level}[-D{depth}]) — the same
+// formula LocationsPlanView.tsx uses for the Plan View, extended with
+// Level (the Plan View can leave it out since it shows height spatially;
+// a flat task table can't). 2026-08-29 — the client's own "R2, not R01B"
+// correction, after the task queue and the Plan View showed two different
+// labels for the same bin. Whatever this renders is exactly what the
+// backend's completeTrip() now also accepts at the location-scan step.
+function displayCode(loc?: LocationRef | null): string {
+  if (!loc) return '';
+  if (loc.storageType && RACK_STORAGE_TYPES.includes(loc.storageType) && loc.flankNumber != null && loc.rack && loc.level) {
+    const parts = [`R${loc.flankNumber}`, loc.rack, `L${loc.level}`];
+    if (loc.depth != null) parts.push(`D${loc.depth}`);
+    return parts.join('-');
+  }
+  return loc.code;
+}
 type Trip = { id: string; quantity: number; task: PutawayTask };
 type Exception = {
   id: string;
@@ -52,6 +77,7 @@ function PutawayPage() {
   const user = currentUser();
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [filterWarehouseId, setFilterWarehouseId] = useState('');
+  const [filterSearch, setFilterSearch] = useState('');
   const [tasks, setTasks] = useState<PutawayTask[]>([]);
 
   const [barcode, setBarcode] = useState('');
@@ -83,6 +109,14 @@ function PutawayPage() {
 
   const canRequestException = user?.role === 'WAREHOUSE_MANAGER';
   const canDecideException = user?.role === 'COMPANY_ADMIN';
+
+  const filteredTasks = tasks.filter((t) => {
+    const q = filterSearch.trim().toLowerCase();
+    if (!q) return true;
+    const truckNo = t.receiptLine?.receipt?.vehicle?.vehicleNumber || '';
+    const poNumber = t.receiptLine?.receipt?.referenceNo || '';
+    return truckNo.toLowerCase().includes(q) || poNumber.toLowerCase().includes(q);
+  });
 
   const handleClaim = async () => {
     setScanError('');
@@ -121,7 +155,7 @@ function PutawayPage() {
       setTaskMsg(errorText(data, 'Could not reassign this task.'));
       return;
     }
-    setTaskMsg(data.toLocationId ? `Reassigned to ${data.toLocation?.code}.` : 'No alternative bin found — still Needs Bin.');
+    setTaskMsg(data.toLocationId ? `Reassigned to ${displayCode(data.toLocation)}.` : 'No alternative bin found — still Needs Bin.');
     loadTasks();
   };
 
@@ -173,8 +207,8 @@ function PutawayPage() {
           <div>
             <p>
               <strong>{activeTrip.task.sku.code}</strong> — {activeTrip.task.sku.description} — take{' '}
-              <strong>{Number(activeTrip.quantity)}</strong> from <strong>{activeTrip.task.fromLocation.code}</strong> to{' '}
-              <strong>{activeTrip.task.toLocation?.code}</strong>
+              <strong>{Number(activeTrip.quantity)}</strong> from <strong>{displayCode(activeTrip.task.fromLocation)}</strong> to{' '}
+              <strong>{displayCode(activeTrip.task.toLocation)}</strong>
             </p>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
@@ -192,13 +226,18 @@ function PutawayPage() {
         {scanMsg && <p style={{ color: 'green' }}>{scanMsg}</p>}
       </div>
 
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center' }}>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center', gap: 8 }}>
         <select value={filterWarehouseId} onChange={(e) => setFilterWarehouseId(e.target.value)} style={{ width: 200, padding: 6 }}>
           <option value="">All warehouses</option>
           {warehouses.map((w) => (
             <option key={w.id} value={w.id}>{w.code}</option>
           ))}
         </select>
+        <input
+          placeholder="Filter by Truck No. or PO Number..." value={filterSearch}
+          onChange={(e) => setFilterSearch(e.target.value)}
+          style={{ width: 260, padding: 6 }}
+        />
       </div>
       {taskMsg && <p style={{ textAlign: 'center' }}>{taskMsg}</p>}
 
@@ -206,6 +245,8 @@ function PutawayPage() {
         <thead>
           <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
             <th style={{ padding: 8 }}>SKU</th>
+            <th style={{ padding: 8 }}>Truck No.</th>
+            <th style={{ padding: 8 }}>PO Number</th>
             <th style={{ padding: 8 }}>From</th>
             <th style={{ padding: 8 }}>To</th>
             <th style={{ padding: 8 }}>Qty</th>
@@ -215,11 +256,13 @@ function PutawayPage() {
           </tr>
         </thead>
         <tbody>
-          {tasks.map((t) => (
+          {filteredTasks.map((t) => (
             <tr key={t.id} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
               <td style={{ padding: 8 }}>{t.sku.code}</td>
-              <td style={{ padding: 8 }}>{t.fromLocation.code}</td>
-              <td style={{ padding: 8 }}>{t.toLocation?.code || <span style={{ color: 'crimson' }}>Needs Bin</span>}</td>
+              <td style={{ padding: 8 }}>{t.receiptLine?.receipt?.vehicle?.vehicleNumber || '—'}</td>
+              <td style={{ padding: 8 }}>{t.receiptLine?.receipt?.referenceNo || '—'}</td>
+              <td style={{ padding: 8 }}>{displayCode(t.fromLocation)}</td>
+              <td style={{ padding: 8 }}>{t.toLocation ? displayCode(t.toLocation) : <span style={{ color: 'crimson' }}>Needs Bin</span>}</td>
               <td style={{ padding: 8 }}>{Number(t.quantity)}</td>
               <td style={{ padding: 8 }}>{Number(t.movedQuantity)}</td>
               <td style={{ padding: 8 }}>{STATUS_LABELS[t.status]}</td>
@@ -239,7 +282,9 @@ function PutawayPage() {
           ))}
         </tbody>
       </table>
-      {tasks.length === 0 && <p style={{ textAlign: 'center' }}>No putaway tasks found.</p>}
+      {filteredTasks.length === 0 && (
+        <p style={{ textAlign: 'center' }}>{tasks.length === 0 ? 'No putaway tasks found.' : 'No tasks match this filter.'}</p>
+      )}
 
       {(canRequestException || canDecideException || exceptions.length > 0) && (
         <div style={{ marginTop: 32, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>

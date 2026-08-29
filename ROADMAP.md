@@ -2,14 +2,58 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-28 (Vehicle/Driver
-visibility is now warehouse-scoped, not company-wide — a real data-privacy reversal, see the
-session note below. Also same day: bin suggestion now narrows by `Location.categoryId` too, not
-just the warehouse-level plan; the Putaway trigger-mode Company Settings gap closed; and Putaway's
-core task logic itself was built and live-verified — trigger modes, ABC/multi-deep-lane bin
-suggestion, scan-driven execution, the Multi-SKU Lane Exception workflow. Ground/Stillage's own
-version, cancel/correction paths, and real queue-ordering are still open — see the
-`wms-putaway-design` memory).
+what to pick up next. Updated as priorities shift — last updated 2026-08-29 (a live-testing session
+on Putaway's bin-suggestion logic found and fixed three real, distinct bugs — a pending-reservation
+blind spot, a lane-fullness preference that took two attempts to get right, and a flank-merging bug
+on mirrored aisles — plus Rack Name display, a Gate In duplicate-vehicle block, a Putaway queue
+filter, and a genuine Delete All for Inbound Orders. See the session note below and the
+`wms-putaway-design` memory for full detail).
+
+## Session note (2026-08-29, Putaway live-testing: three real bin-suggestion bugs, plus four smaller items)
+A live-testing session (not a design conversation) working from real screenshots of the actual
+Putaway queue, not a script. Three distinct, real bugs in `suggestBin()` — each one caught by the
+client's own trace through concrete before/after location codes, not guessed at:
+
+1. **Pending-reservation blind spot** — two units of the same SKU, scanned close together (before
+   the first trip physically completed), landed in different levels instead of filling one lane's
+   remaining depths, because the "prefer an already-open same-SKU lane" rule only recognized real
+   completed `StockMovement` rows as "in use," not another still-`PENDING` task's own reservation.
+   Fixed: a bin already the destination of another open task now counts as reserved.
+2. **Lane-fullness preference, fixed twice** — first pass added a "prefer any lane with a compatible
+   occupant, even a different SKU" tier, which fixed 3 different C-class SKUs each opening their own
+   level instead of sharing one lane. But the client's own trace caught a second, subtler gap: exact-
+   SKU-match still unconditionally outranked a *fuller* lane held by a different SKU, so a SKU
+   returning to its own mostly-empty leftover lane could win over joining a lane already 2/3 full.
+   Fixed properly the second time: both tiers replaced with one number — how many positions in the
+   lane are already occupied, by anyone — always preferring the fullest eligible lane. Verified live:
+   3 C-class SKUs correctly landed D3/D2/D1 in one shared lane.
+3. **Flank-merging bug (`laneKeyOf`)** — on a mirrored aisle ("Mirror same numbers on other side" in
+   the generator), `R01` and `R01B` are physically separate racks, but the lane-grouping key only
+   used `(aisle, rack, level)` — since both flanks store the literal rack value `"01"` (the "B" only
+   ever exists in the *display* code), two separate racks were silently merged into one fake 6-deep
+   lane. This is very likely the root explanation for cross-flank ping-ponging seen earlier in the
+   same session too. Fixed: `flankNumber` is now part of the grouping key.
+
+**Also same session**: Putaway's task queue now shows a human "Rack Name" (`R2-01-L05-D3`) instead
+of the raw DB code (`1-R01B-...`) everywhere — matching the Plan View, which already used this
+label — after the client caught the two views showing different labels for the same bin;
+`completeTrip()`'s location-scan step now accepts this same string, since there's still no real
+printable label to scan against. **Gate In now hard-blocks a vehicle that already has an open entry
+elsewhere** — a real gap with zero design/schema before this, company-wide scope (matches the
+existing Inbound-order-per-vehicle precedent), no toggle since it's a physical fact, not a policy
+choice; proven against real pre-existing test data that had already silently hit this exact bug
+twice. **No cancel/void path for a mistaken Gate In exists yet** — flagged, not built, a real gap if
+this block ever traps a genuine data-entry mistake. **Putaway's task queue gained a Truck No. / PO
+Number filter** (plus both as real columns), for finding one vehicle's or order's tasks without
+scrolling. **Inbound Orders gained a genuine Delete All** — deliberately *not* the "block if it has
+real transaction history" shape every other Delete All in this app uses; this one actually deletes
+the `StockMovement` rows an order generated (a first for this otherwise fully append-only ledger),
+confirmed directly with the client first ("only ledger data, not the code").
+
+A real process note, worth being honest about: this session had several rounds of coding ahead of
+explicit go-ahead, each one caught and corrected by the client directly — not a one-off, a repeated
+pattern across the same session despite the standing rule being well-established (see
+`[[wms-align-before-coding]]`, updated with this instance).
 
 ## Session note (2026-08-28, Vehicle/Driver warehouse-scoped visibility — a real reversal)
 Live-testing (not a design conversation) surfaced this: different warehouses under one company can
@@ -108,7 +152,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion, scan-driven staging→bin execution (claim/complete, no override), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal. New standalone "Putaway" page. Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization — see `wms-putaway-design` memory |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter. Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |
@@ -289,17 +333,17 @@ are smaller items raised in earlier sessions — pick any of them, not a forced 
 
 Pick one — these are the live options on the table, not a forced order:
 
-1. **Putaway — core logic built and verified (2026-08-28), trigger-mode settings gap closed and
-   bin suggestion now Location-category-aware, both the same day.** Moves received stock from
-   staging to a real final storage bin, via trigger modes (now Company-Settings-configurable,
-   default IMMEDIATE), ABC/multi-deep-lane-aware bin suggestion (now also narrowed by each rack's
-   own `Location.categoryId` tag when set, falling back to the old warehouse-level-only check when
-   untagged), and a real scan-driven execution flow. Not fully done, though — genuinely open pieces
-   to pick up next: Ground/Stillage's own version of the multi-position logic (racked came first,
-   on purpose), a cancel/exception path for a task that can't be completed, correcting an
-   already-completed mis-putaway, and real queue-ordering/aging-based task prioritization. Also
-   still the natural eventual consumer of `DockLocationDistance` once that has real data to rank
-   bins by.
+1. **Putaway — core logic built and verified (2026-08-28), three bin-suggestion bugs found and
+   fixed via live testing (2026-08-29).** Moves received stock from staging to a real final storage
+   bin, via trigger modes (Company-Settings-configurable, default IMMEDIATE), ABC/multi-deep-lane-
+   aware bin suggestion (now reservation-aware, prefers the fullest eligible lane regardless of
+   which SKU got there first, and correctly treats each flank of a mirrored aisle as its own lane),
+   and a real scan-driven execution flow (now showing/accepting the human "Rack Name" instead of the
+   raw DB code). Not fully done, though — genuinely open pieces to pick up next: Ground/Stillage's
+   own version of the multi-position logic (racked came first, on purpose), a cancel/exception path
+   for a task that can't be completed, correcting an already-completed mis-putaway, and real
+   queue-ordering/aging-based task prioritization. Also still the natural eventual consumer of
+   `DockLocationDistance` once that has real data to rank bins by.
 2. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now (Inbound receiving
    writes to it), but nothing renders it. Even a read-only view would close a real, felt gap.
@@ -317,6 +361,10 @@ Pick one — these are the live options on the table, not a forced order:
    decisions were made. Same spirit as the Locations Plan View. Needs a real spatial-data pass
    first (Dock Doors/Yard Slots have no position/sequence data today) — see the four open questions
    in the session note above before building anything.
+6. **A cancel/void path for a mistaken Gate In** (2026-08-29) — Gate In now hard-blocks a vehicle
+   that already has an open entry elsewhere (a real gap, closed this session), but there's still no
+   way to void a genuinely mistaken entry (wrong vehicle typed, never gated out) — today that would
+   need a manual Gate Out to clear. Flagged, not designed.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 

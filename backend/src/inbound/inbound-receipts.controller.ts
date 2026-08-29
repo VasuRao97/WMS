@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as XLSX from 'xlsx';
 import { InboundReceiptsService } from './inbound-receipts.service';
@@ -89,6 +89,18 @@ export class InboundReceiptsController {
   @Roles(...INBOUND_READ_ROLES)
   findAll(@CurrentUser() user: any) {
     return this.inboundReceiptsService.findAll(user);
+  }
+
+  // Route declared with the literal 'all' segment before ':id' — same
+  // route-ordering rule every other Delete All in this codebase follows
+  // (Nest would otherwise match 'all' as an :id param). COMPANY_ADMIN-only,
+  // same tier as every other Delete All's delete gate. See
+  // InboundReceiptsService.removeAll()'s own comment for why this one
+  // genuinely deletes ledger data, unlike every other Delete All.
+  @Delete('all')
+  @Roles('COMPANY_ADMIN')
+  removeAll(@CurrentUser() user: any) {
+    return this.inboundReceiptsService.removeAll(user);
   }
 
   @Get(':id')

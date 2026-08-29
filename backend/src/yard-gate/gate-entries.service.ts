@@ -206,6 +206,25 @@ export class GateEntriesService {
 
     const vehicleId = await this.resolveVehicle(data.vehicleId, user, errors);
     const driverId = await this.resolveDriver(data.driverId, user, errors);
+    // A vehicle physically can't be in two places at once — hard block,
+    // no per-company toggle (unlike E-Way Bill/yard-full, which are real
+    // policy choices, this is a physical fact). Company-wide, not
+    // per-warehouse — same "one open thing per vehicle at a time" shape
+    // already established for Inbound orders (resolveVehicleForReceipt),
+    // since a vehicle could just as easily be open at a DIFFERENT
+    // warehouse under the same company. 2026-08-29. No cancel/void path
+    // exists for a mistaken Gate In yet — flagged as a separate, real gap
+    // (a stuck bad entry would need a manual Gate Out to clear today),
+    // not built here.
+    if (vehicleId) {
+      const openElsewhere = await this.prisma.vehicleGateEntry.findFirst({
+        where: { vehicleId, gateOutAt: null },
+        select: { id: true, warehouse: { select: { code: true } }, gateInAt: true },
+      });
+      if (openElsewhere) {
+        errors.push(`This vehicle already has an open gate entry at ${openElsewhere.warehouse.code} (since ${openElsewhere.gateInAt.toISOString()}) — gate it out there first.`);
+      }
+    }
 
     const purpose = data.purpose ? normalizeCode(data.purpose) : '';
     if (!purpose) errors.push('Purpose is required.');

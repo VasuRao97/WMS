@@ -12,10 +12,21 @@ import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/
 const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
 
 const TASK_INCLUDE = {
-  receiptLine: { select: { id: true, skuId: true, receiptId: true } },
+  // receipt.referenceNo (PO Number) and receipt.vehicle.vehicleNumber
+  // (Truck No.) added 2026-08-29 so the frontend can filter the task
+  // queue by either — the same client-side-filter-over-already-fetched-
+  // list pattern LocationsPage.tsx already uses.
+  receiptLine: { select: { id: true, skuId: true, receiptId: true, receipt: { select: { referenceNo: true, vehicle: { select: { vehicleNumber: true } } } } } },
   sku: { select: { id: true, code: true, description: true } },
-  fromLocation: { select: { id: true, code: true } },
-  toLocation: { select: { id: true, code: true } },
+  // Extra fields beyond `code` let the frontend build the human "Rack
+  // Name" (R{flank}-{rack}-L{level}[-D{depth}]) instead of the raw DB
+  // code — 2026-08-29, the client's own correction: the Plan View already
+  // showed a bin as "R2-01", but the task queue showed the same bin's raw
+  // code with a "B" suffix instead ("1-R01B-..."), two different labels
+  // for one location. See buildRackName() below and completeTrip(), which
+  // now accepts this same string at the scan step too.
+  fromLocation: { select: { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true } },
+  toLocation: { select: { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true } },
 } as const;
 
 // The Putaway module — see [[wms-putaway-design]] in memory for the full
@@ -34,10 +45,36 @@ export class PutawayTasksService {
   // Bin suggestion
   // ------------------------------------------------------------
 
-  private laneKeyOf(loc: { id: string; storageType: string; aisle: string | null; rack: string | null; level: string | null }): string {
+  // 2026-08-29 fix: flankNumber must be part of the key. On a mirrored
+  // aisle ("Mirror same numbers on other side" in the generator), R01 and
+  // R01B are physically SEPARATE racks facing each other across the
+  // aisle, but both store the literal rack value "01" — the "B" only ever
+  // exists in the display code, never in the `rack` column itself.
+  // Without flankNumber here, R01-L01's 3 depths and R01B-L01's 3 depths
+  // silently merged into one fake 6-deep lane, since (aisle, rack, level)
+  // alone can't tell them apart. Caught via the client's own live
+  // testing — same-SKU consolidation was hopping across the aisle to the
+  // "other side" instead of staying on one physical rack.
+  private laneKeyOf(loc: { id: string; storageType: string; aisle: string | null; rack: string | null; level: string | null; flankNumber: number | null }): string {
     return RACK_STORAGE_TYPES.includes(loc.storageType) && loc.aisle && loc.rack && loc.level
-      ? `${loc.aisle}|${loc.rack}|${loc.level}`
+      ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}|${loc.level}`
       : `single|${loc.id}`;
+  }
+
+  // Human "Rack Name" (R{flank}-{rack}-L{level}[-D{depth}]) — the same
+  // R{flank}-{rack}[-D{depth}] formula LocationsPlanView.tsx already uses
+  // for the Plan View, extended with Level: the Plan View can leave Level
+  // out since it's shown separately as spatial height, but a flat task
+  // list/scan target has no such context, so Level has to be baked into
+  // the string here. Returns null (caller falls back to the raw `code`)
+  // for Ground/Stillage or a legacy row with no flankNumber yet — Rack
+  // Name was only ever built for rack-type storage. 2026-08-29 — see the
+  // client's own "R2, not R01B" correction on TASK_INCLUDE above.
+  private buildRackName(loc: { storageType: string; flankNumber: number | null; rack: string | null; level: string | null; depth: number | null } | null | undefined): string | null {
+    if (!loc || !RACK_STORAGE_TYPES.includes(loc.storageType) || loc.flankNumber == null || !loc.rack || !loc.level) return null;
+    const parts = [`R${loc.flankNumber}`, loc.rack, `L${loc.level}`];
+    if (loc.depth != null) parts.push(`D${loc.depth}`);
+    return parts.join('-');
   }
 
   // "Same age" comparison — see Company.agingGranularity's schema comment.
@@ -112,7 +149,7 @@ export class PutawayTasksService {
         select: { locationId: true, skuId: true, quantity: true, receivedDate: true, createdAt: true },
         orderBy: { createdAt: 'asc' },
       }),
-      tx.putawayTask.findMany({ where: { toLocationId: { in: locationIds }, status: { in: ['PENDING', 'NEEDS_BIN'] } }, select: { toLocationId: true } }),
+      tx.putawayTask.findMany({ where: { toLocationId: { in: locationIds }, status: { in: ['PENDING', 'NEEDS_BIN'] } }, select: { toLocationId: true, skuId: true } }),
       warehouse ? tx.company.findUnique({ where: { id: warehouse.companyId }, select: { agingGranularity: true } }) : null,
       tx.multiSkuLaneException.findFirst({ where: { warehouseId, status: 'APPROVED' } }),
     ]);
@@ -129,6 +166,17 @@ export class PutawayTasksService {
       if (Number(m.quantity) > 0 && m.receivedDate) lastReceivedDateByLocSku.set(key, m.receivedDate);
     }
     const targetedLocationIds = new Set(openTaskTargets.map((t: any) => t.toLocationId).filter(Boolean));
+    // 2026-08-29 fix: a bin already the destination of another still-open
+    // (PENDING/NEEDS_BIN) task is "reserved" for that task's SKU even
+    // before the trip physically completes — the occupant set below must
+    // count this alongside real StockMovement balances, or two units of the
+    // same SKU scanned close together (before the first trip completes)
+    // each see the lane as empty and get suggested into DIFFERENT
+    // lanes/levels instead of continuing to fill the same one's remaining
+    // depths first (the reported bug — confirmed: same-age same-SKU stock
+    // should fill out one lane's D2/D1 before ever opening a new level).
+    const pendingSkuByLocation = new Map<string, string>();
+    for (const t of openTaskTargets) if (t.toLocationId) pendingSkuByLocation.set(t.toLocationId, t.skuId);
 
     // group into lanes
     const lanes = new Map<string, any[]>();
@@ -138,7 +186,7 @@ export class PutawayTasksService {
       lanes.get(key)!.push(loc);
     }
 
-    type Candidate = { locationId: string; sameSku: boolean; flankNumber: number | null };
+    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null };
     const candidates: Candidate[] = [];
 
     for (const laneLocations of lanes.values()) {
@@ -154,6 +202,8 @@ export class PutawayTasksService {
         for (const [key, qty] of balanceByLocSku) {
           if (qty > 0 && key.startsWith(`${loc.id}|`)) occupantSkuIds.add(key.split('|')[1]);
         }
+        const pendingSku = pendingSkuByLocation.get(loc.id);
+        if (pendingSku) occupantSkuIds.add(pendingSku);
       }
 
       let laneEligible = true;
@@ -210,17 +260,43 @@ export class PutawayTasksService {
       );
       if (!target) continue; // lane has no genuinely free position right now (sealed if full, or all free ones excluded/targeted)
 
-      candidates.push({ locationId: target.id, sameSku, flankNumber: target.flankNumber ?? null });
+      // How many of this lane's positions are already occupied (real stock
+      // OR a pending reservation), by ANYONE — used below to prefer
+      // finishing off the fullest eligible lane, not just any lane with
+      // an occupant. 2026-08-29 fix, replacing an earlier two-tier
+      // same-SKU/any-occupant scheme that let "exact same SKU, own mostly-
+      // empty lane elsewhere" wrongly outrank a lane that was already
+      // fuller with a DIFFERENT SKU — caught by the client's own trace: a
+      // lane at 2/3 full should win over a lane at 1/3 full for ANY
+      // eligible incoming SKU, not just that lane's own original tenant.
+      const occupancyCount = laneLocations.filter(
+        (loc: any) => [...balanceByLocSku.keys()].some((k) => k.startsWith(`${loc.id}|`) && (balanceByLocSku.get(k) || 0) > 0) || pendingSkuByLocation.has(loc.id),
+      ).length;
+
+      candidates.push({ locationId: target.id, occupancyCount, flankNumber: target.flankNumber ?? null });
     }
 
     if (candidates.length === 0) return null;
 
-    // Prefer topping up an already-open same-SKU lane; then order by
-    // flankNumber as the distance proxy until DockLocationDistance has
+    // Two-tier preference: (1) prefer the FULLEST eligible lane — most
+    // positions already occupied by anyone, same SKU or a different
+    // compatible one — so a lane sitting at 2/3 full always wins over one
+    // at 1/3 full. This naturally makes same-SKU top-up "win" too (a lane
+    // holding only this SKU has no competition, so it's already the
+    // fullest option for it) without needing a separate same-SKU rule —
+    // and for A-class it collapses back to exactly today's behavior,
+    // since A's maxSkusClassA=1 cap means the only way a lane can have
+    // ANY occupant at all is if it's this exact SKU. (2) otherwise order
+    // by flankNumber as the distance proxy until DockLocationDistance has
     // real data — A-class prefers low (near), C-class prefers high (far),
     // B defaults near same as A (no strong signal either way yet).
+    // 2026-08-29 — the client's own "3 C-class SKUs should share one
+    // lane's 3 depths, not open 3 separate levels" correction, refined a
+    // second time after the client's own trace showed the first fix was
+    // still too coarse (exact-SKU-match beating a fuller different-SKU
+    // lane).
     candidates.sort((a, b) => {
-      if (a.sameSku !== b.sameSku) return a.sameSku ? -1 : 1;
+      if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
       return abcClass === 'C' ? fb - fa : fa - fb;
@@ -467,25 +543,32 @@ export class PutawayTasksService {
     const task = trip.task as any;
     if (!task.toLocationId) throw new BadRequestException('This task has no assigned bin yet.');
 
-    const fromLocation = await this.prisma.location.findUnique({ where: { id: task.fromLocationId }, select: { warehouseId: true } });
     const trimmed = locationCode != null ? String(locationCode).trim().toUpperCase() : '';
-    const scannedLocation = await this.prisma.location.findFirst({ where: { warehouseId: fromLocation!.warehouseId, code: trimmed } });
+    // Match against the task's own destination directly — accepting
+    // EITHER the raw `code` or the human "Rack Name" (buildRackName
+    // above), since 2026-08-29 the task screen shows Rack Name, not the
+    // raw code, so whatever's displayed must be exactly what completes
+    // the trip when typed/scanned back.
+    const scannedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
+    const rackName = this.buildRackName(scannedLocation as any);
+    const matches = !!scannedLocation && (scannedLocation.code.toUpperCase() === trimmed || (rackName != null && rackName.toUpperCase() === trimmed));
 
-    if (!scannedLocation || scannedLocation.id !== task.toLocationId) {
+    if (!matches) {
       throw new BadRequestException(`Wrong location — this must be put away at the assigned bin, not "${trimmed}".`);
     }
+    const targetLocation = scannedLocation!;
 
     const receivedDate = await this.resolveReceivedDate(this.prisma, (await this.prisma.inboundReceiptLine.findUnique({ where: { id: task.receiptLineId }, select: { receiptId: true } }))!.receiptId);
 
     return this.prisma.$transaction(async (tx) => {
       const updatedTrip = await tx.putawayTrip.update({
         where: { id: tripId },
-        data: { status: 'COMPLETED', scannedLocationId: scannedLocation.id, completedAt: new Date() },
+        data: { status: 'COMPLETED', scannedLocationId: targetLocation.id, completedAt: new Date() },
       });
 
       await tx.stockMovement.create({
         data: {
-          warehouseId: scannedLocation.warehouseId,
+          warehouseId: targetLocation.warehouseId,
           skuId: task.skuId,
           locationId: task.fromLocationId,
           quantity: -Number(trip.quantity),
@@ -498,7 +581,7 @@ export class PutawayTasksService {
       });
       await tx.stockMovement.create({
         data: {
-          warehouseId: scannedLocation.warehouseId,
+          warehouseId: targetLocation.warehouseId,
           skuId: task.skuId,
           locationId: task.toLocationId,
           quantity: Number(trip.quantity),

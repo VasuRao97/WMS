@@ -386,6 +386,57 @@ export class InboundReceiptsService {
     return this.prisma.inboundReceipt.findMany({ where, include: RECEIPT_INCLUDE, orderBy: { createdAt: 'desc' } });
   }
 
+  // Delete All (2026-08-29) — deliberately NOT the "block if it has real
+  // transaction history" shape every other master-data Delete All uses
+  // (Warehouse/SKU/Customer/Location/Vehicle/Driver/Equipment). An order
+  // is transactional data, not master data, and the client's own explicit
+  // ask was for a genuine reset button — this actually deletes the
+  // StockMovement rows an order generated too (RECEIPT scans, PUTAWAY_OUT/
+  // PUTAWAY_IN trips), a first for this codebase's otherwise-append-only
+  // ledger. Confirmed directly with the client before building — "only
+  // ledger data, not the code" (i.e. this one cleanup action deleting rows
+  // doesn't change the append-only convention everywhere else). Cascades
+  // through every real child: PutawayReassignment/PutawayTrip/PutawayTask,
+  // InboundReceiptScan/InboundReceiptLine, then the receipt itself. A
+  // linked VehicleGateEntry is NOT deleted (it's its own separate
+  // transaction log) — just unlinked (inboundReceiptId set null), same
+  // "child config gets cleaned up, not blocked on" shape as
+  // WarehousesService.removeAll()'s yardSlots/dockDoors handling.
+  async removeAll(user: any) {
+    const receipts = await this.prisma.inboundReceipt.findMany({ where: { warehouse: { ...companyFilter(user) } }, select: { id: true } });
+    const receiptIds = receipts.map((r) => r.id);
+    if (receiptIds.length === 0) return { deletedCount: 0, blockedCount: 0, blockedCodes: [] };
+
+    const lines = await this.prisma.inboundReceiptLine.findMany({ where: { receiptId: { in: receiptIds } }, select: { id: true } });
+    const lineIds = lines.map((l) => l.id);
+    const scans = await this.prisma.inboundReceiptScan.findMany({ where: { receiptId: { in: receiptIds } }, select: { id: true } });
+    const scanIds = scans.map((s) => s.id);
+    const tasks = await this.prisma.putawayTask.findMany({ where: { receiptLineId: { in: lineIds } }, select: { id: true } });
+    const taskIds = tasks.map((t) => t.id);
+    const trips = await this.prisma.putawayTrip.findMany({ where: { taskId: { in: taskIds } }, select: { id: true } });
+    const tripIds = trips.map((t) => t.id);
+
+    await this.prisma.$transaction([
+      this.prisma.stockMovement.deleteMany({
+        where: {
+          OR: [
+            { referenceType: 'InboundReceiptScan', referenceId: { in: scanIds } },
+            { referenceType: 'PutawayTrip', referenceId: { in: tripIds } },
+          ],
+        },
+      }),
+      this.prisma.putawayReassignment.deleteMany({ where: { taskId: { in: taskIds } } }),
+      this.prisma.putawayTrip.deleteMany({ where: { taskId: { in: taskIds } } }),
+      this.prisma.putawayTask.deleteMany({ where: { id: { in: taskIds } } }),
+      this.prisma.inboundReceiptScan.deleteMany({ where: { receiptId: { in: receiptIds } } }),
+      this.prisma.inboundReceiptLine.deleteMany({ where: { receiptId: { in: receiptIds } } }),
+      this.prisma.vehicleGateEntry.updateMany({ where: { inboundReceiptId: { in: receiptIds } }, data: { inboundReceiptId: null } }),
+      this.prisma.inboundReceipt.deleteMany({ where: { id: { in: receiptIds } } }),
+    ]);
+
+    return { deletedCount: receiptIds.length, blockedCount: 0, blockedCodes: [] };
+  }
+
   async findOne(id: string, user: any) {
     const receipt = await this.prisma.inboundReceipt.findUnique({
       where: { id },

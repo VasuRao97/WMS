@@ -2660,6 +2660,103 @@ Then re-verified live through the actual rendered UI: Register Vehicle's modal s
 Warehouse dropdown; Vehicle & Driver Master's table and filter both correctly showed/narrowed by the
 real saved warehouse for each row.
 
+### Putaway: three real bin-suggestion bugs found via live testing, plus four smaller items (2026-08-29)
+A live-testing session (not a design conversation) — the client worked from real screenshots of the
+actual Putaway task queue, not a synthetic script, and caught three distinct bugs in `suggestBin()`
+(`putaway-tasks.service.ts`) this way, each confirmed via a direct before/after trace through real
+location codes before anything got fixed. See the `wms-putaway-design` memory for the design-history
+angle; this section is the technical detail.
+
+**1. Pending-reservation blind spot.** Two units of the same SKU, scanned close together (before the
+first trip physically completed), landed in different levels instead of continuing to fill one
+lane's remaining depths. Root cause: the "prefer an already-open same-SKU lane" logic only checked
+real, completed `StockMovement` rows for occupancy — a sibling task still sitting at `PENDING` (no
+stock landed yet) was invisible to it. Fixed: `suggestBin()` now also builds a `pendingSkuByLocation`
+map from every other open (`PENDING`/`NEEDS_BIN`) task's own `toLocationId`, and folds those into
+each lane's occupant-SKU set alongside real stock.
+
+**2. Lane-fullness preference — fixed twice.** First pass added a coarse "prefer any lane with a
+compatible occupant, even a different SKU" tier (`hasOccupant: boolean`) — this correctly fixed 3
+different C-class SKUs each opening their own fresh level instead of sharing one lane (their
+mixing cap, `maxSkusClassC`, is unbounded and meant to allow exactly this). But the client's own
+trace caught a second, subtler gap the same evening: "exact same SKU" still unconditionally
+outranked a lane that was already *fuller* but held a *different* SKU — so a SKU with its own
+mostly-empty leftover lane elsewhere (from earlier, pre-fix testing) kept returning there instead of
+joining a lane already 2/3 full. Fixed properly the second time: both the `sameSku` and `hasOccupant`
+tiers were replaced with one number, `occupancyCount` (how many of a lane's positions are already
+occupied, by real stock or a pending reservation, regardless of whose SKU it is), and candidates now
+sort by that descending before falling back to flankNumber. This naturally subsumes the same-SKU case
+too (a lane holding only one SKU has no competition, so it's automatically the fullest option for a
+top-up) without a separate rule, and collapses back to exactly today's A-class behavior on its own
+(A's `maxSkusClassA = 1` cap means the only way a lane can have ANY occupant at all is if it's this
+exact SKU). Verified live: 3 fresh C-class SKUs correctly landed on D3, D2, D1 of one shared lane.
+
+**3. Flank-merging bug (`laneKeyOf`).** On a mirrored aisle (the generator's "Mirror same numbers on
+other side" option), `R01` and `R01B` are physically separate racks facing each other across the
+aisle, but `laneKeyOf()` only grouped locations by `(aisle, rack, level)` — since both flanks store
+the literal rack value `"01"` (the `B` suffix only ever exists in the *display* `code`, never in the
+`rack` column itself), two physically distinct racks were silently merged into one fake 6-deep lane.
+This is the most likely real explanation for the cross-flank ping-ponging seen earlier the same
+session on a same-SKU test, before it was correctly diagnosed. Fixed: `flankNumber` is now part of
+the lane grouping key.
+
+All three were verified by directly invoking the real, unmodified `suggestBin()`/`buildRackName()`
+methods against the live dev DB via short-lived diagnostic scripts (not a rewritten copy of the
+logic, and not just reasoning about it) — including one case that definitively disproved an initial
+wrong hypothesis about a "Request Different Bin" race condition, by re-running the exact same call
+against real data and getting the theoretically-correct answer, proving the earlier bad result was a
+timing artifact from two rapid manual clicks, not a logic bug.
+
+**Also this session:**
+- **Rack Name display.** The task queue used to show the raw DB `code` (`1-R01B-L05-B1-D3`), while
+  the Plan View already showed the same bin as `R2-01`. The client caught this as two different
+  labels for one location and asked for consistency. New `buildRackName()` (backend, `putaway-
+  tasks.service.ts`) and `displayCode()` (frontend, `PutawayPage.tsx`, duplicated per this
+  codebase's no-shared-component convention) both implement `R{flank}-{rack}-L{level}[-D{depth}]` —
+  the same formula `LocationsPlanView.tsx` already uses for the Plan View, extended with Level (the
+  Plan View can omit it since it shows height spatially; a flat task table can't). `TASK_INCLUDE`
+  now selects the extra location fields (`storageType`/`rack`/`level`/`depth`/`flankNumber`) needed
+  to build it. `completeTrip()`'s location-scan step now accepts EITHER the raw code or this Rack
+  Name — since this is what's shown on screen, and there's still no real printable location label
+  (see ROADMAP's "Print Location Labels" candidate), whatever's displayed has to be what actually
+  completes the trip when typed back.
+- **Gate In duplicate-vehicle block.** A real, previously-unchecked gap: nothing stopped gating in a
+  vehicle that already had an open (not yet Gated Out) entry elsewhere — physically impossible, but
+  unguarded. `GateEntriesService.create()` now checks `vehicleGateEntry.findFirst({ vehicleId,
+  gateOutAt: null })` right after resolving the vehicle, and hard-blocks with a message naming the
+  existing entry's warehouse and gate-in time. Deliberately no per-company toggle (unlike E-Way
+  Bill/yard-full, this is a physical fact, not a policy choice) and deliberately company-wide, not
+  per-warehouse — same "one open thing per vehicle at a time" shape already established for Inbound
+  orders (`resolveVehicleForReceipt`), since a vehicle could just as easily be open at a *different*
+  warehouse under the same company. Verified against real pre-existing data: the exact test company
+  already had two open entries for the same vehicle number, sitting there from before this fix
+  existed — real proof this was a live, already-triggered gap, not a hypothetical. **No cancel/void
+  path exists for a mistaken Gate In** — flagged, not built; today a stuck bad entry needs a manual
+  Gate Out to clear.
+- **Putaway queue filter.** New Truck No. / PO Number search box on `PutawayPage.tsx`'s task table,
+  plus both as real columns (not just filter-only). `TASK_INCLUDE` now pulls
+  `receiptLine.receipt.referenceNo` and `receiptLine.receipt.vehicle.vehicleNumber` through; filtering
+  is client-side over the already-fetched list, same pattern `LocationsPage.tsx` already uses for its
+  own search row.
+- **Inbound Orders: a genuine Delete All.** Deliberately NOT the "block if it has real transaction
+  history" shape every other Delete All in this app uses (Warehouse/SKU/Customer/Location/Vehicle/
+  Driver/Equipment) — an order is transactional data, not master data, and the client's own explicit
+  ask was for a real reset button. `InboundReceiptsService.removeAll()` (`DELETE /inbound-receipts/
+  all`, `COMPANY_ADMIN`-only) cascades through every real child — `PutawayReassignment`/
+  `PutawayTrip`/`PutawayTask`, `InboundReceiptScan`/`InboundReceiptLine` — and, a first for this
+  codebase's otherwise fully append-only ledger, the actual `StockMovement` rows an order generated
+  (`RECEIPT` movements via `referenceType: 'InboundReceiptScan'`, `PUTAWAY_OUT`/`PUTAWAY_IN` via
+  `referenceType: 'PutawayTrip'`). A linked `VehicleGateEntry` is NOT deleted (it's its own separate
+  transaction log) — just unlinked (`inboundReceiptId` set null). Confirmed directly with the client
+  before building, given how significant deleting ledger rows is for this codebase — "only ledger
+  data, not the code." Compiles clean on both sides; not smoke-tested against real/throwaway data by
+  this session (same standing rule as every other Delete All — the client runs it themselves).
+
+**A real process note, worth recording honestly rather than glossing over**: this session had
+several rounds of coding ahead of explicit go-ahead — not a one-off slip, a repeated pattern across
+the same evening despite the standing rule being well-established and repeatedly reinforced in the
+moment. See `[[wms-align-before-coding]]` in memory, updated with this instance.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -2872,7 +2969,13 @@ revoke workflow, and the receipt-level `PUTAWAY_COMPLETE` signal are all built o
 "Putaway" page. Ground/Stillage's own version of the multi-position logic, a cancel path for an
 undoable task, correcting an already-completed mis-putaway, and real queue-ordering/aging-based
 prioritization are all explicitly not built yet — see the `wms-putaway-design` memory for the exact
-open list.
+open list. **A live-testing pass (2026-08-29, see "Putaway: three real bin-suggestion bugs found via
+live testing" above) found and fixed three real bugs in the bin-suggestion algorithm itself** — a
+pending-reservation blind spot, a lane-fullness preference that took two attempts to get right, and
+a flank-merging bug on mirrored aisles — plus added human-readable Rack Name display, a Truck No./PO
+Number filter on the task queue, and (same session, on Inbound Orders) a genuine Delete All that
+actually clears ledger data, and (on Gate & Yard) a hard block on gating in a vehicle that already
+has an open entry elsewhere.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
