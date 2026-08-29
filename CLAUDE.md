@@ -2923,7 +2923,77 @@ lane in the test warehouse); SKU A's own further top-up into the same lane still
 unaffected; once A's line was completed (receivedQty bumped to 3 and A's 2nd unit actually recorded
 as a real `StockMovement`, matching what a real completed trip would look like) SKU B was correctly
 allowed into the lane's last remaining position. `tsc --noEmit` clean, full clean Nest restart with
-zero errors.
+zero errors. Both the B-class and a follow-up C-class-specific re-run (same technique, C's mixing cap
+is unbounded so this proves the "still incoming" check itself is doing the protecting, not the cap)
+passed — the client's original scenario used C-class specifically ("if that vehicle contains more
+than one level full of a C class sku"), so this second pass closed the loop with a concrete case
+matching exactly what was asked, not just the B-class stand-in used to work out the design.
+
+### Insights module — Storage Utilization by ABC Class (2026-08-29, same session)
+A new, deliberately standalone reporting page — the client's own framing when asked where this
+should live: not a card bolted onto an existing page, but the start of a real "Insights" destination
+meant to surface storage-strategy decisions ("if the utilization of A is very poor... it will allow
+us to tell clients valuable insights"), not just a debug aid. First (and so far only) report: of the
+rack-storage lanes actually holding stock for a given ABC class, how much of that lane's total depth
+is genuinely occupied.
+
+**Definition, confirmed in conversation, point by point**:
+- A lane counts toward Class X only if it currently holds real on-hand stock (an actual positive
+  `StockMovement` balance, not a pending task reservation — this is a physical-state snapshot, not a
+  planning view) from at least one Class-X SKU. A completely empty lane (nothing at all) is excluded
+  entirely from every class's totals, not counted as 0% under any of them — "if a lane doesn't have
+  anything, currently exclude it."
+- Scoped to rack storage types only (SPR/Drive-in/ASRS) — the exact same location universe
+  `suggestBin()` itself considers (`zoneType: ACTUAL_STORAGE`, `storageType` in `RACK_STORAGE_TYPES`,
+  active). Ground/Floor and Stillage are excluded — they have no lane/depth model, and their own
+  Putaway logic is still deferred (see the open list in `[[wms-putaway-design]]`).
+- Per warehouse, not a company-wide rollup — matches every other report in this app.
+- An unclassified SKU (`abcClass` null) counts as Class C, same convention `suggestBin()` already
+  uses everywhere else ("unclassified defaults to C").
+- A lane spanning more than one ABC class (only possible via an active `MultiSkuLaneException`
+  bypass — genuinely rare) counts its bins under *every* class actually present, a known, explicitly
+  flagged v1 simplification ("not yet," the client's own call) rather than a separate "mixed" bucket
+  — can very slightly double-count totals in that one rare scenario, not fixed now.
+
+**`laneKeyOf()` was pulled out of `PutawayTasksService` into the shared `common/rack-name.util.ts`**
+(alongside `RACK_STORAGE_TYPES`/`buildRackName`, which already lived there) once `InsightsService`
+needed the exact same lane-grouping logic `suggestBin()` uses — per this codebase's "one function,
+many callers" convention rather than a second hand-typed copy. `PutawayTasksService` now imports it
+instead of keeping its own private method; behavior is unchanged, confirmed via a clean Nest restart.
+
+**Backend**: new `insights/` module (`InsightsController`/`Service`) — `GET
+/insights/storage-utilization?warehouseId=X`, gated `MASTER_DATA_READ_ROLES` (Company Admin/Warehouse
+Manager/Warehouse Supervisor, matching the client's explicit answer) — an explicit `warehouseId` is
+checked against the caller's own accessible warehouses before being trusted, same pattern
+`YardService.tracker()` and Vehicle/DriverService already had to adopt after their own real bugs.
+Computation: group the warehouse's eligible locations into lanes, compute current on-hand occupancy
+per location (grouped `StockMovement` sums, same "always derive, never store an occupancy flag"
+philosophy as everywhere else), skip any lane with zero real occupants, classify each remaining lane
+by its occupants' `abcClass`, and sum `lanesUsed`/`binsAllotted` (total locations across those lanes)
+/`binsUsed` (occupied ones) per class — `utilizationPct` is `null` (not `0`) when a class has no
+active lanes at all, so the frontend can show "—" rather than a misleading 0%.
+
+**Frontend**: new standalone `InsightsPage.tsx`, wired into `App.tsx` as a top-level "Insights" tab
+positioned right next to Gate & Yard (the client's explicit placement call), gated client-side by the
+same role tier as the backend. A Warehouse picker (reusing the already-fetched `GET /warehouses`
+list) plus three stat-cards — one per class, colour-coded (A green / B blue / C purple) — showing the
+utilization % prominently with the raw bins-used/bins-allotted/lanes-used counts underneath, "—" for
+a class with no active lanes. No table/drill-down in v1, per the client's own confirmed scope — easy
+to add later if the blended per-class number alone isn't enough.
+
+Verified two ways. A short-lived diagnostic script (created, run, left in place rather than deleted
+so the same data could be checked live in the browser afterward) built a real 3-lane scenario against
+the live dev DB directly through the real, unmodified `InsightsService.storageUtilization()`: Lane 1
+(A-class, 1 of 3 depths occupied) → expected/confirmed exactly 33.3%; Lane 2 (two different C-class
+SKUs sharing all 3 depths) → expected/confirmed exactly 100%; Lane 3 (completely empty) → confirmed
+absent from every class's totals entirely, not a 0% row; Class B (no B-class stock anywhere) →
+confirmed `lanesUsed: 0`, `utilizationPct: null`. Then re-verified live through the actual rendered
+UI (logged in via the API+localStorage token trick against the SAME real registered company/admin
+this script's data belonged to, not a synthetic one) — clicked the real "Insights" nav button
+(confirmed positioned next to Gate & Yard), selected the real warehouse from the picker, and
+confirmed the three stat-cards rendered the exact same numbers the script computed: Class A 33.3% (1
+of 3 bins, across 1 lane), Class B "—" (No B-class lanes in use), Class C 100% (3 of 3 bins, across 1
+lane). `tsc -b` (frontend) and `tsc --noEmit` (backend) both clean.
 
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components

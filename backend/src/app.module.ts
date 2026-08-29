@@ -20,6 +20,7 @@ import { InboundModule } from './inbound/inbound.module';
 import { EquipmentTypesModule } from './equipment-types/equipment-types.module';
 import { EquipmentModule } from './equipment/equipment.module';
 import { PutawayModule } from './putaway/putaway.module';
+import { InsightsModule } from './insights/insights.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { PutawayModule } from './putaway/putaway.module';
     EquipmentTypesModule,
     EquipmentModule,
     PutawayModule,
+    InsightsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
-import { RACK_STORAGE_TYPES, buildRackName } from '../common/rack-name.util';
+import { RACK_STORAGE_TYPES, buildRackName, laneKeyOf } from '../common/rack-name.util';
 
 // Rack storage types (imported above) share the LIFO depth constraint (see
 // schema.prisma's comment on Location.depth and [[wms-putaway-design]] in
@@ -48,22 +48,6 @@ export class PutawayTasksService {
   // ------------------------------------------------------------
   // Bin suggestion
   // ------------------------------------------------------------
-
-  // 2026-08-29 fix: flankNumber must be part of the key. On a mirrored
-  // aisle ("Mirror same numbers on other side" in the generator), R01 and
-  // R01B are physically SEPARATE racks facing each other across the
-  // aisle, but both store the literal rack value "01" — the "B" only ever
-  // exists in the display code, never in the `rack` column itself.
-  // Without flankNumber here, R01-L01's 3 depths and R01B-L01's 3 depths
-  // silently merged into one fake 6-deep lane, since (aisle, rack, level)
-  // alone can't tell them apart. Caught via the client's own live
-  // testing — same-SKU consolidation was hopping across the aisle to the
-  // "other side" instead of staying on one physical rack.
-  private laneKeyOf(loc: { id: string; storageType: string; aisle: string | null; rack: string | null; level: string | null; flankNumber: number | null }): string {
-    return RACK_STORAGE_TYPES.includes(loc.storageType) && loc.aisle && loc.rack && loc.level
-      ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}|${loc.level}`
-      : `single|${loc.id}`;
-  }
 
   // "Same age" comparison — see Company.agingGranularity's schema comment.
   // Null granularity (nothing configured) means exact-match-only, the safe
@@ -216,7 +200,7 @@ export class PutawayTasksService {
     // group into lanes
     const lanes = new Map<string, any[]>();
     for (const loc of locations) {
-      const key = this.laneKeyOf(loc);
+      const key = laneKeyOf(loc);
       if (!lanes.has(key)) lanes.set(key, []);
       lanes.get(key)!.push(loc);
     }

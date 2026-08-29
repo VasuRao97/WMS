@@ -12,6 +12,7 @@ import InboundOrdersPage from './InboundOrdersPage';
 import DockDoorsPage from './DockDoorsPage';
 import EquipmentPage from './EquipmentPage';
 import PutawayPage from './PutawayPage';
+import InsightsPage from './InsightsPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -19,8 +20,13 @@ import PutawayPage from './PutawayPage';
 // access to the other master-data tabs — it's the one exception, needed to
 // manage the OPERATOR accounts under it.
 const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR'];
+// Same tier as InsightsController's own @Roles() gate on the backend
+// (MASTER_DATA_READ_ROLES) — Operator/Security Supervisor excluded, same
+// "zero visibility, surface is a task screen" reasoning as every other
+// master-data-tier read.
+const CAN_VIEW_INSIGHTS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -110,6 +116,11 @@ function App() {
         <button onClick={() => setTab('gateyard')} style={{ fontWeight: tab === 'gateyard' ? 'bold' : 'normal' }}>
           Gate &amp; Yard
         </button>
+        {CAN_VIEW_INSIGHTS.includes(user?.role) && (
+          <button onClick={() => setTab('insights')} style={{ fontWeight: tab === 'insights' ? 'bold' : 'normal' }}>
+            Insights
+          </button>
+        )}
         <button onClick={() => setTab('inboundorders')} style={{ fontWeight: tab === 'inboundorders' ? 'bold' : 'normal' }}>
           Inbound Orders
         </button>
@@ -144,6 +155,8 @@ function App() {
         <EquipmentPage />
       ) : tab === 'putaway' ? (
         <PutawayPage />
+      ) : tab === 'insights' ? (
+        <InsightsPage />
       ) : tab === 'companysettings' ? (
         <CompanySettingsPage />
       ) : tab === 'inboundorders' ? (

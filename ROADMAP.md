@@ -3,12 +3,41 @@
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
 what to pick up next. Updated as priorities shift — last updated 2026-08-29 (hardening-phase session,
-continued: after the aging-granularity fix, a client-raised scenario ("a large SKU mid-delivery
-getting fragmented by a smaller SKU interleaving") led to a real fix — a "still incoming" lane
-reservation for Class B & C in `suggestBin()`. Two related items came out of the same conversation
-and were explicitly flagged, NOT built: a self-exclusion cap bug, and `maxSkusClassA/B/C` being a
-completely dead/unwired field the client wants made client-configurable. See the session notes below
-and the `wms-putaway-design` memory for full detail).
+continued twice more: (1) the "still incoming" lane reservation for Class B & C, closing a real
+fragmentation gap; (2) a brand-new **Insights** page — the first of what's meant to be a real
+reporting section, not a one-off — with its first report, Storage Utilization by ABC Class, showing
+how much of a class's actively-used lane space is genuinely occupied vs. wasted. Two related items
+from the "still incoming" work were explicitly flagged, NOT built: a self-exclusion cap bug (worked
+around via a default change, not truly fixed), and `maxSkusClassA/B/C` being a completely dead/
+unwired field the client wants made client-configurable. See the session notes below and the
+`wms-putaway-design` memory for full detail).
+
+## Session note (2026-08-29, same hardening-phase session — new Insights page, Storage Utilization by ABC Class)
+A genuinely new feature, not a hardening fix — but a small, deliberately scoped one, worked out via
+several rounds of "let's discuss" before any code (per the standing rule). The client's own framing:
+"we need to understand utilization of A/B/C storage, this will make us change our storage strategy...
+it will allow us to tell clients valuable insights" — directly connects to the same-session's earlier
+fixes (A/B's exclusivity and C's "still incoming" reservation are exactly what determines how much
+space goes unused). First report: for each ABC class, of the rack-storage lanes currently holding
+that class's stock, how many of those lanes' total bins are actually occupied.
+
+**Confirmed shape**: real on-hand stock only (not pending reservations) decides which lanes count;
+a completely empty lane is excluded entirely, not shown as 0%; rack storage only (SPR/Drive-in/
+ASRS, the same universe `suggestBin()` itself uses); per warehouse, no company-wide rollup yet; an
+unclassified SKU counts as Class C (matching existing convention); a rare mixed-class lane (only
+possible via an active `MultiSkuLaneException`) counts under every class present — a known v1
+simplification, not fixed properly. New standalone top-level "Insights" nav tab, positioned next to
+Gate & Yard per the client's explicit call, gated to Company Admin/Warehouse Manager/Warehouse
+Supervisor. A Warehouse picker plus three colour-coded stat-cards (A/B/C) — no table/drill-down in
+v1.
+
+Verified two ways: a short-lived diagnostic script built a real 3-lane scenario directly against the
+live dev DB (an A-class lane 1-of-3 full → confirmed 33.3%; a C-class lane shared by two different
+SKUs, 3-of-3 full → confirmed 100%; a genuinely empty lane → confirmed absent from every total, not
+a 0% row), then the exact same real data was checked live through the actual rendered UI (logged in
+via the API+localStorage token trick), confirming all three numbers matched exactly. `tsc -b`/`tsc
+--noEmit` both clean. Full detail in `CLAUDE.md`'s "Insights module — Storage Utilization by ABC
+Class" section.
 
 ## Session note (2026-08-29, same hardening-phase session — "still incoming" lane reservation for Class B & C)
 Follow-up to the aging-granularity fix below, same session. The client raised a scenario directly:
@@ -240,7 +269,7 @@ Returns → Analytics
 | Picking | ⬜ Not started |
 | Dispatch | ⬜ Not started |
 | Returns | ⬜ Not started |
-| Analytics | ⬜ Not started (deliberately last, built on top of everything else) |
+| Analytics | ⬜ Not started (deliberately last, built on top of everything else) — a new, separate **Insights** page (2026-08-29) started ahead of this, with one report (Storage Utilization by ABC Class); not the same as the eventual full Analytics module, but the first real reporting surface this app has |
 
 ## Session note (2026-08-27, Inbound deep-dive)
 Rather than starting the next module, this session went deeper into Inbound per your own ask.
