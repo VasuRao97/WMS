@@ -616,6 +616,11 @@ export class LocationsService {
       'Width': l.width ?? '',
       'Height': l.height ?? '',
       'Code': l.code,
+      // The same string Location Labels prints/scans (Rack Name, falling
+      // back to the raw code for Ground/Stillage) — 2026-08-29, so an
+      // exported sheet can be cross-referenced against physical labels
+      // without a separate lookup.
+      'Barcode': displayCode(l),
       'Capacity': l.capacity ?? '',
       'Active': l.isActive ? 'TRUE' : 'FALSE',
     }));

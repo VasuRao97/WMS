@@ -520,6 +520,7 @@ function LocationsPage() {
         <button type="button" onClick={() => setShowGenerator(!showGenerator)}>
           {showGenerator ? '▾ Hide range generator' : '▸ Generate a range of Locations'}
         </button>
+        <button onClick={handleExport}>Export to Excel</button>
       </div>
 
       {deleteAllResult && <p style={{ marginTop: -8, marginBottom: 16, textAlign: 'center' }}>{deleteAllResult}</p>}
@@ -546,7 +547,6 @@ function LocationsPage() {
             <button onClick={handleImport} disabled={!importFile || importing}>
               {importing ? 'Importing...' : 'Import'}
             </button>
-            <button onClick={handleExport}>Export to Excel</button>
           </div>
           {importResult && <BatchResultList summary={importResult} totalLabel="rows" />}
         </div>
