@@ -2,13 +2,82 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-29 (a live-testing session
-on Putaway's bin-suggestion logic found and fixed three real, distinct bugs — a pending-reservation
-blind spot, a lane-fullness preference that took two attempts to get right, and a flank-merging bug
-on mirrored aisles — plus Rack Name display, a Gate In duplicate-vehicle block, a Putaway queue
-filter, a genuine Delete All for Inbound Orders, and — closing the loop — real printable Code128
-barcode labels for locations. See the session note below and the `wms-putaway-design` memory for full
-detail).
+what to pick up next. Updated as priorities shift — last updated 2026-08-29 (hardening-phase session,
+continued: after the aging-granularity fix, a client-raised scenario ("a large SKU mid-delivery
+getting fragmented by a smaller SKU interleaving") led to a real fix — a "still incoming" lane
+reservation for Class B & C in `suggestBin()`. Two related items came out of the same conversation
+and were explicitly flagged, NOT built: a self-exclusion cap bug, and `maxSkusClassA/B/C` being a
+completely dead/unwired field the client wants made client-configurable. See the session notes below
+and the `wms-putaway-design` memory for full detail).
+
+## Session note (2026-08-29, same hardening-phase session — "still incoming" lane reservation for Class B & C)
+Follow-up to the aging-granularity fix below, same session. The client raised a scenario directly:
+"if a vehicle contains more than one level full of a C-class SKU, those depths should be assigned for
+them only" — worked through via a concrete worked example first (per the client's own "let's make an
+example and discuss" ask) before any code, which surfaced the real mechanism needed:
+
+- **The gap**: `suggestBin()`'s "prefer the fullest lane" rule has never distinguished "this lane's
+  occupant still has more of itself coming off the vehicle" from "this lane's occupant is done and
+  just sitting there." A large SKU (needing e.g. 3 depths) can get fragmented across two lanes if a
+  smaller, unrelated SKU happens to arrive in between and gets funneled into the same lane.
+- **The fix**: before letting a different SKU share a lane, check whether any current occupant SKU
+  still has `receivedQty < expectedQty` on any `InboundReceiptLine` — if so, the lane is off-limits to
+  any other SKU, overriding `maxSkusClass*` entirely. Reopens the instant that occupant's line
+  completes. No new schema — reuses data Inbound receiving already writes. The client's own framing,
+  "keep it at a vehicle level check itself, that's enough," is exactly what made this simple — no
+  order-profile modeling needed, `InboundReceiptLine` already has the answer.
+- **Scope, confirmed by tracing each class**: Class A needs nothing (its cap of 1 already locks a
+  lane permanently, this rule is redundant there); Class B and C both get it — the client's explicit
+  call, "B also keep 2 as same" (the cap number itself unchanged) "but... can we keep that as a
+  toggle" (see the dead-field finding below).
+
+**Follow-up decision, same session, minutes later**: the client resolved the self-exclusion bug
+question — rather than fixing the underlying "exclude myself from the occupant count" logic now,
+`WarehouseStorageType.maxSkusClassB`'s default was dropped from 2 to 1 (matching Class A's full
+exclusivity) as a deliberate interim workaround: with cap=1, a B-class lane can never hold two
+distinct SKUs in the first place, so the bug's trigger condition (a lane whose cap allows >1 SKU)
+never arises. Migration `20260829110000_max_skus_class_b_default_one` — only affects a **newly
+created** `WarehouseStorageType` row, same "no backfill, no real client tenant yet" pattern as this
+project's other default-only changes. Verified via a throwaway warehouse: a fresh SPR storage-type
+row now reads `maxSkusClassA: 1, maxSkusClassB: 1, maxSkusClassC: null`. **Two items explicitly
+deferred, not built** — see the Deferred section below:
+1. The general self-exclusion cap-logic fix itself (needed once B, or any future class, gets a cap
+   above 1 again).
+2. **`WarehouseStorageType.maxSkusClassA/B/C` is still a completely dead field** — same shape
+   `agingGranularity` was in before this session's first fix, but bigger: `WarehouseStorageType` rows
+   have no edit path at all today (only ever created, never updated), so exposing this needs a real
+   scope decision (create-time-only, or build a first-ever edit capability).
+
+Verified live against the real dev DB via a short-lived diagnostic script (created, run, deleted) —
+a B-class scenario matching the worked example exactly, all 3 steps passing (a different SKU blocked
+while the occupant is still incoming; the occupant's own top-up unaffected; the different SKU
+correctly allowed in once the occupant's line completes). Full detail in `CLAUDE.md`'s "Putaway:
+'still incoming' lane reservation for Class B & C" section.
+
+## Session note (2026-08-29, next session — hardening phase begins: aging-granularity default + per-warehouse Settings UI)
+First session run under the new "no new modules, fix what's already built" direction (see
+`[[wms-hardening-phase]]`). Investigated a specific scenario raised directly: SKU unloaded in the
+morning fills 2 of a 3-deep lane's depths — does the system suggest the 3rd depth for the same SKU
+received that evening? Traced through the real `suggestBin()` code (not guessed): no — the same-SKU
+top-up rule's aging check defaulted to requiring an exact-millisecond `receivedDate` match (since
+`Company.agingGranularity` had existed since 2026-08-28 but was never wired to any UI/API anywhere,
+every company was silently stuck on this). Fixed in two steps, both confirmed with the client before
+building:
+1. **Default to same-calendar-day**, not exact-millisecond — "same calendar day would do... too much
+   check" for exact-match. One-line fix; the `DAY` bucket logic already existed and was already
+   correct, just never used as the fallback. Verified live against the real dev DB via a short-lived
+   diagnostic script.
+2. **Moved `agingGranularity` from `Company` to `Warehouse`**, once the client pointed out it isn't
+   really a company-wide fact — "depends on the node the granularity might be different," same
+   reasoning behind `WarehouseEquipmentSuitability` being warehouse-scoped. New migration, and a
+   real Settings UI finally exists for this field for the first time: a per-warehouse "Aging
+   Methodology" (Day/Week/Month) control on Company Settings' Putaway section — a warehouse picker +
+   dropdown + Save, since there's no general Warehouse Edit form to hang this off instead. Verified
+   end-to-end through the actual rendered UI (two real throwaway warehouses, saved one to Month,
+   reloaded the page, confirmed via the live DOM the correct value came back).
+
+Full technical detail in `CLAUDE.md`'s "Putaway: aging-granularity default fixed, then moved to
+Warehouse with a real Settings UI" section.
 
 ## Session note (2026-08-29, Putaway live-testing: three real bin-suggestion bugs, plus four smaller items)
 A live-testing session (not a design conversation) working from real screenshots of the actual
@@ -381,6 +450,17 @@ Pick one — these are the live options on the table, not a forced order:
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 
+- **Putaway's self-exclusion cap bug** (`suggestBin()`, 2026-08-29) — a SKU already occupying a
+  multi-SKU lane can get wrongly blocked from its own lane's last empty depth once the lane hits its
+  distinct-SKU cap, since the eligibility check doesn't exclude "myself" from the occupant count.
+  Currently side-stepped, not fixed — `maxSkusClassB`'s default was dropped to 1 (see this date's
+  session note) so the bug's trigger condition (a cap > 1) never arises today. Revisit the real fix
+  once a class needs a cap above 1 again.
+- **`WarehouseStorageType.maxSkusClassA/B/C` is a completely dead field** (2026-08-29) — no UI/API
+  anywhere lets a client set it; every warehouse is stuck at the DB defaults forever. You want it
+  client-configurable ("let it be a client decision, not ours") but `WarehouseStorageType` rows have
+  no edit path at all today (only ever created, never updated) — needs a real scope decision
+  (create-time-only fix vs. a first-ever edit capability for these rows) before building.
 - **Self-service driver check-in** (`SelfCheckInRequest`, schema-only) — flagged as a top Yard/Gate
   gap in competitor research, still "later we do it."
 - **Yard Plan View** — needs a small spatial-layout design pass first (Yard Slots have no

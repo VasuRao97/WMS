@@ -2799,6 +2799,132 @@ valid ZIP (`PK` header confirmed), exactly 2 files with the correct Rack-Name-de
 readable 501×126 Code128 PNG. Both `tsc -b` (frontend) and the Nest watch process (backend) compile
 clean. New dependencies: `bwip-js`, `archiver` (plus `@types/archiver`, `@types/bwip-js`).
 
+### Putaway: aging-granularity default fixed, then moved to Warehouse with a real Settings UI (2026-08-29, next session — hardening pass)
+The first session explicitly framed as **not building new modules — going back over what's already
+built to find and fix real gaps** ("we will slowly look into the process and correct whatever is
+needed... fool proof our tech now" — see `[[wms-hardening-phase]]` in memory for the standing
+direction this and future sessions of this kind should follow). Found by directly asking a concrete
+scenario: "if a SKU was unloaded in the morning and 2 depths of a row are used, in the evening the
+same SKU is received — does the system suggest the 3rd depth?"
+
+**Traced (not guessed) via `suggestBin()`'s actual code**: the same-SKU lane top-up rule
+(`putaway-tasks.service.ts`) is gated by an aging check, `sameAgeBucket()`, comparing the lane's
+existing `receivedDate` against the incoming stock's own. With `agingGranularity` unset (`null`),
+that comparison requires an exact-millisecond match — which two separate trips, even same-day,
+essentially never produce. Since `Company.agingGranularity` had existed since 2026-08-28 but was
+**never wired to any UI or API anywhere**, every company was silently stuck on this millisecond-
+exact behavior — meaning the morning/evening scenario above answered "no," the lane's 3rd depth
+would NOT be suggested; a fresh lane would open instead, stranding it.
+
+**Fix #1 — default to same-CALENDAR-DAY.** Confirmed with the client directly: "same calendar day
+would do... too much check" for exact-millisecond. One-line change (the `DAY` bucket in
+`sameAgeBucket()` already existed and was already correct — just never used as the fallback).
+Verified live against the real dev DB via a short-lived diagnostic script (created, run, deleted):
+seeded a real 3-deep SPR lane, wrote real `StockMovement` rows for a 09:00 "morning" receipt filling
+depths 3+2, then called the real unmodified `suggestBin()` for an 18:00 "evening" batch of the same
+SKU — correctly returned depth 1, same lane.
+
+**Fix #2 — moved off `Company` onto `Warehouse`, with a real Settings UI.** The client's own
+follow-up call, once actually building a control for this: aging tolerance isn't a single company-
+wide fact — "depends on the node the granularity might be different," same reasoning
+`WarehouseEquipmentSuitability` already established for equipment ratings (started platform-wide on
+`EquipmentType`, corrected to warehouse-scoped the same session it was built). Migration
+`20260829100000_move_aging_granularity_to_warehouse` drops the dead `Company.agingGranularity`
+(never populated by any real workflow — safe straight drop, no backfill) and adds
+`Warehouse.agingGranularity`. `suggestBin()` now reads it straight off the `warehouse` row it
+already fetches (simpler than before — drops the extra `company.findUnique` call entirely).
+
+**No general Warehouse Edit form exists in this app** (confirmed — Warehouse fields have only ever
+been settable at creation), so this couldn't go on "the warehouse's own edit page" the way you
+might expect. New `PATCH /warehouses/:id/aging-granularity` (`WarehousesService.
+setAgingGranularity()`, `COMPANY_ADMIN`-only per the client's own call) is instead surfaced as a
+small "pick a warehouse, edit its own setting, Save" control — a Warehouse `<select>` + Day/Week/
+Month `<select>` + its own Save button — added to Company Settings' existing Putaway section, right
+below Batch Size. Same "mini per-entity editor living on an existing page" pattern
+`EquipmentPage.tsx`'s own "Configure Equipment Type Matrix" section already established. Always
+saves one of the three real values, never a blank/clear-to-null option (unlike Detention's
+optional fields) — keeps the displayed dropdown and the stored value from ever silently disagreeing.
+
+Verified end-to-end: `tsc --noEmit` (backend) and `tsc -b` (frontend) both clean, migration applied
+cleanly against the real dev DB (Prisma client regenerated after stopping the dev-server process
+tree to release its file lock — the standard Windows gotcha), then a full live-browser pass
+(logged in via the API+localStorage token trick) against two real throwaway warehouses — confirmed
+the new control renders both by Code+Name, saved WH2 to `MONTH` and confirmed the `PATCH` returned
+`200` with the correct warehouse id, confirmed directly against the database that only WH2 changed
+(WH1 stayed `null`), then did a full page reload (not just reading back in-memory state) and
+confirmed via the live DOM `<select>` value — not just displayed text — that switching the picker
+to WH2 correctly re-filled the dropdown to `MONTH`, the genuinely persisted value.
+
+### Putaway: "still incoming" lane reservation for Class B & C (2026-08-29, same hardening-phase session)
+A real, client-requested refinement to `suggestBin()`'s cross-SKU mixing logic, worked out through a
+concrete worked example before any code — see `[[wms-putaway-design]]` for the design-conversation
+trail (the trace disproved an initial framing that treated this as pure order-profile analysis; the
+actual signal needed was already sitting on `InboundReceiptLine`).
+
+**The gap**: a large SKU mid-delivery (say it needs 3 depths of a lane) could get fragmented across
+two lanes if a smaller, unrelated SKU happened to arrive in between and get funneled into the same
+lane by the existing "prefer the fullest lane" rule — which has never distinguished "this lane's
+occupant still has more of itself coming" from "this lane's occupant is done and just sitting
+there." Concretely: SKU A's 1st unit fills a lane's deepest position; SKU B's 1 unit then gets
+routed into that same lane (any partially-full lane beats an empty one, regardless of whose SKU);
+SKU A's 2nd unit still fits in the lane's last position; SKU A's 3rd unit then has nowhere left in
+its own lane and has to open a brand-new one — A ends up split 2+1 across two lanes, with an
+unrelated SKU B permanently occupying a slot that should've been A's.
+
+**The fix**: before allowing a *different* SKU to share a lane, check whether any current occupant
+SKU still has `receivedQty < expectedQty` on any of its `InboundReceiptLine` rows — i.e., is more of
+it still expected off some vehicle. If so, the lane is off-limits to any other SKU entirely,
+overriding `maxSkusClass*` outright — not another tier of the cap math, an unconditional block. The
+moment that occupant's own line reaches `receivedQty == expectedQty` (nothing more coming), the lane
+reopens to normal sharing rules with no further special-casing. An active `MultiSkuLaneException`
+bypasses this too, same as it already bypasses the cap — one consistent "the exception turns off all
+mixing protection" behavior, not a second separate override. No new schema — this reuses data
+Inbound receiving already writes.
+
+**Scope, confirmed in conversation**: applies to Class B and C. Class A needs nothing — its
+`maxSkusClassA` cap of 1 already locks a lane to one SKU *permanently* (not just while receiving), so
+this rule is strictly redundant there; B genuinely changes behavior (its cap of 2 normally *does*
+allow a second SKU in, this rule temporarily tightens that to "no sharing while an occupant is still
+incoming"); C goes from "always shareable" to "shareable only once every current occupant is fully
+received." A deliberately accepted trade-off, not a side effect: while a SKU is still incoming, it
+can lock out a lane that would otherwise fit another SKU fine — that's the intended cost of keeping a
+large shipment together.
+
+**A related, distinct bug was found in the same conversation**: for any class with a finite cap > 1
+(today, only B), a SKU already occupying a multi-SKU lane can get wrongly excluded from its own
+lane's remaining empty depth once the lane hits its distinct-SKU cap — the eligibility check doesn't
+exclude "myself" from the occupant count, so it can't tell "a genuinely new third SKU wants in"
+(correctly blocked) from "I'm already here, I just want more of my own space" (incorrectly blocked).
+**Resolved with an interim workaround, not a real fix, minutes later**: rather than fixing the
+underlying logic, `maxSkusClassB`'s default dropped from 2 to 1 (matching Class A's full
+exclusivity) — migration `20260829110000_max_skus_class_b_default_one`. With cap=1, a B-class lane
+can never hold two distinct SKUs in the first place, so the bug's trigger condition (a lane whose cap
+allows more than one SKU) simply never arises today. Only changes the default applied to a **newly
+created** `WarehouseStorageType` row (no backfill of existing rows — same pattern as this project's
+other default-only changes, e.g. `putawayTriggerMode`'s BATCH→IMMEDIATE flip). Verified via a
+throwaway warehouse: a fresh SPR storage-type row now reads `maxSkusClassA: 1, maxSkusClassB: 1,
+maxSkusClassC: null`. The real self-exclusion logic fix itself is deferred (see ROADMAP.md) —
+needed again the moment any class gets a cap above 1.
+
+**Also raised, explicitly parked for later**: `WarehouseStorageType.maxSkusClassA/B/C` itself turned
+out to be completely unwired to any UI/API — same dead-field shape `agingGranularity` was in before
+today's fix — checked both the manual create form and Excel import, neither ever sets it; every
+warehouse is silently stuck at the DB defaults (1/2/unbounded) forever. Worth a real fix, but bigger
+than Aging Methodology was: `WarehouseStorageType` rows have no edit path at all today (only ever
+created at Warehouse creation or import), so exposing this needs a real scope decision — add it to
+the create-time form only (helps new warehouses, not existing ones, same limitation several other
+Warehouse fields already accept), or also build a first-ever edit capability for `WarehouseStorageType`
+rows. Flagged for the client to think through, not decided.
+
+Verified live against the real dev DB via a short-lived diagnostic script (created, run, deleted) —
+a throwaway B-class scenario matching the worked example exactly: SKU A (expectedQty 3, receivedQty
+1) holding a lane's deepest position — a different SKU B correctly returned `null` (blocked, the only
+lane in the test warehouse); SKU A's own further top-up into the same lane still worked correctly,
+unaffected; once A's line was completed (receivedQty bumped to 3 and A's 2nd unit actually recorded
+as a real `StockMovement`, matching what a real completed trip would look like) SKU B was correctly
+allowed into the lane's last remaining position. `tsc --noEmit` clean, full clean Nest restart with
+zero errors.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No

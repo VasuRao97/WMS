@@ -130,19 +130,36 @@ export class PutawayTasksService {
     const locations = categoryTaggedLocations.length > 0 ? categoryTaggedLocations : rawLocations;
 
     const locationIds = locations.map((l: any) => l.id);
-    const warehouse = await tx.warehouse.findUnique({ where: { id: warehouseId }, select: { companyId: true } });
-    const [movements, openTaskTargets, companyRow, exception] = await Promise.all([
+    // agingGranularity is read straight off the Warehouse row (moved off
+    // Company 2026-08-29 — see schema.prisma's comment on Warehouse.
+    // agingGranularity: the client's own call, "depends on the node the
+    // granularity might be different," same reasoning as
+    // WarehouseEquipmentSuitability being warehouse-scoped rather than a
+    // single platform/company-wide value). No separate Company lookup
+    // needed any more.
+    const [warehouse, movements, openTaskTargets, exception] = await Promise.all([
+      tx.warehouse.findUnique({ where: { id: warehouseId }, select: { agingGranularity: true } }),
       tx.stockMovement.findMany({
         where: { locationId: { in: locationIds } },
         select: { locationId: true, skuId: true, quantity: true, receivedDate: true, createdAt: true },
         orderBy: { createdAt: 'asc' },
       }),
       tx.putawayTask.findMany({ where: { toLocationId: { in: locationIds }, status: { in: ['PENDING', 'NEEDS_BIN'] } }, select: { toLocationId: true, skuId: true } }),
-      warehouse ? tx.company.findUnique({ where: { id: warehouse.companyId }, select: { agingGranularity: true } }) : null,
       tx.multiSkuLaneException.findFirst({ where: { warehouseId, status: 'APPROVED' } }),
     ]);
 
-    const agingGranularity: string | null = companyRow?.agingGranularity ?? null;
+    // 2026-08-29 fix: default to same-CALENDAR-DAY, not exact-millisecond-
+    // match. Before this fix (and before the field moved to Warehouse),
+    // this was completely unwired anywhere (no Settings UI/API existed),
+    // so every warehouse always read `null` here — which in practice meant
+    // two separate trips of the same SKU (e.g. one unloaded in the
+    // morning, another in the evening) were always treated as a different
+    // "age," even same-day, closing a partially-filled lane's remaining
+    // depth to the second trip. Confirmed with the client: "same calendar
+    // day would do" — exact-millisecond was "too much check." A warehouse
+    // can still be configured to WEEK/MONTH via Company Settings' per-
+    // warehouse "Aging Methodology" control.
+    const agingGranularity: string | null = warehouse?.agingGranularity ?? 'DAY';
     const exceptionActive = !!exception;
 
     // balance + last receivedDate per (location, sku)
@@ -165,6 +182,36 @@ export class PutawayTasksService {
     // should fill out one lane's D2/D1 before ever opening a new level).
     const pendingSkuByLocation = new Map<string, string>();
     for (const t of openTaskTargets) if (t.toLocationId) pendingSkuByLocation.set(t.toLocationId, t.skuId);
+
+    // 2026-08-29 — "still incoming" lane reservation (client-requested,
+    // Class B & C — see [[wms-putaway-design]]). A SKU still actively
+    // receiving from an in-progress vehicle should get its lane to
+    // itself while more of it is still coming — otherwise an unrelated
+    // SKU can "steal" a depth mid-delivery and fragment the larger SKU's
+    // shipment across two lanes (confirmed scenario: a 3-unit SKU whose
+    // 2nd depth gets taken by a different SKU's single unit, forcing the
+    // 3rd unit into a brand-new lane). Class A needs no special handling
+    // here — its cap of 1 already locks a lane to one SKU permanently,
+    // not just "while incoming," so this rule can't change anything
+    // there. "Still incoming" = does this SKU have ANY InboundReceiptLine
+    // with receivedQty < expectedQty — reused directly, no new schema,
+    // since that IS "more of this SKU is still coming off some vehicle."
+    // Bypassed by an active MultiSkuLaneException, same as the
+    // maxSkusClass* cap itself — one consistent "the exception turns off
+    // all mixing protection" behavior, not a second separate override.
+    const allOccupantSkuIds = new Set<string>();
+    for (const [key, qty] of balanceByLocSku) if (qty > 0) allOccupantSkuIds.add(key.split('|')[1]);
+    for (const sid of pendingSkuByLocation.values()) allOccupantSkuIds.add(sid);
+    const stillIncomingSkuIds = new Set<string>();
+    if (!exceptionActive && allOccupantSkuIds.size > 0) {
+      const occupantLines = await tx.inboundReceiptLine.findMany({
+        where: { skuId: { in: [...allOccupantSkuIds] } },
+        select: { skuId: true, expectedQty: true, receivedQty: true },
+      });
+      for (const l of occupantLines) {
+        if (Number(l.receivedQty) < Number(l.expectedQty)) stillIncomingSkuIds.add(l.skuId);
+      }
+    }
 
     // group into lanes
     const lanes = new Map<string, any[]>();
@@ -218,17 +265,26 @@ export class PutawayTasksService {
         // approved MultiSkuLaneException is currently active for this
         // warehouse (the only bypass, per [[wms-putaway-design]]).
         if (!exceptionActive) {
-          const occupantClasses = await Promise.all(
-            [...occupantSkuIds].map(async (id) => {
-              const s = await tx.sku.findUnique({ where: { id }, select: { abcClass: true } });
-              return (s?.abcClass || 'C').toUpperCase();
-            }),
-          );
-          const caps = [abcClass, ...occupantClasses].map((cls) => this.maxSkusForClass(row, cls));
-          // null = unbounded; the most restrictive (lowest, non-null) cap wins.
-          const finiteCaps = caps.filter((c): c is number => c !== null);
-          const effectiveCap = finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
-          if (effectiveCap !== null && occupantSkuIds.size >= effectiveCap) laneEligible = false;
+          // "Still incoming" reservation overrides the mixing cap
+          // entirely — checked BEFORE the cap logic, not folded into it,
+          // since it's an unconditional block, not another tier of the
+          // same cap math.
+          const anyOccupantStillIncoming = [...occupantSkuIds].some((id) => stillIncomingSkuIds.has(id));
+          if (anyOccupantStillIncoming) {
+            laneEligible = false;
+          } else {
+            const occupantClasses = await Promise.all(
+              [...occupantSkuIds].map(async (id) => {
+                const s = await tx.sku.findUnique({ where: { id }, select: { abcClass: true } });
+                return (s?.abcClass || 'C').toUpperCase();
+              }),
+            );
+            const caps = [abcClass, ...occupantClasses].map((cls) => this.maxSkusForClass(row, cls));
+            // null = unbounded; the most restrictive (lowest, non-null) cap wins.
+            const finiteCaps = caps.filter((c): c is number => c !== null);
+            const effectiveCap = finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
+            if (effectiveCap !== null && occupantSkuIds.size >= effectiveCap) laneEligible = false;
+          }
           // An A-class occupant's own cap (1) makes effectiveCap 1 the
           // moment it's present, which — combined with occupantSkuIds.size
           // already being >=1 — always blocks a different SKU. Matches

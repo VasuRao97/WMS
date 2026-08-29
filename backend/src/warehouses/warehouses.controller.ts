@@ -66,6 +66,15 @@ export class WarehousesController {
     return this.warehousesService.reactivate(id, user);
   }
 
+  // Company-Admin-only per the client's own call — set via Company
+  // Settings' per-warehouse "Aging Methodology" control, not a general
+  // Warehouse Edit form (none exists yet).
+  @Patch(':id/aging-granularity')
+  @Roles('COMPANY_ADMIN')
+  setAgingGranularity(@Param('id') id: string, @Body() body: { agingGranularity: string | null }, @CurrentUser() user: any) {
+    return this.warehousesService.setAgingGranularity(id, body.agingGranularity ?? null, user);
+  }
+
   // Route order matters — @Delete('all') must be declared before
   // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')

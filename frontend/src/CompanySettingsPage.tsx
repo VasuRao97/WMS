@@ -33,6 +33,14 @@ type Settings = {
   putawayDefaultBatchQty?: number | string | null;
 };
 
+// Aging Methodology (2026-08-29) is warehouse-scoped, not company-scoped —
+// "depends on the node the granularity might be different." No Warehouse
+// Edit form exists in this app to hang a field like this off, so it's a
+// small "pick a warehouse, edit its own setting" control living here on
+// Company Settings instead — same pattern EquipmentPage.tsx's own
+// "Configure Equipment Type Matrix" section already established.
+type WarehouseRow = { id: string; code: string; name: string; agingGranularity?: 'DAY' | 'WEEK' | 'MONTH' | null };
+
 function CompanySettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [detentionCostPerDay, setDetentionCostPerDay] = useState('');
@@ -46,6 +54,13 @@ function CompanySettingsPage() {
   const [saved, setSaved] = useState(false);
   const [keyError, setKeyError] = useState('');
   const [regenerating, setRegenerating] = useState(false);
+
+  const [warehouses, setWarehouses] = useState<WarehouseRow[]>([]);
+  const [agingWarehouseId, setAgingWarehouseId] = useState('');
+  const [agingGranularity, setAgingGranularity] = useState<'DAY' | 'WEEK' | 'MONTH'>('DAY');
+  const [agingError, setAgingError] = useState('');
+  const [agingSaved, setAgingSaved] = useState(false);
+  const [agingSaving, setAgingSaving] = useState(false);
 
   const load = () => {
     fetch('http://localhost:3000/companies/settings', { headers: authHeaders() })
@@ -64,11 +79,54 @@ function CompanySettingsPage() {
         setPutawayTriggerMode(data.putawayTriggerMode === 'BATCH' ? 'BATCH' : 'IMMEDIATE');
         setPutawayDefaultBatchQty(data.putawayDefaultBatchQty != null ? String(data.putawayDefaultBatchQty) : '');
       });
+    fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? null : res.json()))
+      .then((data: WarehouseRow[] | null) => {
+        if (!data) return;
+        setWarehouses(data);
+        if (data.length > 0) {
+          setAgingWarehouseId((prev) => prev || data[0].id);
+          setAgingGranularity((data[0].agingGranularity as any) || 'DAY');
+        }
+      });
   };
 
   useEffect(() => {
     load();
   }, []);
+
+  // Re-fill the Aging Methodology dropdown from the already-fetched
+  // warehouse list whenever the picker's selection changes — no extra
+  // request, matching the "client-side over the already-fetched list"
+  // pattern used elsewhere in this codebase (LocationsPage's own search/
+  // filter row).
+  const handleAgingWarehouseChange = (id: string) => {
+    setAgingWarehouseId(id);
+    setAgingError('');
+    setAgingSaved(false);
+    const wh = warehouses.find((w) => w.id === id);
+    setAgingGranularity((wh?.agingGranularity as any) || 'DAY');
+  };
+
+  const handleSaveAgingGranularity = async () => {
+    if (!agingWarehouseId) return;
+    setAgingError('');
+    setAgingSaved(false);
+    setAgingSaving(true);
+    const res = await fetch(`http://localhost:3000/warehouses/${agingWarehouseId}/aging-granularity`, {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ agingGranularity }),
+    });
+    const data = await res.json();
+    setAgingSaving(false);
+    if (!res.ok) {
+      setAgingError(errorText(data, 'Could not save Aging Methodology.'));
+      return;
+    }
+    setWarehouses((prev) => prev.map((w) => (w.id === agingWarehouseId ? { ...w, agingGranularity: data.agingGranularity } : w)));
+    setAgingSaved(true);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -197,6 +255,33 @@ function CompanySettingsPage() {
           {saved && <p style={{ color: 'green' }}>Saved.</p>}
           <button type="submit">Save Settings</button>
         </form>
+
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #eee' }}>
+          <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Aging Methodology (per warehouse)</label>
+          <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>
+            How close two receiving dates need to be for the system to treat stock as the same batch when
+            suggesting a bin. A tighter setting (Day) keeps different trips more separated; a looser one (Month)
+            lets more stock consolidate into the same lane. This differs by warehouse, not company-wide — set it
+            against each warehouse individually.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={agingWarehouseId} onChange={(e) => handleAgingWarehouseChange(e.target.value)} style={{ padding: 6, minWidth: 180 }}>
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+              ))}
+            </select>
+            <select value={agingGranularity} onChange={(e) => setAgingGranularity(e.target.value as 'DAY' | 'WEEK' | 'MONTH')} style={{ padding: 6, width: 140 }}>
+              <option value="DAY">Day</option>
+              <option value="WEEK">Week</option>
+              <option value="MONTH">Month</option>
+            </select>
+            <button type="button" onClick={handleSaveAgingGranularity} disabled={agingSaving || !agingWarehouseId}>
+              {agingSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {agingError && <p style={{ color: 'crimson', marginTop: 8 }}>{agingError}</p>}
+          {agingSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
+        </div>
       </div>
 
       <div style={{ marginTop: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>

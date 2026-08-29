@@ -382,6 +382,26 @@ export class WarehousesService {
     return this.prisma.warehouse.update({ where: { id }, data: { isActive: true } });
   }
 
+  // Per-warehouse Putaway "Aging Methodology" (2026-08-29) — how close two
+  // StockMovement.receivedDate values need to be before suggestBin() treats
+  // them as the same batch for a multi-deep-lane same-SKU top-up. Moved
+  // here from a dead Company-level field (see schema.prisma's comment on
+  // Warehouse.agingGranularity) once it became clear this genuinely varies
+  // node to node. Company-Admin-only, set via Company Settings' new
+  // per-warehouse control (there's no general Warehouse Edit form this
+  // could otherwise live on).
+  async setAgingGranularity(id: string, agingGranularity: string | null, user: any) {
+    await this.assertAccess(id, user);
+    if (agingGranularity !== null && !['DAY', 'WEEK', 'MONTH'].includes(agingGranularity)) {
+      throw new BadRequestException('Aging Methodology must be Day, Week, or Month.');
+    }
+    return this.prisma.warehouse.update({
+      where: { id },
+      data: { agingGranularity: agingGranularity as any },
+      select: { id: true, code: true, agingGranularity: true },
+    });
+  }
+
   async removeAll(user: any) {
     const warehouses = await this.prisma.warehouse.findMany({
       where: companyFilter(user),

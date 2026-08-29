@@ -172,16 +172,6 @@ model Company {
   // immediately" — a sensible batch size genuinely differs by industry/
   // UOM, so nothing platform-wide is assumed.
   putawayDefaultBatchQty Decimal?
-
-  // "Same aging" comparison granularity (2026-08-28, skeleton only) — how
-  // close two receivedDate values (StockMovement.receivedDate) need to be
-  // before they're treated as "the same age" for the multi-deep-lane
-  // same-SKU top-up exception ("anything made in that month is same
-  // aging... this toggle has to be obtained by client"). Null means no
-  // tolerance configured yet — the safe default is to require the lane be
-  // fully emptied before any new stock enters, same as if no exception
-  // existed at all. Real comparison logic isn't built yet.
-  agingGranularity AgingGranularity?
 }
 
 enum AgingGranularity {
@@ -302,6 +292,22 @@ model Warehouse {
   noOfDocks   Int?
   areaSqFt    Decimal? // total facility footprint, not broken down by storage type
 
+  // "Same aging" comparison granularity (2026-08-28, skeleton only on
+  // Company; moved here 2026-08-29) — how close two receivedDate values
+  // (StockMovement.receivedDate) need to be before PutawayTasksService.
+  // suggestBin() treats them as "the same age" for the multi-deep-lane
+  // same-SKU top-up rule (fill a partially-occupied lane's remaining depths
+  // vs. requiring it be fully emptied first). Originally lived on Company
+  // — moved to Warehouse once live testing showed the real need: "depends
+  // on the node the granularity might be different," same reasoning
+  // WarehouseEquipmentSuitability already established for equipment
+  // ratings. Null (never configured) falls back to DAY in suggestBin()
+  // itself, not to "require an exact millisecond match" — see that
+  // method's own comment; a company/warehouse can still be set to WEEK/
+  // MONTH (looser) via Company Settings' per-warehouse "Aging Methodology"
+  // control.
+  agingGranularity AgingGranularity?
+
   // Number of physical parking/yard slots at this facility (2026-08-25,
   // Yard Management design conversation) — drives how many real `YardSlot`
   // rows get generated for this warehouse (see that model's comment). Same
@@ -369,11 +375,25 @@ model WarehouseStorageType {
   // this (storageType, category) combo, tiered by the SKU's own Sku.abcClass
   // — e.g. an A-class fast-mover typically gets a bin to itself, while
   // slow-moving C-class SKUs can be co-located to use space efficiently.
-  // Null means "no limit" for that class. This is a config value only —
-  // nothing enforces it yet; that's Putaway/slotting logic, not built yet
-  // (deliberately deferred, 2026-08-24 design pass — see CLAUDE.md).
+  // Null means "no limit" for that class. Enforced by
+  // PutawayTasksService.suggestBin() since 2026-08-28 (see CLAUDE.md).
+  // Completely unwired to any UI/API as of 2026-08-29 — every warehouse is
+  // silently stuck at these DB defaults; flagged, deferred (see
+  // ROADMAP.md's deferred list).
   maxSkusClassA Int? @default(1)
-  maxSkusClassB Int? @default(2)
+  // 2026-08-29 — temporarily dropped from 2 to 1 (same exclusivity as
+  // Class A), a deliberate interim workaround for a real self-exclusion
+  // bug in suggestBin()'s cap-enforcement logic (a SKU already occupying
+  // a >1-cap lane could get wrongly blocked from its own lane's last
+  // empty depth, since the eligibility check doesn't exclude "myself"
+  // from the occupant count — only ever triggers when a lane can hold
+  // more than one distinct SKU). Client's own call: fix the underlying
+  // logic later, sidestep it for now by not allowing B-class lanes to
+  // share at all. Only changes the default for a NEWLY-created
+  // WarehouseStorageType row — no backfill of existing ones (same "no
+  // real client tenant, nothing to backfill" situation as prior default
+  // changes in this project). See ROADMAP.md's deferred list.
+  maxSkusClassB Int? @default(1)
   maxSkusClassC Int?
 
   @@unique([warehouseId, storageType, categoryId])
