@@ -181,6 +181,20 @@ model Company {
   // default configured — a pallet with no effective max (company default
   // AND SKU override both unset) can only ever be closed manually.
   defaultMaxCasesPerPallet Decimal?
+
+  // Putaway operator-assignment fairness (2026-09-02, see
+  // [[wms-putaway-design]]) — one dwell time reused for BOTH escalation
+  // steps, per the client's own simplification: "grace period is the
+  // dwell time between both." The recommended (longest-free, MHE-capable)
+  // operator gets this long, from the moment they actually became free,
+  // to claim a new trip before (1) the Warehouse Supervisor is notified
+  // and they're deprioritized in the ranking, and — if their next turn
+  // ALSO lapses by this same duration — (2) it escalates to the Warehouse
+  // Manager. Given a real default (not nullable-means-unconfigured, unlike
+  // most other Company toggles) since the client wants a live dial, not an
+  // on/off switch: "keep this toggle in the company tab for us to switch
+  // things here and there."
+  putawayAssignmentGraceMinutes Int @default(2)
 }
 
 enum AgingGranularity {
@@ -220,6 +234,24 @@ model User {
   // constraint (same reasoning as Driver.phone — not a reliable natural
   // key to enforce).
   phone              String?
+  // Operator capability flags (2026-09-02, Putaway assignment deep-dive) —
+  // "loader and picker should not be same at big warehouses, but its
+  // possible that in small locations they both are same." Both nullable
+  // and independent (an operator can be capable of both, or neither
+  // configured at all) — unset means "no restriction," the same fallback
+  // pattern as Location.categoryId's bin-suggestion narrowing: a small
+  // warehouse that never bothers setting these gets exactly today's
+  // undifferentiated behavior, no code branch needed for "small vs big."
+  // canOperateMhe drives real routing now (PutawayTasksService's operator
+  // recommendation only considers MHE-capable — true or null — operators,
+  // since every Putaway task today lands in a rack storage type and
+  // therefore needs MHE). canHandleGroundBlock is schema-only for now —
+  // Ground/Stillage has no Putaway bin-suggestion logic of its own yet
+  // (see [[wms-putaway-design]]), so nothing routes off this field until
+  // that module exists; captured now so it isn't a second field-adding
+  // pass later, same "schema now, logic later" shape as DockLocationDistance.
+  canOperateMhe      Boolean?
+  canHandleGroundBlock Boolean?
   isActive           Boolean      @default(true)
   createdAt          DateTime     @default(now())
   // Fast "last seen" lookup — a cached/derived convenience, same relationship
@@ -1547,6 +1579,14 @@ enum NotificationEventType {
   // WAREHOUSE_MANAGER on that warehouse (2026-08-27, Inbound receiving
   // design). Same broadcast shape DETENTION_ALERT already uses.
   VEHICLE_READY_FOR_UNLOADING
+  // Putaway operator-assignment fairness (2026-09-02, see
+  // [[wms-putaway-design]]) — the longest-free, MHE-capable operator
+  // didn't claim a new trip within Company.putawayAssignmentGraceMinutes
+  // of becoming free. First fires to the Warehouse Supervisor;
+  // NotificationLog.escalatedAt/escalatedToId (same generic columns
+  // DETENTION_ALERT already uses) get stamped when it further escalates
+  // to the Warehouse Manager after a second lapse.
+  PUTAWAY_OPERATOR_MISSED_TURN
 }
 
 enum NotificationStatus {

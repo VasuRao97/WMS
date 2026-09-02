@@ -41,6 +41,8 @@ const SELECT_SAFE = {
   isActive: true,
   functionTag: true,
   phone: true,
+  canOperateMhe: true,
+  canHandleGroundBlock: true,
   createdAt: true,
   lastLoginAt: true,
   assignedWarehouses: { select: { id: true, code: true, name: true } },
@@ -123,6 +125,8 @@ export class UsersService {
         role: targetRole,
         functionTag: data.functionTag || undefined,
         phone: data.phone || undefined,
+        canOperateMhe: data.canOperateMhe === undefined || data.canOperateMhe === null || data.canOperateMhe === '' ? undefined : !!data.canOperateMhe,
+        canHandleGroundBlock: data.canHandleGroundBlock === undefined || data.canHandleGroundBlock === null || data.canHandleGroundBlock === '' ? undefined : !!data.canHandleGroundBlock,
         company: { connect: { id: creator.companyId } },
         assignedWarehouses: warehouseIds.length ? { connect: warehouseIds.map((id) => ({ id })) } : undefined,
       },
@@ -353,6 +357,8 @@ export class UsersService {
     if (!isSelfEdit && data.role !== undefined) updateData.role = data.role;
     if (data.functionTag !== undefined) updateData.functionTag = data.functionTag || null;
     if (data.phone !== undefined) updateData.phone = data.phone || null;
+    if (data.canOperateMhe !== undefined) updateData.canOperateMhe = data.canOperateMhe === null || data.canOperateMhe === '' ? null : !!data.canOperateMhe;
+    if (data.canHandleGroundBlock !== undefined) updateData.canHandleGroundBlock = data.canHandleGroundBlock === null || data.canHandleGroundBlock === '' ? null : !!data.canHandleGroundBlock;
     if (data.password) updateData.passwordHash = await bcrypt.hash(data.password, 10);
     if (warehouseIds !== undefined) {
       updateData.assignedWarehouses = { set: warehouseIds.map((wid) => ({ id: wid })) };
@@ -385,6 +391,8 @@ export class UsersService {
       'Role': u.role,
       'Function Tag': u.functionTag || '',
       'Phone': u.phone || '',
+      'MHE Capable': u.canOperateMhe == null ? '' : u.canOperateMhe ? 'TRUE' : 'FALSE',
+      'Ground/Block Capable': u.canHandleGroundBlock == null ? '' : u.canHandleGroundBlock ? 'TRUE' : 'FALSE',
       'Warehouse Code(s)': u.assignedWarehouses.map((w: any) => w.code).join(', '),
       'Active': u.isActive ? 'TRUE' : 'FALSE',
       'Last Login At': u.lastLoginAt ? u.lastLoginAt.toISOString() : '',

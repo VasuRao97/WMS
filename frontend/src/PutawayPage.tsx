@@ -47,6 +47,15 @@ function displayCode(loc?: LocationRef | null): string {
   return loc.code;
 }
 type Trip = { id: string; quantity: number; task: PutawayTask };
+// Operator assignment fairness (2026-09-02, see [[wms-putaway-design]]) —
+// a live recommendation, not a hard assignment: who should go next (by
+// idle time, among MHE-capable operators) and where the real priority is
+// (oldest staged stock still waiting). Shown per-warehouse; the same
+// ranking PutawayAssignmentScheduler uses to decide when to alert/escalate.
+type Recommendation = {
+  priorityTask: { skuCode: string; locationCode: string; waitingSince: string } | null;
+  recommendedOperator: { id: string; name: string; freeSince: string } | null;
+};
 type Exception = {
   id: string;
   warehouse: Warehouse;
@@ -89,6 +98,8 @@ function PutawayPage() {
   const [reassignReason, setReassignReason] = useState<Record<string, string>>({});
   const [taskMsg, setTaskMsg] = useState('');
 
+  const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
+
   const [exceptions, setExceptions] = useState<Exception[]>([]);
   const [exceptionWarehouseId, setExceptionWarehouseId] = useState('');
   const [exceptionReason, setExceptionReason] = useState('');
@@ -98,6 +109,16 @@ function PutawayPage() {
     const qs = filterWarehouseId ? `?warehouseId=${filterWarehouseId}` : '';
     fetch(`http://localhost:3000/putaway-tasks${qs}`, { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setTasks(Array.isArray(d) ? d : []));
   };
+  // No warehouseId required — the backend auto-scopes to whichever
+  // warehouse(s) the caller actually has access to (same convention as the
+  // task list itself), since an Operator has zero master-data visibility
+  // and could never pick one from this page's dropdown at all.
+  const loadRecommendation = () => {
+    const qs = filterWarehouseId ? `?warehouseId=${filterWarehouseId}` : '';
+    fetch(`http://localhost:3000/putaway-tasks/recommendation${qs}`, { headers: authHeaders() })
+      .then((r) => (r.status === 401 ? null : r.json()))
+      .then((d) => setRecommendation(d || null));
+  };
   const loadExceptions = () => {
     fetch('http://localhost:3000/multi-sku-lane-exceptions', { headers: authHeaders() }).then((r) => (r.status === 401 || r.status === 403 ? [] : r.json())).then((d) => setExceptions(Array.isArray(d) ? d : []));
   };
@@ -105,7 +126,7 @@ function PutawayPage() {
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setWarehouses(Array.isArray(d) ? d : []));
     loadExceptions();
   }, []);
-  useEffect(() => { loadTasks(); }, [filterWarehouseId]);
+  useEffect(() => { loadTasks(); loadRecommendation(); }, [filterWarehouseId]);
 
   const canRequestException = user?.role === 'WAREHOUSE_MANAGER';
   const canDecideException = user?.role === 'COMPANY_ADMIN';
@@ -130,6 +151,7 @@ function PutawayPage() {
     }
     setActiveTrip(data);
     setBarcode('');
+    loadRecommendation();
   };
 
   const handleCompleteTrip = async () => {
@@ -145,6 +167,7 @@ function PutawayPage() {
     setActiveTrip(null);
     setLocationCode('');
     loadTasks();
+    loadRecommendation();
   };
 
   const handleRequestDifferentBin = async (taskId: string) => {
@@ -239,6 +262,31 @@ function PutawayPage() {
           style={{ width: 260, padding: 6 }}
         />
       </div>
+
+      {/* Operator assignment fairness (2026-09-02) — a live recommendation,
+          not a hard lock: who should go next (longest-free, MHE-capable)
+          and where the real priority is (oldest staged stock). Works with
+          no warehouse picked too — auto-scoped server-side to whatever the
+          caller can actually access, since an Operator has no warehouse
+          picker to begin with. */}
+      {recommendation && (recommendation.recommendedOperator || recommendation.priorityTask) && (
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #1565c0', borderRadius: 8, background: 'rgba(21,101,192,0.06)', textAlign: 'center' }}>
+          {recommendation.recommendedOperator && (
+            <p style={{ margin: '0 0 4px', fontWeight: 'bold', color: recommendation.recommendedOperator.id === user?.id ? '#2e7d32' : '#1565c0' }}>
+              {recommendation.recommendedOperator.id === user?.id
+                ? "It's your turn — you've been free the longest."
+                : `Next up: ${recommendation.recommendedOperator.name} (free since ${new Date(recommendation.recommendedOperator.freeSince).toLocaleTimeString()})`}
+            </p>
+          )}
+          {recommendation.priorityTask && (
+            <p style={{ margin: 0, fontSize: 13, color: '#444' }}>
+              Priority — oldest staged stock: <strong>{recommendation.priorityTask.skuCode}</strong> at{' '}
+              <strong>{recommendation.priorityTask.locationCode}</strong>, waiting since{' '}
+              {new Date(recommendation.priorityTask.waitingSince).toLocaleString()}
+            </p>
+          )}
+        </div>
+      )}
       {taskMsg && <p style={{ textAlign: 'center' }}>{taskMsg}</p>}
 
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 32 }}>

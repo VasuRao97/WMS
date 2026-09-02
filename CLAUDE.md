@@ -3216,6 +3216,96 @@ token trick): the real Analytics page showed the identical numbers — `PLT-0001
 scans and 2 putaway trips, `PLT-0002` correctly flagged under Abandoned Claims with a real
 timestamp, both attributed to the same test operator. `tsc --noEmit`/`tsc -b` both clean.
 
+### Putaway operator-assignment fairness — who goes next, and where (2026-09-02)
+A real Putaway deep-dive question: "when vehicle unloading is happening, we need to think on how/
+who assigns work to the operators (unloading & putaway team), manual or auto." Surfaced a design
+decision already made once (2026-08-28 Putaway kickoff — deliberately NOT enforcing dedicated-vs-
+pooled operator assignment, "let staff work however they naturally do... suggest which way is
+better after a few days of operations") — the client's own explicit call to revisit it now: **"yes,
+because now we have built the logic after that"** (the Analytics module just shipped is exactly
+the data this was always meant to feed). Scoped to Putaway only this session (unloading/Inbound
+deliberately deferred to a later pass).
+
+**Deliberately NOT a hard task-to-operator lock.** An operator still scans whatever physical case
+is in front of them — `claimTrip()` is completely unchanged. This is a live-computed
+recommendation + fairness layer sitting on top: who SHOULD go next (by idle time), and where the
+real priority is (oldest staged stock) — surfaced on the Putaway page, and enforced via Supervisor/
+Manager escalation if ignored. A hard "assigned task" model was considered and rejected — the
+operator can't see which physical case corresponds to a specific task id without a printed pick
+ticket this project doesn't have, so forcing compliance isn't practically achievable; a clear
+recommendation plus real escalation is.
+
+**Operator capability split** — `User.canOperateMhe`/`canHandleGroundBlock`, both nullable and
+independent (an operator can be capable of both). The client's own framing: "loader and picker
+should not be same at big warehouses, but its possible that in small locations they both are
+same... small warehouses we dont need to calculate in such granularity" — so both fields default to
+unset, which means "no restriction," the exact same fallback shape `Location.categoryId`'s bin-
+narrowing already uses: a small warehouse that never bothers configuring this gets today's
+undifferentiated behavior with zero code branching. Only `canOperateMhe` actually routes anything
+right now — every Putaway task today lands in a rack storage type and therefore needs MHE;
+`canHandleGroundBlock` is schema-only, since Ground/Stillage has no Putaway logic of its own yet
+(see [[wms-putaway-design]]'s still-open list) — captured now so it isn't a second field-adding
+pass later, same "schema now, logic later" shape as `DockLocationDistance`.
+
+**The ranking (`PutawayTasksService.computeRecommendedOperator()`)** — among MHE-eligible (`true`
+or unset), currently-free (no `IN_PROGRESS` trip) operators assigned to the warehouse, whoever's
+been free longest is recommended. "Free since" is their last trip's `completedAt`/`claimedAt` (or
+account creation if they've never worked one — a brand-new operator doesn't wait behind everyone
+else for lack of history). **A real Postgres NULL-comparison bug was caught and fixed here**:
+`canOperateMhe: { not: false }` silently EXCLUDES null rows in Postgres (`NULL <> false` evaluates
+to `NULL`, not `true`) — the exact opposite of the intended "true or unset" fallback. Fixed with an
+explicit `OR: [{ canOperateMhe: true }, { canOperateMhe: null }]` instead; caught by the throwaway-
+company API script showing the "unset" operator never being recommended.
+
+**Grace period + two-tier escalation, mirroring `DetentionAlertScheduler` exactly** (alert then
+escalate) — one company-configurable dial (`Company.putawayAssignmentGraceMinutes`, default 2),
+reused for BOTH steps per the client's own simplification ("grace period is the dwell time between
+both"): the recommended operator has this long, from the moment they actually became free, to claim
+a new trip before the Warehouse Supervisor is notified (`PUTAWAY_OPERATOR_MISSED_TURN`, reusing the
+exact notification pipeline Detention already uses — same stub adapters, same `NotificationLog`
+table, same `escalatedAt`/`escalatedToId` columns); if their next turn ALSO lapses by the same
+duration, it escalates to the Warehouse Manager. **No stored "position" field** — an operator with
+an unresolved missed-turn alert has their effective rank time bumped forward to that alert's own
+timestamp, which naturally pushes them behind anyone who's freed up since without permanently
+exiling them to the back of the queue — the client's own correction to an earlier "drop to the
+back" idea: "he is actually happy as he would be getting very less work to do." New
+`PutawayAssignmentScheduler` (`@Cron(EVERY_MINUTE)` — tighter than Detention's 5-minute cadence,
+since this grace period is measured in minutes, not hours), a no-op whenever there's no real
+pending work waiting (an idle operator isn't a problem to flag if there's nothing to do).
+
+**Priority signal — "working smart, not just working"**: the client's own sharp catch on a first
+draft of this feature — a fair rotation alone doesn't stop an operator from always grabbing
+whatever's physically closest (e.g. Dock 5) while older stock sits waiting at Dock 1. Confirmed
+rule: **oldest staged stock first** — the recommendation always names the oldest still-`PENDING`
+task's SKU and staging location alongside "whose turn it is," so operators are pointed at what
+actually matters, not just kept busy.
+
+**A real, separate gap fixed mid-build**: `PutawayPage.tsx`'s warehouse filter dropdown is empty for
+an `OPERATOR` — they have zero master-data visibility by design and can never call `GET
+/warehouses` — so requiring an explicit `warehouseId` on the new recommendation endpoint would have
+meant operators could never see their own recommendation, the exact audience it's for.
+`getRecommendation()`'s `warehouseId` is now optional, auto-scoping to the caller's own accessible
+warehouse(s) when omitted (`ownWarehouseIds()` for a scoped role, company-wide for Admin) — the
+exact same convention `PutawayTasksService.findAll()` itself already follows.
+
+**Frontend**: `UsersPage.tsx` gained two tri-state selects (MHE Capable / Ground-Block Capable,
+shown only for `OPERATOR` role) — deliberately NOT a plain checkbox, since "unset" is a real,
+meaningful third state distinct from an explicit "No." `CompanySettingsPage.tsx`'s Putaway section
+gained the grace-minutes dial. `PutawayPage.tsx` gained a live recommendation banner above the task
+queue — "It's your turn" (green) when it's the viewing operator, or the recommended operator's name
+otherwise, plus the priority SKU/location line — refreshed after every claim/complete.
+
+Verified via a throwaway-company API script, 18/18 — including catching and fixing the NULL-filter
+bug above, confirming a `canOperateMhe: false` operator is never recommended, confirming an operator
+who's never worked outranks one who just freed up, and — the real proof, not simulated — **waiting
+for the actual `EVERY_MINUTE` cron to fire twice in real time** (grace set to 0 for the test) and
+confirming the Supervisor alert landed first, then the Manager escalation. Then re-verified live
+through the actual rendered UI: the recommendation banner showed "Next up: Operator A" as a
+Company Admin, flipped to "It's your turn" logged in as Operator A themself, with NO warehouse
+selected at all (confirming the auto-scoping fix); the MHE Capable tri-state selects appeared
+correctly once Role was set to Operator; the Grace Minutes field loaded and displayed the real
+saved value (0) after a page load. `tsc --noEmit`/`tsc -b` both clean.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -3461,6 +3551,14 @@ level before starting the next. SPR/ASRS are completely unchanged.
 at the Pallet level, split into marrying time and putaway time per operator (never blended), plus
 abandoned Putaway claims flagged against whoever claimed and never completed them. No new schema —
 100% derived from data Pallet consolidation and Putaway were already writing.
+
+**Putaway now has a real operator-assignment fairness layer** (2026-09-02, see "Putaway operator-
+assignment fairness" above) — a live recommendation (not a hard task lock) showing which MHE-
+capable operator has been free longest and should go next, pointed at the oldest staged stock still
+waiting rather than just "busy," with a two-tier Supervisor-then-Manager escalation (mirroring
+Detention's own alert pattern) if it's ignored. New `User.canOperateMhe`/`canHandleGroundBlock`
+(optional, unset = no restriction) and `Company.putawayAssignmentGraceMinutes` (default 2, one dial
+reused for both escalation steps).
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

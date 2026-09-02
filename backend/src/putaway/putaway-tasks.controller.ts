@@ -21,6 +21,15 @@ export class PutawayTasksController {
     return this.putawayTasksService.findAll(user, warehouseId);
   }
 
+  // Operator assignment fairness (2026-09-02) — who should go next and
+  // where the real priority is. Read-only; PutawayAssignmentScheduler
+  // fires the actual alerts/escalations on a timer.
+  @Get('recommendation')
+  @Roles(...PUTAWAY_EXECUTE_ROLES)
+  getRecommendation(@Query('warehouseId') warehouseId: string | undefined, @CurrentUser() user: any) {
+    return this.putawayTasksService.getRecommendation(user, warehouseId);
+  }
+
   // Staging scan — claims one trip against the oldest workable task for
   // whatever SKU the barcode resolves to.
   @Post('claim')

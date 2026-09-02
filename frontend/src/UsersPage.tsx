@@ -10,6 +10,8 @@ type UserRow = {
   isActive: boolean;
   functionTag?: string;
   phone?: string;
+  canOperateMhe?: boolean | null;
+  canHandleGroundBlock?: boolean | null;
   createdAt: string;
   lastLoginAt?: string | null;
   assignedWarehouses: WarehouseRef[];
@@ -63,6 +65,11 @@ const emptyForm = {
   role: '',
   functionTag: '',
   phone: '',
+  // Tri-state, not a plain checkbox — '' (unset) is a real, meaningful
+  // third state ("no restriction," the small-warehouse default), distinct
+  // from an explicit "No." A plain checkbox can only represent two states.
+  canOperateMhe: '' as '' | 'true' | 'false',
+  canHandleGroundBlock: '' as '' | 'true' | 'false',
   assignedWarehouseIds: [] as string[],
 };
 
@@ -140,6 +147,8 @@ function UsersPage() {
       role: u.role,
       functionTag: u.functionTag || '',
       phone: u.phone || '',
+      canOperateMhe: u.canOperateMhe == null ? '' : u.canOperateMhe ? 'true' : 'false',
+      canHandleGroundBlock: u.canHandleGroundBlock == null ? '' : u.canHandleGroundBlock ? 'true' : 'false',
       assignedWarehouseIds: editableAssigned,
     });
     setFormError('');
@@ -165,6 +174,11 @@ function UsersPage() {
       role: form.role,
       functionTag: form.functionTag || undefined,
       phone: form.phone || undefined,
+      // '' means "unset" -- on create, omit entirely (stays null); on
+      // edit, send an explicit null so a previously-set value can
+      // actually be cleared back to "no restriction."
+      canOperateMhe: form.canOperateMhe === '' ? (editingId ? null : undefined) : form.canOperateMhe === 'true',
+      canHandleGroundBlock: form.canHandleGroundBlock === '' ? (editingId ? null : undefined) : form.canHandleGroundBlock === 'true',
       assignedWarehouseIds: form.assignedWarehouseIds,
     };
     // Password required on create; on edit, blank means "leave unchanged".
@@ -359,6 +373,30 @@ function UsersPage() {
                 onChange={(e) => setForm({ ...form, phone: e.target.value })}
                 style={{ width: 150 }}
               />
+              {form.role === 'OPERATOR' && (
+                <>
+                  <select
+                    title="MHE Capable — whether this operator can drive Putaway MHE (forklift/reach truck/etc). Leave 'Not set' unless you need to differentiate operators (small warehouses usually don't)."
+                    value={form.canOperateMhe}
+                    onChange={(e) => setForm({ ...form, canOperateMhe: e.target.value as any })}
+                    style={{ width: 150 }}
+                  >
+                    <option value="">MHE Capable: Not set</option>
+                    <option value="true">MHE Capable: Yes</option>
+                    <option value="false">MHE Capable: No</option>
+                  </select>
+                  <select
+                    title="Ground/Block Capable — schema-only for now, Ground/Stillage Putaway logic doesn't exist yet."
+                    value={form.canHandleGroundBlock}
+                    onChange={(e) => setForm({ ...form, canHandleGroundBlock: e.target.value as any })}
+                    style={{ width: 190 }}
+                  >
+                    <option value="">Ground/Block Capable: Not set</option>
+                    <option value="true">Ground/Block Capable: Yes</option>
+                    <option value="false">Ground/Block Capable: No</option>
+                  </select>
+                </>
+              )}
             </div>
 
             <div style={{ marginBottom: 12 }}>

@@ -2,14 +2,45 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-02: **the real Analytics
-module has begun** — operator productivity at the Pallet level (marrying + putaway time, split per
-operator, plus abandoned-claim flagging) — and **Drive-in bin suggestion now has its own strategy,
-split from SPR/ASRS** (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill). See the
-session notes below. 2026-09-01: Pallet consolidation ("marrying" loose cases onto a pallet before
+what to pick up next. Updated as priorities shift — last updated 2026-09-02: **Putaway now has a
+real operator-assignment fairness layer** (live "who goes next" recommendation + Supervisor/Manager
+escalation, oldest-staged-stock priority signal) — **the real Analytics module has begun**
+(operator productivity at the Pallet level, split per operator, plus abandoned-claim flagging) —
+and **Drive-in bin suggestion now has its own strategy, split from SPR/ASRS** (whole-column absolute
+single-SKU, deepest-tier-first/bottom-up fill). See the session notes below. 2026-09-01: Pallet
+consolidation ("marrying" loose cases onto a pallet before
 Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
 ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
 for the complete design-to-build trail.
+
+## Session note (2026-09-02, same session — Putaway operator-assignment fairness)
+Direct question: "when vehicle unloading is happening, we need to think on how/who assigns work to
+the operators (unloading & putaway team), manual or auto." Reopened a 2026-08-28 decision (no
+enforced dedicated-vs-pooled assignment, capture data instead) — the client's own reason to revisit
+now: "yes, because now we have built the logic after that" (the Analytics module built earlier this
+same session is exactly the data that decision was waiting on). Scoped to Putaway only — "lets
+finish the putaway bit first" — unloading/Inbound deferred.
+
+**Confirmed shape**: a live recommendation, not a hard task lock (an operator still scans whatever's
+physically in front of them — no printed pick ticket exists to enforce a specific assignment).
+Ranks free, MHE-capable operators by idle time; whoever's been free longest goes next. Two operator
+capability flags (`canOperateMhe`/`canHandleGroundBlock`), both optional — "loader and picker should
+not be same at big warehouses, but... small warehouses we dont need to calculate in such
+granularity" — MHE side routes for real now, Ground/Block side is schema-only pending Ground/
+Stillage's own Putaway logic. A real flaw in an early "drop the ignorer to the back of the queue"
+idea got caught and fixed: "he is actually happy as he would be getting very less work to do" —
+fixed via a timestamp-based re-rank instead of a literal last-place demotion. Escalation mirrors
+Detention's own alert-then-escalate shape (Supervisor, then Manager), one company-configurable
+grace period reused for both steps. And a real gap surfaced independently, confirming a previously-
+flagged one: fair rotation alone doesn't stop an operator grabbing whatever's physically closest
+while older stock waits — fixed by always naming the oldest staged stock as the priority alongside
+whose turn it is.
+
+Verified via a throwaway-company API script (18/18, including catching a real Postgres NULL-
+comparison bug and — unusually for this project — actually waiting for the real per-minute cron to
+fire twice in wall-clock time rather than backdating timestamps) plus a live browser pass. Full
+detail in CLAUDE.md's "Putaway operator-assignment fairness" section; design conversation in the
+`wms-putaway-design` memory.
 
 ## Session note (2026-09-02, same session — Analytics module begins: operator productivity per Pallet)
 Third item in the same Putaway deep-dive: "we need to keep data ready for analytics, for each
@@ -377,7 +408,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — and (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill). Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization, ASRS's own strategy (deferred, not decided), and Pallet reuse (needs Picking to ever actually deplete a load) — see `wms-putaway-design` memory |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, ASRS's own bin-suggestion strategy, Ground/Block operator routing, unloading-team assignment fairness, and Pallet reuse (needs Picking to ever actually deplete a load) — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |

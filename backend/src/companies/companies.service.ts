@@ -37,6 +37,7 @@ export class CompaniesService {
         putawayTriggerMode: true,
         putawayDefaultBatchQty: true,
         defaultMaxCasesPerPallet: true,
+        putawayAssignmentGraceMinutes: true,
       },
     });
   }
@@ -75,6 +76,14 @@ export class CompaniesService {
     if (data.defaultMaxCasesPerPallet !== undefined && data.defaultMaxCasesPerPallet !== null && data.defaultMaxCasesPerPallet !== '' && Number(data.defaultMaxCasesPerPallet) <= 0) {
       errors.push('Default Max Cases Per Pallet must be a positive number when given.');
     }
+    // Putaway operator-assignment fairness (2026-09-02) — a real dial, not
+    // an optional/unconfigured setting (has a DB default of 2), so this is
+    // always a concrete non-negative whole number, never cleared to null —
+    // same "0 is a legitimate choice" allowance as Detention Free Hours.
+    if (data.putawayAssignmentGraceMinutes !== undefined && data.putawayAssignmentGraceMinutes !== null && data.putawayAssignmentGraceMinutes !== '') {
+      const n = Number(data.putawayAssignmentGraceMinutes);
+      if (!Number.isInteger(n) || n < 0) errors.push('Putaway Assignment Grace Minutes must be a whole number, 0 or more.');
+    }
     if (errors.length > 0) throw new BadRequestException(errors);
 
     return this.prisma.company.update({
@@ -99,6 +108,10 @@ export class CompaniesService {
         putawayTriggerMode: data.putawayTriggerMode ? data.putawayTriggerMode : undefined,
         putawayDefaultBatchQty: data.putawayDefaultBatchQty === undefined ? undefined : data.putawayDefaultBatchQty === null || data.putawayDefaultBatchQty === '' ? null : Number(data.putawayDefaultBatchQty),
         defaultMaxCasesPerPallet: data.defaultMaxCasesPerPallet === undefined ? undefined : data.defaultMaxCasesPerPallet === null || data.defaultMaxCasesPerPallet === '' ? null : Number(data.defaultMaxCasesPerPallet),
+        // No "unconfigured" state for this one (real DB default of 2) —
+        // omitted leaves it unchanged, a blank/null value is simply
+        // ignored rather than attempted as a clear, same as putawayTriggerMode.
+        putawayAssignmentGraceMinutes: data.putawayAssignmentGraceMinutes !== undefined && data.putawayAssignmentGraceMinutes !== null && data.putawayAssignmentGraceMinutes !== '' ? Number(data.putawayAssignmentGraceMinutes) : undefined,
       },
       select: {
         id: true,
@@ -112,6 +125,7 @@ export class CompaniesService {
         putawayTriggerMode: true,
         putawayDefaultBatchQty: true,
         defaultMaxCasesPerPallet: true,
+        putawayAssignmentGraceMinutes: true,
       },
     });
   }

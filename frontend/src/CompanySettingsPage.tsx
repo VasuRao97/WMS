@@ -32,6 +32,7 @@ type Settings = {
   putawayTriggerMode?: 'BATCH' | 'IMMEDIATE';
   putawayDefaultBatchQty?: number | string | null;
   defaultMaxCasesPerPallet?: number | string | null;
+  putawayAssignmentGraceMinutes?: number | string;
 };
 
 // Aging Methodology (2026-08-29) is warehouse-scoped, not company-scoped —
@@ -52,6 +53,7 @@ function CompanySettingsPage() {
   const [putawayTriggerMode, setPutawayTriggerMode] = useState<'BATCH' | 'IMMEDIATE'>('IMMEDIATE');
   const [putawayDefaultBatchQty, setPutawayDefaultBatchQty] = useState('');
   const [defaultMaxCasesPerPallet, setDefaultMaxCasesPerPallet] = useState('');
+  const [putawayAssignmentGraceMinutes, setPutawayAssignmentGraceMinutes] = useState('2');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [keyError, setKeyError] = useState('');
@@ -81,6 +83,7 @@ function CompanySettingsPage() {
         setPutawayTriggerMode(data.putawayTriggerMode === 'BATCH' ? 'BATCH' : 'IMMEDIATE');
         setPutawayDefaultBatchQty(data.putawayDefaultBatchQty != null ? String(data.putawayDefaultBatchQty) : '');
         setDefaultMaxCasesPerPallet(data.defaultMaxCasesPerPallet != null ? String(data.defaultMaxCasesPerPallet) : '');
+        setPutawayAssignmentGraceMinutes(data.putawayAssignmentGraceMinutes != null ? String(data.putawayAssignmentGraceMinutes) : '2');
       });
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
       .then((res) => (res.status === 401 ? null : res.json()))
@@ -149,6 +152,7 @@ function CompanySettingsPage() {
         putawayTriggerMode,
         putawayDefaultBatchQty: putawayDefaultBatchQty === '' ? null : putawayDefaultBatchQty,
         defaultMaxCasesPerPallet: defaultMaxCasesPerPallet === '' ? null : defaultMaxCasesPerPallet,
+        putawayAssignmentGraceMinutes: putawayAssignmentGraceMinutes === '' ? undefined : putawayAssignmentGraceMinutes,
       }),
     });
     const data = await res.json();
@@ -263,6 +267,15 @@ function CompanySettingsPage() {
               closed manually.
             </p>
             <input value={defaultMaxCasesPerPallet} onChange={(e) => setDefaultMaxCasesPerPallet(e.target.value)} placeholder="blank = SKU override or manual close only" style={{ width: 240, padding: 6 }} />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Putaway Assignment Grace Minutes</label>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#888' }}>
+              How long the recommended (longest-free, MHE-capable) operator has to pick up the next Putaway task
+              before the Warehouse Supervisor is notified. If their next turn also lapses by this same duration, it
+              escalates to the Warehouse Manager. One dial, reused for both steps.
+            </p>
+            <input value={putawayAssignmentGraceMinutes} onChange={(e) => setPutawayAssignmentGraceMinutes(e.target.value)} placeholder="2" style={{ width: 100, padding: 6 }} />
           </div>
 
           {error && <p style={{ color: 'crimson' }}>{error}</p>}

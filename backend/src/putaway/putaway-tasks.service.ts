@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
-import { RACK_STORAGE_TYPES, buildRackName, laneKeyOf } from '../common/rack-name.util';
+import { RACK_STORAGE_TYPES, buildRackName, displayCode, laneKeyOf } from '../common/rack-name.util';
 
 // Rack storage types (imported above) share the LIFO depth constraint (see
 // schema.prisma's comment on Location.depth and [[wms-putaway-design]] in
@@ -750,5 +750,139 @@ export class PutawayTasksService {
         include: TASK_INCLUDE,
       });
     });
+  }
+
+  // ------------------------------------------------------------
+  // Operator assignment fairness (2026-09-02, see [[wms-putaway-design]])
+  // ------------------------------------------------------------
+  //
+  // Deliberately NOT a hard task-to-operator lock — an operator still
+  // scans whatever physical case is in front of them, same as always
+  // (claimTrip() above is completely unchanged). This is a live-computed
+  // recommendation + fairness layer on top: who SHOULD go next (by idle
+  // time), and where the real priority is (oldest staged stock), shown on
+  // the Putaway page. PutawayAssignmentScheduler consults the same
+  // computeRecommendedOperator() to decide when to alert/escalate.
+
+  // Ranks every currently-FREE (no IN_PROGRESS trip), MHE-capable operator
+  // assigned to this warehouse by how long they've been free, longest
+  // first — winner is the recommendation. "MHE-capable" means
+  // canOperateMhe is true OR unset (null) — a small warehouse that never
+  // bothers configuring this gets everyone eligible, exactly today's
+  // undifferentiated behavior (see schema.prisma's comment on
+  // User.canOperateMhe). Ground/Block routing is deliberately not built
+  // here — Ground/Stillage has no Putaway logic of its own yet.
+  //
+  // An operator who has an unresolved PUTAWAY_OPERATOR_MISSED_TURN alert
+  // (one created after their own last real activity, with no new trip
+  // claimed since) has their effective rank time bumped forward to that
+  // alert's own timestamp — a purely time-driven demotion, not a stored
+  // "position" field: it naturally pushes them behind anyone who's freed
+  // up since, without permanently exiling them to the back (the client's
+  // own correction — dropping someone to last just rewards avoiding
+  // work with less of it).
+  async computeRecommendedOperator(warehouseIdOrIds: string | string[]): Promise<{ id: string; name: string; effectiveRankTime: Date } | null> {
+    const warehouseIds = Array.isArray(warehouseIdOrIds) ? warehouseIdOrIds : [warehouseIdOrIds];
+    if (warehouseIds.length === 0) return null;
+    const operators = await this.prisma.user.findMany({
+      // NOT `canOperateMhe: { not: false }` — on a nullable column, Postgres
+      // NULL comparisons make that silently EXCLUDE null rows (`NULL <>
+      // false` evaluates to NULL, not true), which would wrongly drop
+      // every operator who's never had this set at all. Explicit OR
+      // instead, matching the real "true OR unset" intent.
+      where: { role: 'OPERATOR', isActive: true, OR: [{ canOperateMhe: true }, { canOperateMhe: null }], assignedWarehouses: { some: { id: { in: warehouseIds } } } },
+      select: { id: true, name: true, createdAt: true },
+    });
+    if (operators.length === 0) return null;
+    const operatorIds = operators.map((o) => o.id);
+
+    const inProgress = await this.prisma.putawayTrip.findMany({ where: { claimedById: { in: operatorIds }, status: 'IN_PROGRESS' }, select: { claimedById: true } });
+    const busyIds = new Set(inProgress.map((t: any) => t.claimedById));
+    const freeOperators = operators.filter((o) => !busyIds.has(o.id));
+    if (freeOperators.length === 0) return null;
+    const freeIds = freeOperators.map((o) => o.id);
+
+    const trips = await this.prisma.putawayTrip.findMany({
+      where: { claimedById: { in: freeIds }, status: { in: ['COMPLETED', 'ABANDONED'] } },
+      select: { claimedById: true, claimedAt: true, completedAt: true },
+    });
+    const lastActivity = new Map<string, Date>();
+    for (const t of trips) {
+      const ts: Date = t.completedAt ?? t.claimedAt;
+      const prev = lastActivity.get(t.claimedById);
+      if (!prev || ts > prev) lastActivity.set(t.claimedById, ts);
+    }
+
+    const missedAlerts = await this.prisma.notificationLog.findMany({
+      where: { eventType: 'PUTAWAY_OPERATOR_MISSED_TURN', referenceType: 'User', referenceId: { in: freeIds } },
+      orderBy: { createdAt: 'desc' },
+      select: { referenceId: true, createdAt: true },
+    });
+    const latestAlertByOperator = new Map<string, Date>();
+    for (const a of missedAlerts) {
+      if (!latestAlertByOperator.has(a.referenceId!)) latestAlertByOperator.set(a.referenceId!, a.createdAt);
+    }
+
+    const ranked = freeOperators.map((o) => {
+      // Never worked a trip -> eligible immediately, ranked from account
+      // creation (a brand-new operator shouldn't wait behind everyone
+      // else just because they have no history yet).
+      const freeSince = lastActivity.get(o.id) ?? o.createdAt;
+      const alertAt = latestAlertByOperator.get(o.id);
+      const effectiveRankTime = alertAt && alertAt > freeSince ? alertAt : freeSince;
+      return { id: o.id, name: o.name, effectiveRankTime };
+    });
+    ranked.sort((a, b) => a.effectiveRankTime.getTime() - b.effectiveRankTime.getTime());
+    return ranked[0];
+  }
+
+  // The Putaway page's own live view — "who should go next" plus "where's
+  // the real priority" (oldest staged stock still waiting, per the
+  // client's own "smart system" ask — an operator who's technically busy
+  // but always grabbing whatever's convenient isn't actually working on
+  // what matters). Read-only, no side effects — PutawayAssignmentScheduler
+  // is what actually fires alerts/escalations on a timer.
+  // warehouseId is optional (2026-09-02 follow-up) — an OPERATOR has zero
+  // master-data visibility by design and can never see/pick from a
+  // warehouse dropdown at all, so requiring an explicit id here would mean
+  // they could never see their own recommendation. Mirrors
+  // PutawayTasksService.findAll()'s own convention exactly: omitted means
+  // "every warehouse I'm actually scoped to" (via ownWarehouseIds for a
+  // scoped role, company-wide for Admin), not "no filter at all."
+  async getRecommendation(user: any, warehouseId?: string) {
+    let warehouseIds: string[];
+    if (warehouseId) {
+      const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+      if (!warehouse) throw new NotFoundException('Warehouse not found.');
+      if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this warehouse.');
+      if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
+        const ids = await ownWarehouseIds(this.prisma, user.userId);
+        if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+      }
+      warehouseIds = [warehouseId];
+    } else if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
+      warehouseIds = await ownWarehouseIds(this.prisma, user.userId);
+    } else {
+      // COMPANY_ADMIN/SUPER_ADMIN with no explicit warehouse — every
+      // warehouse in scope (company-wide, or all companies for Super
+      // Admin), same breadth findAll() itself falls back to.
+      const warehouses = await this.prisma.warehouse.findMany({ where: companyFilter(user), select: { id: true } });
+      warehouseIds = warehouses.map((w) => w.id);
+    }
+    if (warehouseIds.length === 0) return { priorityTask: null, recommendedOperator: null };
+
+    const priorityTask = await this.prisma.putawayTask.findFirst({
+      where: { status: 'PENDING', openForAccumulation: false, receiptLine: { receipt: { warehouseId: { in: warehouseIds } } } },
+      include: TASK_INCLUDE,
+      orderBy: { createdAt: 'asc' },
+    });
+    const recommendedOperator = await this.computeRecommendedOperator(warehouseIds);
+
+    return {
+      priorityTask: priorityTask
+        ? { skuCode: priorityTask.sku.code, locationCode: displayCode(priorityTask.fromLocation as any), waitingSince: priorityTask.createdAt }
+        : null,
+      recommendedOperator: recommendedOperator ? { id: recommendedOperator.id, name: recommendedOperator.name, freeSince: recommendedOperator.effectiveRankTime } : null,
+    };
   }
 }
