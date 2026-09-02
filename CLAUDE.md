@@ -3099,6 +3099,123 @@ completion test, an honest, correctly-handled "nowhere eligible to suggest" case
 Mixed-SKU pallets and any real geometric best-fit/packing calculator remain explicitly out of scope,
 per the original design conversation.
 
+**Pallet selection is now scan-based, not a dropdown (2026-09-02 follow-up)** — a real floor
+correction: "we always will never find the right pallet number in warehouse... it should be the
+user bringing the pallet and scanning it." `InboundOrdersPage.tsx`'s Receiving modal's "Load onto
+Pallet" control is now a plain scan input (same hardware-scanner-compatible, type-or-scan convention
+as every other barcode field in this codebase), resolved client-side against the already-fetched
+loadable-pallets list by code, case-insensitively. No separate manual-entry path was needed for
+testing — the same text field just gets typed into by hand instead of scanned, identical effect. A
+failed resolve (unrecognized/unavailable code) shows a clear error and leaves whatever pallet was
+already active untouched, rather than clobbering the selection. Verified live: scanned/typed a real
+pallet code (lowercase, confirming case-insensitive matching), watched it resolve to "Active pallet:
+PLT-0001 — empty, ready to load," completed a real case scan against it, watched the label update to
+"— SKU1, in progress," and confirmed an unrecognized code surfaces a clear error without disturbing
+the still-active pallet.
+
+### Putaway: Drive-in gets its own bin-suggestion strategy, split from SPR (2026-09-02)
+A real physical gap raised directly: `suggestBin()`'s lane logic (SPR/Drive-in/ASRS grouped and
+governed identically — see `laneKeyOf()` in `common/rack-name.util.ts`) let a Drive-in rack hold a
+different SKU on each level, exactly like SPR. Physically wrong for Drive-in specifically — an MHE
+drives into a Drive-in lane from one opening and can't dig past stock at one level to reach a
+different SKU buried at another; SPR/ASRS don't have this problem since each level is independently
+addressable from the aisle. Confirmed directly: **"its not possible to remove 30 bins to find 1 sku
+if its B/C class"** — this is an absolute physical constraint, not a policy choice, so it does NOT
+get the `maxSkusClassA/B/C` treatment SPR gets, and doesn't respect an active
+`MultiSkuLaneException` either (the exception exists to relax a *policy* cap, not to make a
+physically-impossible retrieval possible).
+
+**The split, confirmed point by point**:
+- **SPR (and ASRS, unchanged/deferred — "we will think about it later")**: exactly today's
+  behavior — one lane per level, `maxSkusClass*` cap, `MultiSkuLaneException` bypass, all unchanged.
+- **Drive-in**: `laneKeyOf()` now drops `level` from the grouping key for `DRIVE_IN` locations only
+  — a "lane" becomes the WHOLE column (every level × every depth of one aisle/rack/flank combined).
+  `suggestBin()`'s cross-SKU branch gained an unconditional `storageType === 'DRIVE_IN'` check ahead
+  of the existing class-cap logic — any occupant of a different SKU anywhere in the column makes the
+  whole column ineligible, full stop, no exception bypass. Same-SKU top-up (aging-gated, as before)
+  is unaffected — the column can always take more of the SKU already on it.
+- **Fill order — the real second half of this change, worked out via a concrete example first**:
+  "if we fill one lane full, the MHE cant enter to fill in other levels, so it has to fill deepest
+  of all levels, then the rest etc, progressive in that way" — i.e. the deepest depth-tier gets
+  filled across EVERY level before moving to the next-shallower tier, not "finish Level 1 entirely,
+  then start Level 2" (today's per-level behavior, still exactly right for SPR). Within one
+  depth-tier, level order is **bottom-up** (confirmed explicitly) — matches how a real Drive-in
+  rack actually gets loaded (ground level is faster/safer to reach, keeps the build-up stable).
+  Implemented as one sort key: `(depth DESC, level ASC)` — this single sort produces the exact
+  worked-example sequence (D3/L1 → D3/L2 → D3/L3 → D2/L1 → D2/L2 → D2/L3 → ...) with no separate
+  logic needed for the two rules, and is a complete no-op for SPR/ASRS (whose lanes only ever
+  contain one level's positions to begin with, so the `level ASC` tiebreak never triggers).
+- **Falls out for free, worth knowing rather than re-deciding**: the "still incoming" lane
+  reservation becomes redundant for Drive-in, same reason it's already redundant for Class A — the
+  lock here is permanent, not conditional on anything. "Request Different Bin" needed no changes —
+  it already excludes specific positions, not whole lanes. The Insights "Storage Utilization by ABC
+  Class" report also consumes `laneKeyOf()`, so a Drive-in column now reads as one bigger lane there
+  too (flagged, not a decision point — nothing about the report's own logic changed).
+
+Verified via a throwaway-company API script, 11/11: a fresh 3-level/3-deep Drive-in column correctly
+filled 4 incoming units in the exact sequence `L01-D3 → L02-D3 → L03-D3 → L01-D2`; a different SKU
+(same category, so otherwise storage-eligible) correctly came back `NEEDS_BIN` rather than entering
+the occupied column, with no other eligible storage type configured to fall back to; and a genuine
+SPR control (two different SKUs, two different levels of one SPR rack, isolated via a separate
+Product Category so Drive-in and SPR never competed for the same SKU's eligibility) confirmed SPR's
+per-level independence is completely untouched — both SKUs landed on distinct real SPR locations,
+neither blocked. Then re-verified live through the real Putaway page: the task queue's human Rack
+Names showed the exact same sequence (`R1-01-L01-D3` → `R1-01-L02-D3` → `R1-01-L03-D3` →
+`R1-01-L01-D2`), the blocked SKU displayed `Needs Bin`, and the two SPR tasks showed `R2-01-L01`/
+`R2-01-L02` as expected. `tsc --noEmit` clean.
+
+### Analytics — the real module begins: operator productivity at the Pallet level (2026-09-02)
+The first build in what's genuinely the final module in the build order, deliberately kept separate
+from the earlier one-off `Insights` page ("not the same as the eventual full Analytics module," per
+CLAUDE.md's own long-standing note). Raised as a real ask, not a hypothetical: "we need to keep data
+ready for analytics, for each operator whats the time for him/her at a pallet level, we then get to
+know the productivity stuff" — then, once shown the raw data already existed, explicitly upgraded to
+"lets start making it available... build report," not left as a someday-derivable fact.
+
+**No new schema at all** — both halves are 100% derived from data already being written by Pallet
+consolidation and Putaway, same "always derive, never store a counter" philosophy as everywhere else
+in this codebase:
+- **Marrying time** — every `RECEIPT` `StockMovement` tagged with a `palletLoadId` is one case
+  scanned onto a pallet; grouped by `(palletLoadId, createdById)`, an operator's own time on a given
+  pallet is their first scan's timestamp to their last. Two operators sharing one pallet's loading
+  (one starts it, another finishes it) each get their own row, never blended into one number — the
+  client's own explicit design call.
+- **Putaway time** — every `COMPLETED` `PutawayTrip` on a task tied to a `palletLoadId`, summed
+  `completedAt − claimedAt` grouped by `claimedById`; a multi-trip task split across operators
+  produces one row per operator, correctly summing multiple trips by the same operator on the same
+  pallet.
+- **Abandoned claims, flagged against the operator** — a trip claimed but never completed (auto-
+  expires after 30 minutes, see `PutawayClaimExpiryScheduler`) is surfaced by operator, pallet, and
+  SKU, per the client's explicit call: "that should be flagged against that first operator, we will
+  then ask him/her why they didnt pick it up." No `completedAt`/no separate `abandonedAt` timestamp
+  exists on that row (the scheduler only ever flips `status`), so only `claimedAt` is shown — not a
+  computed duration, to avoid implying false precision (the real wait was "at least 30 minutes,"
+  not an exact figure).
+
+**Backend**: new `analytics/` module (`AnalyticsController`/`Service`) — `GET
+/analytics/operator-productivity?warehouseId=X`, gated `MASTER_DATA_READ_ROLES` (same tier as
+Insights). An explicit `warehouseId` is checked against the caller's own accessible warehouses first
+(same pattern every other scoped read in this codebase follows); a warehouse-scoped role without one
+gets a clear 400 rather than an accidental company-wide read.
+
+**Frontend**: new standalone `AnalyticsPage.tsx`, wired into `App.tsx` as a top-level "Analytics" tab
+next to Insights (same access tier, deliberately a separate role constant from Insights' own even
+though the values are identical today, since the two are meant to be distinct destinations that
+could diverge later). A warehouse picker plus three plain tables — Pallet Marrying, Putaway, and
+Abandoned Claims (styled in red) — no charts/graphs in v1, matching this project's own "cover the
+basics first, deepen later" habit.
+
+Verified via a throwaway-company API script, 21/21: a 2-unit pallet's marrying correctly showed 2
+scans by the same operator; its putaway correctly showed the real trip count and a non-negative
+duration; a second pallet's trip was directly marked `ABANDONED` and backdated 45 minutes (standing
+in for the real 30-minute cron wait, same backdating technique this project already uses for
+detention/aging-granularity tests) and correctly surfaced under Abandoned Claims against the exact
+operator who'd claimed it, while the first (successfully completed) pallet correctly did NOT appear
+there. Then re-verified live through the actual rendered UI (logged in via the API+localStorage
+token trick): the real Analytics page showed the identical numbers — `PLT-0001` with 2 marrying
+scans and 2 putaway trips, `PLT-0002` correctly flagged under Abandoned Claims with a real
+timestamp, both attributed to the same test operator. `tsc --noEmit`/`tsc -b` both clean.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -3331,6 +3448,19 @@ Putaway's task-creation trigger to "pallet closed" for that path only — non-pa
 completely unaffected. New "Pallets" page under Masters (bulk generator + Code128 labels, same
 mechanism as Location Labels). Depends on the still-unbuilt Picking module to ever actually deplete
 a pallet's load and free it for reuse — the schema/logic is ready for that, just unexercised today.
+
+**Drive-in now has its own bin-suggestion strategy, split from SPR/ASRS** (2026-09-02, see "Putaway:
+Drive-in gets its own bin-suggestion strategy" above) — a real physical gap: a Drive-in column
+(every level, every depth) is now always exactly one SKU, absolutely, with no `maxSkusClass*`/
+`MultiSkuLaneException` bypass (an MHE can't dig past stock to reach a different SKU buried in the
+same lane), and fills deepest-tier-first across all levels, bottom-up, instead of exhausting one
+level before starting the next. SPR/ASRS are completely unchanged.
+
+**A real Analytics module now exists** (2026-09-02, see "Analytics — the real module begins" above)
+— deliberately distinct from the earlier one-off Insights page. First report: operator productivity
+at the Pallet level, split into marrying time and putaway time per operator (never blended), plus
+abandoned Putaway claims flagged against whoever claimed and never completed them. No new schema —
+100% derived from data Pallet consolidation and Putaway were already writing.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

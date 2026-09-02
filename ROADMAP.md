@@ -2,11 +2,49 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-01: **Pallet consolidation
-("marrying" loose cases onto a pallet before Putaway) is now built and live-verified**, from the
-closed design the 2026-08-31 session below left ready. See CLAUDE.md's "Pallet consolidation"
-section for the full build detail and the `wms-putaway-design` memory for the complete design-to-
-build trail.
+what to pick up next. Updated as priorities shift — last updated 2026-09-02: **the real Analytics
+module has begun** — operator productivity at the Pallet level (marrying + putaway time, split per
+operator, plus abandoned-claim flagging) — and **Drive-in bin suggestion now has its own strategy,
+split from SPR/ASRS** (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill). See the
+session notes below. 2026-09-01: Pallet consolidation ("marrying" loose cases onto a pallet before
+Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
+ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
+for the complete design-to-build trail.
+
+## Session note (2026-09-02, same session — Analytics module begins: operator productivity per Pallet)
+Third item in the same Putaway deep-dive: "we need to keep data ready for analytics, for each
+operator whats the time for him/her at a pallet level." Started as a "this is already derivable from
+existing data" answer, then explicitly upgraded by the client: **"dont call it derivable, lets start
+making it available! lets make a page called analytics and start publishing these!"** — real lesson,
+worth remembering generally: derivable-in-theory isn't the same as useful. Confirmed shape: full
+pallet lifecycle, but always split into two separate numbers per operator (marrying time, putaway
+time — never blended), plus abandoned Putaway claims flagged against whoever claimed and never
+completed them, for direct follow-up ("we will then ask him/her why they didnt pick it up").
+
+No new schema — entirely derived from `StockMovement`/`PutawayTrip` data Pallet consolidation and
+Putaway already write. New standalone `analytics/` module + `AnalyticsPage.tsx` (top-level nav tab,
+next to Insights but a deliberately distinct destination — not the same page). Verified via a
+throwaway-company API script (21/21) plus a live browser pass. Full detail in CLAUDE.md's "Analytics
+— the real module begins" section; design reasoning in the `wms-putaway-design` memory.
+
+## Session note (2026-09-02 — Putaway deep-dive: Drive-in split from SPR/ASRS)
+A direct question about existing logic, not a bug report: "divide logic of SPR & Drive in, are both
+treated the same?? in the putaway logic?" Traced the real code — yes, identically, which is
+physically wrong for Drive-in: an MHE can't dig past stock at one level of a Drive-in lane to reach
+a different SKU buried at another level, unlike SPR/ASRS where each level is independently
+addressable. Confirmed as an absolute constraint, not a policy choice — no `maxSkusClass*` tier, no
+`MultiSkuLaneException` bypass, ever ("its not possible to remove 30 bins to find 1 sku if its B/C
+class").
+
+Worked through a concrete numbered example before coding (same rhythm as the 2026-08-29 "still
+incoming" reservation design): a Drive-in column now fills deepest-tier-first ACROSS every level
+(not "finish Level 1, then start Level 2"), bottom-up within a tier — confirmed both the overall
+shape and the level tie-break explicitly. ASRS explicitly parked ("we will think about it later"),
+still inheriting SPR's behavior for now. Built and verified the same session — a throwaway-company
+API script (11/11, including a genuine SPR-independence control) plus a live browser pass through
+the real Putaway page confirming the exact fill sequence via Rack Name labels. Full detail in
+CLAUDE.md's "Putaway: Drive-in gets its own bin-suggestion strategy" section; design reasoning in
+the `wms-putaway-design` memory.
 
 ## Session note (2026-09-01 — Pallet consolidation built and verified, from the 2026-08-31 design)
 Picked up the closed design below directly, per its own instruction ("nothing was built, this is a
@@ -339,13 +377,13 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, and (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path. Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization, and Pallet reuse (needs Picking to ever actually deplete a load) — see `wms-putaway-design` memory |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — and (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill). Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization, ASRS's own strategy (deferred, not decided), and Pallet reuse (needs Picking to ever actually deplete a load) — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |
 | Dispatch | ⬜ Not started |
 | Returns | ⬜ Not started |
-| Analytics | ⬜ Not started (deliberately last, built on top of everything else) — a new, separate **Insights** page (2026-08-29) started ahead of this, with one report (Storage Utilization by ABC Class); not the same as the eventual full Analytics module, but the first real reporting surface this app has |
+| **Analytics** | 🟨 Started (2026-09-02) — the real module, distinct from the earlier one-off **Insights** page (which still only has Storage Utilization by ABC Class). First report: operator productivity at the Pallet level — marrying time and putaway time per operator (always split, never blended), plus abandoned Putaway claims flagged against the operator who claimed and never completed them. No new schema, entirely derived from existing Pallet/Putaway data. |
 
 ## Session note (2026-08-27, Inbound deep-dive)
 Rather than starting the next module, this session went deeper into Inbound per your own ask.

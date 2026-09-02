@@ -14,6 +14,7 @@ import EquipmentPage from './EquipmentPage';
 import PutawayPage from './PutawayPage';
 import InsightsPage from './InsightsPage';
 import PalletsPage from './PalletsPage';
+import AnalyticsPage from './AnalyticsPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -26,8 +27,13 @@ const CAN_MANAGE_USERS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPER
 // "zero visibility, surface is a task screen" reasoning as every other
 // master-data-tier read.
 const CAN_VIEW_INSIGHTS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
+// Same tier as AnalyticsController's own @Roles() gate — a separate
+// constant from CAN_VIEW_INSIGHTS on purpose even though the values are
+// identical today, since Insights and the real Analytics module are
+// deliberately distinct destinations that could diverge in access later.
+const CAN_VIEW_ANALYTICS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets' | 'analytics';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -123,6 +129,11 @@ function App() {
             Insights
           </button>
         )}
+        {CAN_VIEW_ANALYTICS.includes(user?.role) && (
+          <button onClick={() => setTab('analytics')} style={{ fontWeight: tab === 'analytics' ? 'bold' : 'normal' }}>
+            Analytics
+          </button>
+        )}
         <button onClick={() => setTab('inboundorders')} style={{ fontWeight: tab === 'inboundorders' ? 'bold' : 'normal' }}>
           Inbound Orders
         </button>
@@ -161,6 +172,8 @@ function App() {
         <PutawayPage />
       ) : tab === 'insights' ? (
         <InsightsPage />
+      ) : tab === 'analytics' ? (
+        <AnalyticsPage />
       ) : tab === 'companysettings' ? (
         <CompanySettingsPage />
       ) : tab === 'inboundorders' ? (

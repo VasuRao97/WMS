@@ -243,11 +243,25 @@ export class PutawayTasksService {
         if (existingDate && newStockDate && !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)) {
           laneEligible = false; // must fully empty before a different-age batch can enter
         }
+      } else if (storageType === 'DRIVE_IN') {
+        // Absolute, unconditional single-SKU-per-column — 2026-09-02, see
+        // CLAUDE.md's Putaway section. Unlike SPR's maxSkusClass* cap,
+        // this is NOT a policy choice this codebase can relax: an MHE
+        // drives into a Drive-in lane from one opening and physically
+        // cannot dig past stock to reach a different SKU buried behind or
+        // above it, so there is no bypass for it, not even an approved
+        // MultiSkuLaneException (confirmed explicitly — "its not possible
+        // to remove 30 bins to find 1 sku if its B/C class"). The "still
+        // incoming" reservation is correspondingly redundant here too,
+        // same reason it already is for Class A: this lock is permanent,
+        // not conditional on anything.
+        laneEligible = false;
       } else {
-        // Cross-SKU mixing — governed by maxSkusClass*, most-restrictive-
-        // class-wins across every occupant AND the incoming SKU, UNLESS an
-        // approved MultiSkuLaneException is currently active for this
-        // warehouse (the only bypass, per [[wms-putaway-design]]).
+        // Cross-SKU mixing (SPR/ASRS only) — governed by maxSkusClass*,
+        // most-restrictive-class-wins across every occupant AND the
+        // incoming SKU, UNLESS an approved MultiSkuLaneException is
+        // currently active for this warehouse (the only bypass, per
+        // [[wms-putaway-design]]).
         if (!exceptionActive) {
           // "Still incoming" reservation overrides the mixing cap
           // entirely — checked BEFORE the cap logic, not folded into it,
@@ -281,8 +295,15 @@ export class PutawayTasksService {
 
       // Deepest-first fill: among this lane's positions, pick the one with
       // the HIGHEST depth that's currently empty, not already targeted by
-      // another open task, and not in the excluded list.
-      const sorted = [...laneLocations].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0));
+      // another open task, and not in the excluded list. Level ASC is a
+      // pure tiebreaker for Drive-in's whole-column lanes (2026-09-02) —
+      // several levels can share the same depth number, so once the
+      // deepest tier is chosen, fill it bottom-up before moving to the
+      // next-shallower tier (confirmed: "it has to fill deepest of all
+      // levels, then the rest etc, progressive in that way" — matches how
+      // an MHE actually loads, ground level first). A no-op for SPR/ASRS,
+      // whose lanes only ever contain one level's positions to begin with.
+      const sorted = [...laneLocations].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0) || ((Number(a.level) || 0) - (Number(b.level) || 0)));
       const target = sorted.find(
         (loc) => (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 && !targetedLocationIds.has(loc.id) && !excludeLocationIds.includes(loc.id) && [...balanceByLocSku.keys()].every((k) => !(k.startsWith(`${loc.id}|`) && (balanceByLocSku.get(k) || 0) > 0)),
       );

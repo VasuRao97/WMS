@@ -25,18 +25,28 @@ export function displayCode(loc: { code: string; storageType: string; flankNumbe
 }
 
 // Groups Locations into "lanes" — everything sharing one physical
-// multi-deep access point (Aisle + flank + Rack + Level for rack storage;
-// every other row is its own single-location "lane"). Originally a
-// private method on PutawayTasksService's suggestBin(); pulled out here
-// 2026-08-29 once InsightsService needed the exact same grouping to
-// compute per-ABC-class storage utilization, per this codebase's "one
-// function, many callers" convention. flankNumber MUST be part of the key
-// — on a mirrored aisle, R01/R01B are physically separate racks that both
-// store the literal rack value "01" (the "B" only ever exists in the
-// display code) — see CLAUDE.md's 2026-08-29 flank-merging bug writeup
-// for the full story of why this was caught and fixed.
+// multi-deep access point (Aisle + flank + Rack + Level for SPR/ASRS;
+// Aisle + flank + Rack ACROSS EVERY LEVEL for Drive-in, see below; every
+// other row is its own single-location "lane"). Originally a private
+// method on PutawayTasksService's suggestBin(); pulled out here 2026-08-29
+// once InsightsService needed the exact same grouping to compute per-ABC-
+// class storage utilization, per this codebase's "one function, many
+// callers" convention. flankNumber MUST be part of the key — on a
+// mirrored aisle, R01/R01B are physically separate racks that both store
+// the literal rack value "01" (the "B" only ever exists in the display
+// code) — see CLAUDE.md's 2026-08-29 flank-merging bug writeup for the
+// full story of why this was caught and fixed.
+//
+// Drive-in drops Level from the key (2026-09-02, see CLAUDE.md's Putaway
+// section) — a whole Drive-in column, ground to top, is one physical
+// single-SKU access unit: an MHE drives in from one opening and can't dig
+// past stock at one level to reach a different SKU buried at another
+// level. SPR/ASRS are unchanged — each level there IS independently
+// addressable (a Reach/Stacker truck accesses any level from the aisle
+// without disturbing the others), so they keep Level in the key exactly
+// as before this date.
 export function laneKeyOf(loc: { id: string; storageType: string; aisle: string | null; rack: string | null; level: string | null; flankNumber: number | null }): string {
-  return RACK_STORAGE_TYPES.includes(loc.storageType) && loc.aisle && loc.rack && loc.level
-    ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}|${loc.level}`
-    : `single|${loc.id}`;
+  if (!RACK_STORAGE_TYPES.includes(loc.storageType) || !loc.aisle || !loc.rack) return `single|${loc.id}`;
+  if (loc.storageType === 'DRIVE_IN') return `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}`;
+  return loc.level ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}|${loc.level}` : `single|${loc.id}`;
 }

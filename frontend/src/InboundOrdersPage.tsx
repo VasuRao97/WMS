@@ -226,13 +226,21 @@ function InboundOrdersPage() {
   const [scanError, setScanError] = useState('');
   const [approveForms, setApproveForms] = useState<Record<string, { receiptLineId: string; quantity: string }>>({});
 
-  // Pallet consolidation's own picker (2026-09-01) — one dropdown listing
-  // every loadable pallet in this receipt's warehouse (not pre-filtered by
-  // SKU, since the SKU isn't known until a barcode actually scans; staff
-  // pick the physical pallet in front of them, same as real floor work —
-  // see [[wms-pallet-consolidation-build]] for why this shape was chosen).
+  // Pallet consolidation's own selection (2026-09-01, scan-based per
+  // 2026-09-02 follow-up) — the client's own real-floor correction: "we
+  // always will never find the right pallet number in warehouse... it
+  // should be the user bringing the pallet and scanning it." So this is a
+  // barcode scan, not a picked-from-a-list dropdown — resolved client-side
+  // against the already-fetched loadable-pallets list (not pre-filtered by
+  // SKU, since the SKU isn't known until the case barcode itself scans;
+  // the backend still does the real single-SKU-per-pallet validation
+  // regardless of what this resolves to). Same plain-text-input,
+  // hardware-scanner-compatible convention as every other scan field in
+  // this codebase — also lets a tester just type the code by hand with no
+  // separate manual-entry path needed.
   const [loadablePallets, setLoadablePallets] = useState<{ id: string; code: string; status: string; activeLoad: { id: string; skuCode: string } | null }[]>([]);
   const [selectedPalletId, setSelectedPalletId] = useState('');
+  const [palletScanInput, setPalletScanInput] = useState('');
   const [palletActionError, setPalletActionError] = useState('');
 
   // "Complete Inward Process" (2026-08-27) — the deliberate close-out,
@@ -422,8 +430,26 @@ function InboundOrdersPage() {
     setCompleteInwardRemarks('');
     setCompleteInwardError('');
     setSelectedPalletId('');
+    setPalletScanInput('');
     setPalletActionError('');
     loadPalletsFor(entry);
+  };
+
+  // Scan (or type) the pallet's own printed barcode to select it — resolved
+  // client-side against the already-fetched loadable list by code, case-
+  // insensitively (2026-09-02, see the state declaration's comment above).
+  const handlePalletScanSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = palletScanInput.trim();
+    if (!trimmed) return;
+    const match = loadablePallets.find((p) => p.code.toLowerCase() === trimmed.toLowerCase());
+    if (!match) {
+      setPalletActionError(`Pallet "${trimmed}" not found or not currently available in this warehouse.`);
+      return;
+    }
+    setSelectedPalletId(match.id);
+    setPalletScanInput('');
+    setPalletActionError('');
   };
 
   const handleScanSubmit = async (e: React.FormEvent) => {
@@ -829,28 +855,29 @@ function InboundOrdersPage() {
             {receivingFor.inboundReceipt.requiresPalletConsolidation && (
               <div style={{ marginBottom: 12, padding: 10, border: '1px dashed #999', borderRadius: 6 }}>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 'bold', marginBottom: 4 }}>Load onto Pallet *</label>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select
-                    value={selectedPalletId}
-                    onChange={(e) => { setSelectedPalletId(e.target.value); setPalletActionError(''); }}
-                    style={{ minWidth: 220, padding: 6 }}
-                  >
-                    <option value="">Select a pallet…</option>
-                    {loadablePallets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.code}{p.activeLoad ? ` — ${p.activeLoad.skuCode}, in progress` : ' — empty'}
-                      </option>
-                    ))}
-                  </select>
+                <form onSubmit={handlePalletScanSubmit} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    placeholder="Scan or type a Pallet Barcode, then Enter"
+                    value={palletScanInput}
+                    onChange={(e) => setPalletScanInput(e.target.value)}
+                    style={{ minWidth: 260, padding: 6 }}
+                  />
                   {loadablePallets.find((p) => p.id === selectedPalletId)?.activeLoad && (
                     <button type="button" onClick={handleShortClosePallet}>Short Close This Pallet</button>
                   )}
-                </div>
-                {loadablePallets.length === 0 && (
-                  <p style={{ margin: '4px 0 0', fontSize: 12, color: '#888' }}>
-                    No pallets available in this warehouse — register/generate some on the Pallets page first.
-                  </p>
-                )}
+                </form>
+                {(() => {
+                  const active = loadablePallets.find((p) => p.id === selectedPalletId);
+                  return active ? (
+                    <p style={{ margin: '6px 0 0', fontSize: 13, color: '#2e7d32' }}>
+                      Active pallet: <strong>{active.code}</strong>{active.activeLoad ? ` — ${active.activeLoad.skuCode}, in progress` : ' — empty, ready to load'}
+                    </p>
+                  ) : (
+                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#888' }}>
+                      No pallet scanned yet — scan the physical pallet's own barcode before scanning the first case.
+                    </p>
+                  );
+                })()}
                 {palletActionError && <p style={{ color: 'crimson', marginTop: 4 }}>{palletActionError}</p>}
               </div>
             )}
