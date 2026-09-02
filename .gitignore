@@ -1,3 +1,10 @@
 node_modules/
 dist/
 .env
+
+# graphify (local code-graph tool) — .claude/settings.json hardcodes this
+# machine's own absolute binary path, and graphify-out/ is a regenerated,
+# immediately-stale-on-code-change artifact — neither belongs in version
+# control. See the wms-graphify-tool memory.
+.claude/settings.json
+graphify-out/
