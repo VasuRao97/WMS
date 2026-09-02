@@ -5,6 +5,7 @@ import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOP
 import { DriverNotificationService } from './driver-notification.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PutawayTasksService } from '../putaway/putaway-tasks.service';
+import { PalletsService } from '../pallets/pallets.service';
 
 // VEHICLE_ONLY (a non-cargo visit) was considered and dropped 2026-08-25 —
 // no concrete real use case for it, easy to add back later if one shows up.
@@ -35,6 +36,9 @@ const GATE_ENTRY_INCLUDE = {
       lines: { include: { sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } } } },
       stagingLocation: { select: { id: true, code: true } },
     },
+    // requiresPalletConsolidation (2026-09-01) surfaces via the default
+    // `include` above — no explicit `select` narrowing on the receipt
+    // itself here, so it comes through automatically.
   },
   inboundScans: {
     include: {
@@ -61,6 +65,7 @@ export class GateEntriesService {
     private driverNotifications: DriverNotificationService,
     private notifications: NotificationsService,
     private putawayTasks: PutawayTasksService,
+    private pallets: PalletsService,
   ) {}
 
   // Net weight is always derived (gross - tare) at read time, never stored —
@@ -568,7 +573,14 @@ export class GateEntriesService {
     const alreadyClaimed = await this.prisma.vehicleGateEntry.findFirst({ where: { inboundReceiptId: receipt.id } });
     if (alreadyClaimed) throw new BadRequestException('This order has already been matched to a different vehicle.');
 
-    await this.prisma.inboundReceipt.update({ where: { id: receipt.id }, data: { stagingLocationId } });
+    // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]) — set
+    // here, not at order creation, since this is the first moment staff are
+    // physically at the dock and can see how the delivery actually arrived
+    // (loose cases vs. ready-built pallets). Conditional: `undefined` when
+    // omitted leaves the receipt's existing value untouched (a re-match
+    // shouldn't silently reset it); explicit true/false sets it.
+    const requiresPalletConsolidation = data?.requiresPalletConsolidation === undefined ? undefined : !!data.requiresPalletConsolidation;
+    await this.prisma.inboundReceipt.update({ where: { id: receipt.id }, data: { stagingLocationId, requiresPalletConsolidation } });
     const updated = await this.prisma.vehicleGateEntry.update({
       where: { id },
       data: { inboundReceiptId: receipt.id },
@@ -585,7 +597,7 @@ export class GateEntriesService {
   // SKUs elsewhere — see schema.prisma's comment on SkuBarcode.
   // storageUnitId) — a scan is unambiguous as long as at most one expected,
   // not-yet-fully-received line on this receipt matches it.
-  async scan(id: string, barcode: any, user: any) {
+  async scan(id: string, barcode: any, user: any, palletId?: string) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
     if (!(existing as any).inboundReceiptId) throw new BadRequestException('This vehicle has not been matched to an order yet.');
@@ -598,8 +610,19 @@ export class GateEntriesService {
     const [barcodeMatches, receiptLines, receipt] = await Promise.all([
       this.prisma.skuBarcode.findMany({ where: { barcode: trimmed, sku: { companyId: existing.warehouse.companyId } }, include: { storageUnit: true } }),
       this.prisma.inboundReceiptLine.findMany({ where: { receiptId } }),
-      this.prisma.inboundReceipt.findUnique({ where: { id: receiptId }, select: { stagingLocationId: true } }),
+      this.prisma.inboundReceipt.findUnique({ where: { id: receiptId }, select: { stagingLocationId: true, requiresPalletConsolidation: true } }),
     ]);
+    // Pallet consolidation (2026-09-01) — for a receipt flagged at Match
+    // Order as arriving in loose cases, a Pallet must be picked before
+    // scanning: the client's own explicit choice was to fold "marrying"
+    // into this exact scan rather than add a second scanning layer ("we
+    // are just adding one more scanning layer from which we would loose
+    // time"). Checked up front — before resolving the barcode at all — so
+    // a missing pallet selection fails fast with a clear message rather
+    // than silently accepting an un-tagged scan on a palletized receipt.
+    if (receipt?.requiresPalletConsolidation && !palletId) {
+      throw new BadRequestException('This order requires pallet consolidation — select a pallet to load these cases onto before scanning.');
+    }
     // Line override first, falling back to the receipt's own staging spot
     // set at Match Order — see schema.prisma's comment on
     // InboundReceipt.stagingLocationId. matchReceipt() requires this to be
@@ -628,6 +651,15 @@ export class GateEntriesService {
         const line = await tx.inboundReceiptLine.update({ where: { id: c.receiptLineId }, data: { receivedQty: { increment: c.quantity } } });
         const locationId = line.stagingLocationId ?? receiptStagingLocationId;
         if (!locationId) throw new BadRequestException('This order has no staging location set — match it to a dock/staging spot first.');
+
+        // Pallet consolidation (2026-09-01) — resolves (or opens) the
+        // pallet's OPEN load BEFORE writing the movement, so the movement
+        // itself can carry palletLoadId in the same insert ("the scan IS
+        // the marrying action").
+        const palletLoadId = receipt?.requiresPalletConsolidation
+          ? await this.pallets.resolveLoadForScan(tx, { warehouseId: existing.warehouseId, skuId: c.skuId, palletId: palletId!, receiptLineId: c.receiptLineId })
+          : undefined;
+
         await tx.stockMovement.create({
           data: {
             warehouseId: existing.warehouseId,
@@ -639,19 +671,28 @@ export class GateEntriesService {
             referenceId: created.id,
             createdById: user.userId,
             receivedDate,
+            palletLoadId,
           },
         });
         await this.recomputeReceiptStatus(tx, receiptId);
-        // IMMEDIATE putaway trigger mode only — a no-op in BATCH mode,
-        // which instead creates tasks at the RECEIVED transition above.
-        await this.putawayTasks.handleAcceptedScan(tx, {
-          receiptLineId: c.receiptLineId,
-          skuId: c.skuId,
-          quantity: c.quantity,
-          locationId,
-          warehouseId: existing.warehouseId,
-          receiptId,
-        });
+
+        if (palletLoadId) {
+          // Putaway's task-creation trigger shifts to "pallet closed" for
+          // this path only — BATCH/IMMEDIATE are both bypassed entirely
+          // (see recomputeReceiptStatus's own comment for the BATCH half).
+          await this.pallets.maybeAutoCloseLoad(tx, palletLoadId);
+        } else {
+          // IMMEDIATE putaway trigger mode only — a no-op in BATCH mode,
+          // which instead creates tasks at the RECEIVED transition above.
+          await this.putawayTasks.handleAcceptedScan(tx, {
+            receiptLineId: c.receiptLineId,
+            skuId: c.skuId,
+            quantity: c.quantity,
+            locationId,
+            warehouseId: existing.warehouseId,
+            receiptId,
+          });
+        }
         return created;
       });
       return scan;
@@ -681,7 +722,10 @@ export class GateEntriesService {
   // exception, NotificationsService, was made because duplicating a whole
   // send/adapter/audit pipeline was a much bigger cost than this one query).
   async recomputeReceiptStatus(tx: any, receiptId: string) {
-    const before = await tx.inboundReceipt.findUnique({ where: { id: receiptId }, select: { status: true, warehouseId: true, warehouse: { select: { companyId: true } } } });
+    const before = await tx.inboundReceipt.findUnique({
+      where: { id: receiptId },
+      select: { status: true, warehouseId: true, requiresPalletConsolidation: true, warehouse: { select: { companyId: true } } },
+    });
     const lines = await tx.inboundReceiptLine.findMany({ where: { receiptId } });
     const allReceived = lines.length > 0 && lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
     const anyReceived = lines.some((l: any) => Number(l.receivedQty) > 0);
@@ -691,8 +735,12 @@ export class GateEntriesService {
     // BATCH putaway trigger mode: create every line's task the moment the
     // whole receipt is fully reconciled, once, on the transition into
     // RECEIVED — a no-op in IMMEDIATE mode, which handles task creation
-    // per-scan instead (see handleAcceptedScan in scan() above).
-    if (before && before.status !== 'RECEIVED' && status === 'RECEIVED') {
+    // per-scan instead (see handleAcceptedScan in scan() above). Also a
+    // no-op for a palletized receipt (2026-09-01) — that path's ONLY task-
+    // creation trigger is a Pallet closing (PalletsService.
+    // maybeAutoCloseLoad()/manualShortClose() -> createTaskForClosedPallet),
+    // never this per-receipt BATCH/IMMEDIATE mechanism.
+    if (before && !before.requiresPalletConsolidation && before.status !== 'RECEIVED' && status === 'RECEIVED') {
       const company = await tx.company.findUnique({ where: { id: before.warehouse.companyId }, select: { putawayTriggerMode: true } });
       if (company?.putawayTriggerMode === 'BATCH') {
         await this.putawayTasks.createBatchTasksForReceipt(tx, receiptId);

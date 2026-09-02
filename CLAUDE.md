@@ -2995,6 +2995,110 @@ confirmed the three stat-cards rendered the exact same numbers the script comput
 of 3 bins, across 1 lane), Class B "—" (No B-class lanes in use), Class C 100% (3 of 3 bins, across 1
 lane). `tsc -b` (frontend) and `tsc --noEmit` (backend) both clean.
 
+### Pallet consolidation — "marrying" loose cases onto a pallet before Putaway (2026-09-01)
+Built directly from the closed design ROADMAP.md's 2026-08-31 session note left ready ("nothing was
+built, this is a closed design for a future session to implement directly") — see
+`[[wms-putaway-design]]` in memory for the full design-conversation trail. A real physical-operations
+gap: today's system is a pure quantity ledger with zero concept of a physical unit/pallet identity;
+when loose cases (not pre-built pallets) come off a truck, staff physically stack several onto a
+pallet before it goes into a rack, and nothing captured that step.
+
+**Two new entities, mirroring `Vehicle`/`VehicleGateEntry`'s own master-plus-log shape**:
+- **`Pallet`** — the physical asset. Warehouse-scoped (same reasoning as the 2026-08-28 Vehicle/
+  Driver reversal — different warehouses can be run by different 3PLs). Bulk range-generated
+  (`POST /pallets/generate`, same `expandRange()`-style shape as Locations' own generator, a simpler
+  one-field version since a pallet code has no aisle/rack/level structure), with print-labels
+  (`POST /pallets/labels`, identical Code128/bwip-js/archiver mechanism as Location Labels — one-time
+  at registration). Sits `AVAILABLE`/`IN_USE`. **Explicitly NOT the same thing as
+  `SkuStorageUnit.unitType`'s existing `"PALLET"` value** — that's an unrelated, older per-SKU
+  quantity-multiplier fact (e.g. "1 PALLET = 480 eaches"), not a trackable physical object; both
+  coexist in the schema under the word "pallet," flagged in comments so it isn't confusing later.
+- **`PalletLoad`** — one row per load cycle (single SKU only — mixed-SKU pallets explicitly out of
+  scope). Quantity is never a stored field — always derived as `SUM(StockMovement.quantity WHERE
+  palletLoadId = this row)`, same "always derive from the ledger" philosophy as on-hand stock
+  everywhere else in this codebase. Closes either by hitting its effective max (`Sku.
+  maxCasesPerPallet ?? Company.defaultMaxCasesPerPallet` — same override-then-fall-back-to-company-
+  default chain as `putawayBatchQty`/`detentionCostPerDay`) or an operator's manual short-close
+  (`PATCH /pallets/loads/:id/close`). A `Pallet` frees back to `AVAILABLE` once ALL its stock
+  genuinely depletes (a future `PICK` movement referencing the load, once Picking exists) — reused,
+  not a disposable per-trip LPN, per the client's own call ("after that pallet's dispatch is
+  complete, we will use it again, why not").
+
+**The real mechanical decision, resolved in conversation before coding**: how does "marrying"
+actually touch the ledger? Two options were laid out with a concrete worked example each — (A) fold
+marrying into the existing Inbound receiving scan itself (the RECEIPT `StockMovement` that scan
+already creates just gains a `palletLoadId` tag at creation, no new screen), or (B) a genuinely
+separate "Load Pallet" step after scanning (needs its own zero-net ledger write purely to record the
+tag). **The client's explicit call: option A** — "we are just adding one more scanning layer from
+which we would loose time." `StockMovement.palletLoadId` (nullable, indexed) is the mechanism;
+`PutawayTask.palletLoadId` carries the same link forward for whenever the still-unbuilt Picking
+module needs to know how many pallets to pick from.
+
+**`InboundReceipt.requiresPalletConsolidation`** (default `false`) is the conditional switch — a
+receipt arriving as ready-built pallets skips this entirely, non-palletized receipts are completely
+unaffected. Set at **Match Order** (`GateEntriesService.matchReceipt()`), not order creation — the
+first moment staff are physically at the dock and can see how the delivery actually arrived, same
+reasoning `stagingLocationId` itself is set there rather than up front.
+
+**Putaway's task-creation trigger shifts to "pallet closed," for this path only.** A new
+`PutawayTasksService.createTaskForClosedPallet()` is the ONLY task-creation path for a palletized
+receipt — `GateEntriesService.recomputeReceiptStatus()`/`InboundReceiptsService.
+recomputeReceiptStatus()` both skip their own BATCH-mode trigger entirely when
+`requiresPalletConsolidation` is true, and `handleAcceptedScan()` (IMMEDIATE mode) is bypassed the
+same way at the scan site. Deliberately does NOT reuse `createBatchTasksForReceipt()`'s one-task-
+per-line duplicate-guard — a single receipt line can legitimately spawn several pallets (several
+closed loads), each needing its own task with its own destination bin (a task can only ever have one
+`toLocationId`). `PutawayTasksService.completeTrip()` carries `palletLoadId` forward onto both
+`PUTAWAY_OUT`/`PUTAWAY_IN` movements unchanged, exactly like `receivedDate` already does.
+
+**`PalletsService.resolveLoadForScan()`** is where the actual marrying happens, called from inside
+`GateEntriesService.scan()`'s and `InboundReceiptsService.approveScan()`'s own transactions (both
+call sites needed it — a Supervisor approving a blocked scan on a palletized receipt still has to say
+which pallet it's going onto). Opens a fresh `PalletLoad` the first time a given `Pallet` is scanned
+against (flips it to `IN_USE`), or resumes its existing `OPEN` load — enforcing single-SKU-per-pallet
+by rejecting a scan whose SKU doesn't match that load's own SKU, named explicitly in the error.
+`PalletsService.maybeAutoCloseLoad()` runs right after the movement insert, checking the effective
+cap and closing (`-> createTaskForClosedPallet`) the instant it's hit.
+
+**Frontend**: new `PalletsPage.tsx` (Pallet Master, under Masters — bulk generator, table list,
+Download Labels, standing Delete All) plus three additions to the existing Inbound flow: a "Requires
+pallet consolidation" checkbox on `InboundOrdersPage.tsx`'s Match Order modal; a "Load onto Pallet"
+picker in the Receiving modal, shown only when the matched receipt requires it — **deliberately one
+dropdown listing every loadable pallet in the warehouse, not pre-filtered by SKU** (the SKU isn't
+knowable until a barcode actually scans; staff pick the physical pallet in front of them, and a
+mismatched scan is rejected by the backend with a clear message, same as physically picking up the
+wrong pallet) — plus a "Short Close This Pallet" button next to it once a load is active. `Sku.
+maxCasesPerPallet` (SKU Master form) and `Company.defaultMaxCasesPerPallet` (Company Settings'
+existing Putaway section) round out the override chain's two input points.
+
+Verified two ways. A throwaway-company API script, 42/42 (a receipt correctly requiring a pallet
+before any scan is accepted; auto-close firing exactly at the effective cap across two separate
+pallets, each producing its own `PutawayTask`; the single-SKU-per-pallet lock correctly blocking a
+second, genuinely-expected-on-the-order SKU from an already-open load; manual short-close producing
+a task sized to exactly what was actually scanned; and a regression check confirming an ordinary,
+non-palletized receipt's IMMEDIATE-mode trigger is completely untouched). A second throwaway-company
+script, 15/15, closed the loop all the way through Putaway: a closed pallet's task correctly got a
+real suggested bin (not `NEEDS_BIN`) once the warehouse had a real storage plan, claim+complete
+across the multiple trips the warehouse's default assumed equipment capacity required, the task
+reaching `COMPLETED`, and the receipt correctly flipping to `PUTAWAY_COMPLETE`. Then re-verified live
+through the actual rendered UI (logged in via the API+localStorage token trick): generated real
+pallets through the real Pallet Master form and confirmed a real label ZIP downloads (`201`); created
+a real SKU with `Max Cases/Pallet` filled in through the real form and confirmed it persisted; saved
+`Default Max Cases Per Pallet` on Company Settings and confirmed — via the live DOM value, not just
+displayed text — it survived a full page reload; checked the real "Requires pallet consolidation"
+checkbox on a real Match Order modal (confirmed via `checkbox.checked` on the live DOM) and completed
+a real scan through the real Receiving modal's pallet picker, watching Received/Remaining and the
+picker's own "SKU1, in progress" label update live; then confirmed Short Close removed that pallet
+from the picker and produced a `NEEDS_BIN` task for its exact scanned quantity (correctly `NEEDS_BIN`
+this time — the warehouse's one real rack position was already fully occupied by the earlier trip-
+completion test, an honest, correctly-handled "nowhere eligible to suggest" case, not a bug).
+
+**Genuinely still open, not decided or built**: Picking doesn't exist yet to actually deplete a
+`PalletLoad` and free its `Pallet` back to `AVAILABLE` — schema/logic is ready for it
+(`palletLoadId` threads all the way through), but this is unexercised until that module is built.
+Mixed-SKU pallets and any real geometric best-fit/packing calculator remain explicitly out of scope,
+per the original design conversation.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -3218,6 +3322,16 @@ has an open entry elsewhere. **Same session, a real physical barcode for locatio
 its existing Rack Name, closing the "nothing to actually scan in production" gap the Rack Name work
 itself had flagged.
 
+**Pallet consolidation ("marrying" loose cases onto a pallet before Putaway) is now real, built, and
+live-verified** (2026-09-01, see "Pallet consolidation" above for the full design and what's
+verified) — a new `Pallet`/`PalletLoad` master-plus-log pair (mirroring Vehicle/VehicleGateEntry),
+folded directly into the existing Inbound receiving scan (no second scanning layer, the client's own
+explicit call), auto-closing on an effective max-cases cap or a manual short-close, and shifting
+Putaway's task-creation trigger to "pallet closed" for that path only — non-palletized receipts are
+completely unaffected. New "Pallets" page under Masters (bulk generator + Code128 labels, same
+mechanism as Location Labels). Depends on the still-unbuilt Picking module to ever actually deplete
+a pallet's load and free it for reuse — the schema/logic is ready for that, just unexercised today.
+
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
 import features must be exercised through the actual frontend, not Thunder Client.
@@ -3255,3 +3369,13 @@ import features must be exercised through the actual frontend, not Thunder Clien
   will still fail loudly (not silently) if the data doesn't fit, but hand-writing the backfill
   logic yourself (see the `Sku.categoryId` migration for an example) is on you, `migrate dev` isn't
   there to generate it for you this way.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

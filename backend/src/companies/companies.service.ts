@@ -36,6 +36,7 @@ export class CompaniesService {
         erpApiKey: true,
         putawayTriggerMode: true,
         putawayDefaultBatchQty: true,
+        defaultMaxCasesPerPallet: true,
       },
     });
   }
@@ -69,6 +70,11 @@ export class CompaniesService {
     if (data.putawayDefaultBatchQty !== undefined && data.putawayDefaultBatchQty !== null && data.putawayDefaultBatchQty !== '' && Number(data.putawayDefaultBatchQty) <= 0) {
       errors.push('Putaway Default Batch Qty must be a positive number when given.');
     }
+    // Pallet consolidation (2026-09-01) — same override-then-fall-back-to-
+    // company-default chain as putawayDefaultBatchQty above.
+    if (data.defaultMaxCasesPerPallet !== undefined && data.defaultMaxCasesPerPallet !== null && data.defaultMaxCasesPerPallet !== '' && Number(data.defaultMaxCasesPerPallet) <= 0) {
+      errors.push('Default Max Cases Per Pallet must be a positive number when given.');
+    }
     if (errors.length > 0) throw new BadRequestException(errors);
 
     return this.prisma.company.update({
@@ -92,6 +98,7 @@ export class CompaniesService {
         // simply ignored (left unchanged) rather than attempted as a clear.
         putawayTriggerMode: data.putawayTriggerMode ? data.putawayTriggerMode : undefined,
         putawayDefaultBatchQty: data.putawayDefaultBatchQty === undefined ? undefined : data.putawayDefaultBatchQty === null || data.putawayDefaultBatchQty === '' ? null : Number(data.putawayDefaultBatchQty),
+        defaultMaxCasesPerPallet: data.defaultMaxCasesPerPallet === undefined ? undefined : data.defaultMaxCasesPerPallet === null || data.defaultMaxCasesPerPallet === '' ? null : Number(data.defaultMaxCasesPerPallet),
       },
       select: {
         id: true,
@@ -104,6 +111,7 @@ export class CompaniesService {
         erpApiKey: true,
         putawayTriggerMode: true,
         putawayDefaultBatchQty: true,
+        defaultMaxCasesPerPallet: true,
       },
     });
   }

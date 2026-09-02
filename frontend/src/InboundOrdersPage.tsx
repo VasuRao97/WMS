@@ -74,6 +74,10 @@ type GateEntry = {
     status: string;
     stagingLocation?: { id: string; code: string };
     lines: { id: string; sku: { id: string; code: string; description: string; category?: { id: string; name: string } }; expectedQty: number; receivedQty: number }[];
+    // Pallet consolidation (2026-09-01) — set at Match Order, see
+    // [[wms-putaway-design]]. When true, the Receiving modal below requires
+    // a pallet selected before each scan.
+    requiresPalletConsolidation?: boolean;
   };
   inboundScans?: InboundScan[];
   // "Complete Inward Process" (2026-08-27) — the deliberate close-out
@@ -209,6 +213,11 @@ function InboundOrdersPage() {
   // Dock In, plus the staging location for this whole delivery.
   const [matchOrderFor, setMatchOrderFor] = useState<GateEntry | null>(null);
   const [matchOrderStagingLocationId, setMatchOrderStagingLocationId] = useState('');
+  // Pallet consolidation (2026-09-01) — "does this delivery arrive as loose
+  // cases needing consolidation, or ready-built pallets?" Set here, not at
+  // order creation, since this is the first moment staff are physically at
+  // the dock and can see how it actually arrived. See [[wms-putaway-design]].
+  const [matchOrderRequiresPalletConsolidation, setMatchOrderRequiresPalletConsolidation] = useState(false);
   const [matchOrderError, setMatchOrderError] = useState('');
 
   // Receiving — scan-by-scan, capture universal / interpretation tiered.
@@ -216,6 +225,15 @@ function InboundOrdersPage() {
   const [scanInput, setScanInput] = useState('');
   const [scanError, setScanError] = useState('');
   const [approveForms, setApproveForms] = useState<Record<string, { receiptLineId: string; quantity: string }>>({});
+
+  // Pallet consolidation's own picker (2026-09-01) — one dropdown listing
+  // every loadable pallet in this receipt's warehouse (not pre-filtered by
+  // SKU, since the SKU isn't known until a barcode actually scans; staff
+  // pick the physical pallet in front of them, same as real floor work —
+  // see [[wms-pallet-consolidation-build]] for why this shape was chosen).
+  const [loadablePallets, setLoadablePallets] = useState<{ id: string; code: string; status: string; activeLoad: { id: string; skuCode: string } | null }[]>([]);
+  const [selectedPalletId, setSelectedPalletId] = useState('');
+  const [palletActionError, setPalletActionError] = useState('');
 
   // "Complete Inward Process" (2026-08-27) — the deliberate close-out,
   // enabled only once the matched order is fully RECEIVED.
@@ -353,6 +371,7 @@ function InboundOrdersPage() {
     setMatchOrderFor(entry);
     const dock = dockDoors.find((d) => d.warehouseId === entry.warehouse.id && d.code.toUpperCase() === (entry.assignedDockNumber || '').trim().toUpperCase());
     setMatchOrderStagingLocationId(dock?.defaultStagingLocation?.id || '');
+    setMatchOrderRequiresPalletConsolidation(false);
     setMatchOrderError('');
   };
   // Auto-found by vehicle (2026-08-27) — no PO/Invoice number typed at all
@@ -367,7 +386,9 @@ function InboundOrdersPage() {
     if (!matchOrderFor) return;
     setMatchOrderError('');
     const res = await fetch(`http://localhost:3000/gate-entries/${matchOrderFor.id}/match-receipt`, {
-      method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ stagingLocationId: matchOrderStagingLocationId }),
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ stagingLocationId: matchOrderStagingLocationId, requiresPalletConsolidation: matchOrderRequiresPalletConsolidation }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -379,23 +400,65 @@ function InboundOrdersPage() {
     openReceiving(data); // jump straight into receiving once matched
   };
 
+  // Pallet consolidation's loadable-pallets fetch (2026-09-01) — only
+  // called for a receipt that actually requires it; refreshed after every
+  // scan so an auto-closed pallet disappears from the list and a freshly
+  // available one appears.
+  const loadPalletsFor = (entry: GateEntry) => {
+    if (!entry.inboundReceipt?.requiresPalletConsolidation) { setLoadablePallets([]); return; }
+    fetch(`http://localhost:3000/pallets/loadable?warehouseId=${entry.warehouse.id}`, { headers: authHeaders() })
+      .then((r) => (r.status === 401 ? [] : r.json()))
+      .then((d) => {
+        const list = Array.isArray(d) ? d : [];
+        setLoadablePallets(list);
+        // Clear the selection if it's no longer loadable (e.g. it just
+        // auto-closed) — forces staff to pick again before the next scan.
+        setSelectedPalletId((prev) => (prev && list.some((p: any) => p.id === prev) ? prev : ''));
+      });
+  };
+
   const openReceiving = (entry: GateEntry) => {
     setReceivingFor(entry);
     setCompleteInwardRemarks('');
     setCompleteInwardError('');
+    setSelectedPalletId('');
+    setPalletActionError('');
+    loadPalletsFor(entry);
   };
 
   const handleScanSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!receivingFor || !scanInput.trim()) return;
+    if (receivingFor.inboundReceipt?.requiresPalletConsolidation && !selectedPalletId) {
+      setScanError('Select a pallet to load these cases onto before scanning.');
+      return;
+    }
     setScanError('');
-    const res = await fetch(`http://localhost:3000/gate-entries/${receivingFor.id}/scan`, { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ barcode: scanInput.trim() }) });
+    const res = await fetch(`http://localhost:3000/gate-entries/${receivingFor.id}/scan`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ barcode: scanInput.trim(), palletId: selectedPalletId || undefined }),
+    });
     const data = await res.json();
     if (!res.ok) {
       setScanError(errorText(data, 'Could not record this scan.'));
       return;
     }
     setScanInput('');
+    await refreshReceiving();
+  };
+
+  // Manual short-close (2026-09-01) — "an operator's manual short-close."
+  const handleShortClosePallet = async () => {
+    const active = loadablePallets.find((p) => p.id === selectedPalletId);
+    if (!active?.activeLoad) return;
+    setPalletActionError('');
+    const res = await fetch(`http://localhost:3000/pallets/loads/${active.activeLoad.id}/close`, { method: 'PATCH', headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) {
+      setPalletActionError(errorText(data, 'Could not close this pallet load.'));
+      return;
+    }
     await refreshReceiving();
   };
 
@@ -406,7 +469,7 @@ function InboundOrdersPage() {
     if (!receivingFor) return;
     const list = await fetch('http://localhost:3000/gate-entries', { headers: authHeaders() }).then((r) => r.json());
     const fresh = Array.isArray(list) ? list.find((e: GateEntry) => e.id === receivingFor.id) : null;
-    if (fresh) setReceivingFor(fresh);
+    if (fresh) { setReceivingFor(fresh); loadPalletsFor(fresh); }
     setGateEntries(Array.isArray(list) ? list : []);
     load();
   };
@@ -414,8 +477,14 @@ function InboundOrdersPage() {
   const handleApproveScan = async (scan: InboundScan) => {
     const form = approveForms[scan.id] || { receiptLineId: scan.receiptLineId || '', quantity: scan.quantity != null ? String(scan.quantity) : '' };
     if (!form.receiptLineId || !form.quantity) { alert('Pick which SKU line this is, and a quantity, before approving.'); return; }
+    if (receivingFor?.inboundReceipt?.requiresPalletConsolidation && !selectedPalletId) {
+      alert('Select a pallet to load these cases onto before approving.');
+      return;
+    }
     const res = await fetch(`http://localhost:3000/inbound-receipts/scans/${scan.id}/approve`, {
-      method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ receiptLineId: form.receiptLineId, quantity: form.quantity }),
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ receiptLineId: form.receiptLineId, quantity: form.quantity, palletId: selectedPalletId || undefined }),
     });
     const data = await res.json();
     if (!res.ok) { alert(errorText(data, 'Could not approve this scan.')); return; }
@@ -696,6 +765,14 @@ function InboundOrdersPage() {
                   <option key={l.id} value={l.id}>{l.code}</option>
                 ))}
               </select>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={matchOrderRequiresPalletConsolidation}
+                  onChange={(e) => setMatchOrderRequiresPalletConsolidation(e.target.checked)}
+                />
+                Requires pallet consolidation — cases arrive loose and need marrying onto a pallet before Putaway
+              </label>
               {matchOrderError && <p style={{ color: 'crimson' }}>{matchOrderError}</p>}
               <div>
                 <button type="submit" disabled={!matchingReceipt}>Match &amp; Start Receiving</button>
@@ -741,6 +818,42 @@ function InboundOrdersPage() {
                 ))}
               </tbody>
             </table>
+
+            {/* Pallet consolidation (2026-09-01) — "marrying" is folded
+                directly into this scan, not a separate step (the client's
+                own call: a second scanning layer would cost time). Staff
+                pick the physical pallet in front of them; a scan whose SKU
+                doesn't match that pallet's existing load is rejected by the
+                backend with a clear message, same as picking up the wrong
+                physical pallet. See [[wms-putaway-design]]. */}
+            {receivingFor.inboundReceipt.requiresPalletConsolidation && (
+              <div style={{ marginBottom: 12, padding: 10, border: '1px dashed #999', borderRadius: 6 }}>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 'bold', marginBottom: 4 }}>Load onto Pallet *</label>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={selectedPalletId}
+                    onChange={(e) => { setSelectedPalletId(e.target.value); setPalletActionError(''); }}
+                    style={{ minWidth: 220, padding: 6 }}
+                  >
+                    <option value="">Select a pallet…</option>
+                    {loadablePallets.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.code}{p.activeLoad ? ` — ${p.activeLoad.skuCode}, in progress` : ' — empty'}
+                      </option>
+                    ))}
+                  </select>
+                  {loadablePallets.find((p) => p.id === selectedPalletId)?.activeLoad && (
+                    <button type="button" onClick={handleShortClosePallet}>Short Close This Pallet</button>
+                  )}
+                </div>
+                {loadablePallets.length === 0 && (
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: '#888' }}>
+                    No pallets available in this warehouse — register/generate some on the Pallets page first.
+                  </p>
+                )}
+                {palletActionError && <p style={{ color: 'crimson', marginTop: 4 }}>{palletActionError}</p>}
+              </div>
+            )}
 
             <form onSubmit={handleScanSubmit} style={{ marginBottom: 12 }}>
               <input

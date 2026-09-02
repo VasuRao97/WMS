@@ -12,9 +12,10 @@ import { DriverVoiceCallAdapter } from './driver-channels/driver-voice-call.adap
 import { DockAssignmentScheduler } from './dock-assignment.scheduler';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PutawayModule } from '../putaway/putaway.module';
+import { PalletsModule } from '../pallets/pallets.module';
 
 @Module({
-  imports: [NotificationsModule, PutawayModule],
+  imports: [NotificationsModule, PutawayModule, PalletsModule],
   controllers: [DockDoorsController, GateEntriesController, YardController],
   providers: [
     DockDoorsService,

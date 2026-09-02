@@ -85,6 +85,7 @@ function SkusPage() {
   const [currency, setCurrency] = useState('');
   const [standardCost, setStandardCost] = useState('');
   const [moq, setMoq] = useState('');
+  const [maxCasesPerPallet, setMaxCasesPerPallet] = useState('');
   const [storageUnits, setStorageUnits] = useState<StorageUnitInput[]>([{ ...emptyStorageUnit }]);
   const [barcodes, setBarcodes] = useState<BarcodeInput[]>([]);
   const [formError, setFormError] = useState('');
@@ -175,6 +176,7 @@ function SkusPage() {
     setCurrency('');
     setStandardCost('');
     setMoq('');
+    setMaxCasesPerPallet('');
     setStorageUnits([{ ...emptyStorageUnit }]);
     setBarcodes([]);
   };
@@ -212,6 +214,7 @@ function SkusPage() {
         currency: currency || undefined,
         standardCost: standardCost || undefined,
         moq: moq || undefined,
+        maxCasesPerPallet: maxCasesPerPallet || undefined,
         storageUnits: validStorageUnits,
         barcodes: validBarcodes,
       }),
@@ -446,6 +449,13 @@ function SkusPage() {
             <input placeholder="Currency" value={currency} onChange={(e) => setCurrency(e.target.value)} style={{ width: 100 }} />
             <input placeholder="Standard Cost" value={standardCost} onChange={(e) => setStandardCost(e.target.value)} style={{ width: 120 }} />
             <input placeholder="MOQ" value={moq} onChange={(e) => setMoq(e.target.value)} style={{ width: 100 }} />
+            <input
+              placeholder="Max Cases/Pallet"
+              title="Overrides the company-wide default max cases per pallet load, for Pallet consolidation (loose cases married onto a pallet before Putaway) — leave blank to use the company default."
+              value={maxCasesPerPallet}
+              onChange={(e) => setMaxCasesPerPallet(e.target.value)}
+              style={{ width: 130 }}
+            />
           </div>
           <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: '#888' }}>* Weight UOM is required if Gross Weight is given.</p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 12, alignItems: 'center' }}>

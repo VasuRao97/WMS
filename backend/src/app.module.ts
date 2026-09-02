@@ -21,6 +21,7 @@ import { EquipmentTypesModule } from './equipment-types/equipment-types.module';
 import { EquipmentModule } from './equipment/equipment.module';
 import { PutawayModule } from './putaway/putaway.module';
 import { InsightsModule } from './insights/insights.module';
+import { PalletsModule } from './pallets/pallets.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { InsightsModule } from './insights/insights.module';
     EquipmentModule,
     PutawayModule,
     InsightsModule,
+    PalletsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -79,14 +79,14 @@ export class GateEntriesController {
   // itself, since physically scanning is floor work, not planning work).
   @Patch(':id/match-receipt')
   @Roles(...INBOUND_SCAN_ROLES)
-  matchReceipt(@Param('id') id: string, @Body() body: { stagingLocationId: string }, @CurrentUser() user: any) {
+  matchReceipt(@Param('id') id: string, @Body() body: { stagingLocationId: string; requiresPalletConsolidation?: boolean }, @CurrentUser() user: any) {
     return this.gateEntriesService.matchReceipt(id, body, user);
   }
 
   @Post(':id/scan')
   @Roles(...INBOUND_SCAN_ROLES)
-  scan(@Param('id') id: string, @Body() body: { barcode: string }, @CurrentUser() user: any) {
-    return this.gateEntriesService.scan(id, body?.barcode, user);
+  scan(@Param('id') id: string, @Body() body: { barcode: string; palletId?: string }, @CurrentUser() user: any) {
+    return this.gateEntriesService.scan(id, body?.barcode, user, body?.palletId);
   }
 
   // "Complete Inward Process" (2026-08-27) — the deliberate close-out sign-

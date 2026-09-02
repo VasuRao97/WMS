@@ -433,6 +433,12 @@ export class WarehousesService {
             // a third time.
             vehicles: true,
             drivers: true,
+            // pallets added 2026-09-01, proactively (not caught as a bug) —
+            // Pallet.warehouseId's FK is ON DELETE RESTRICT, same as every
+            // other relation here; applying the "go back and add it" lesson
+            // from the gateEntries fix above rather than waiting to hit the
+            // same class of raw-500 a third time.
+            pallets: true,
           },
         },
       },
@@ -441,7 +447,7 @@ export class WarehousesService {
     const blocked: string[] = [];
     for (const wh of warehouses) {
       const c = wh._count;
-      const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers;
+      const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers + c.pallets;
       if (totalLinked > 0) blocked.push(wh.code);
       else deletable.push(wh.id);
     }
@@ -489,13 +495,14 @@ export class WarehousesService {
             gateEntries: true, // see removeAll()'s comment — same 2026-08-27 fix
             vehicles: true, // see removeAll()'s comment — added 2026-08-28
             drivers: true,
+            pallets: true, // see removeAll()'s comment — added 2026-09-01
           },
         },
       },
     });
     if (!warehouse) throw new NotFoundException('Warehouse not found.');
     const c = warehouse._count;
-    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers;
+    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers + c.pallets;
     if (totalLinked > 0) {
       throw new BadRequestException(
         `Cannot permanently delete "${warehouse.code}" — it has ${totalLinked} linked record(s) (users, ship-tos, locations, gate entries, vehicles, drivers, or transactions). Deactivate it instead.`,

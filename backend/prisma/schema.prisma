@@ -172,6 +172,15 @@ model Company {
   // immediately" — a sensible batch size genuinely differs by industry/
   // UOM, so nothing platform-wide is assumed.
   putawayDefaultBatchQty Decimal?
+
+  // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]) —
+  // company-wide default max cases a single Pallet load may hold before it
+  // auto-closes, overridable per-SKU via Sku.maxCasesPerPallet (same
+  // override-then-fall-back-to-company-default chain as
+  // putawayDefaultBatchQty/detentionCostPerDay above). Null means no
+  // default configured — a pallet with no effective max (company default
+  // AND SKU override both unset) can only ever be closed manually.
+  defaultMaxCasesPerPallet Decimal?
 }
 
 enum AgingGranularity {
@@ -227,6 +236,7 @@ model User {
   receiptsCreated               InboundReceipt[]        @relation("ReceiptCreatedBy")
   putawayTripsClaimed           PutawayTrip[]           @relation("PutawayTripClaimedBy")
   putawayReassignmentsRequested PutawayReassignment[]   @relation("PutawayReassignmentRequestedBy")
+  palletLoadsClosed             PalletLoad[]            @relation("PalletLoadClosedBy")
   multiSkuLaneRequestsRequested MultiSkuLaneException[] @relation("MultiSkuLaneRequestedBy")
   multiSkuLaneRequestsReviewed  MultiSkuLaneException[] @relation("MultiSkuLaneReviewedBy")
   multiSkuLaneRequestsRevoked   MultiSkuLaneException[] @relation("MultiSkuLaneRevokedBy")
@@ -351,6 +361,7 @@ model Warehouse {
   multiSkuLaneExceptions MultiSkuLaneException[]
   vehicles               Vehicle[]
   drivers                Driver[]
+  pallets                Pallet[]
 
   @@unique([companyId, code])
 }
@@ -633,6 +644,17 @@ model Sku {
   // company-wide default, then to "every scan is its own task" when
   // neither is set. Only consulted in IMMEDIATE putaway trigger mode.
   putawayBatchQty    Decimal?
+  // Pallet consolidation ("marrying" loose cases onto a pallet before
+  // Putaway — 2026-09-01, see [[wms-putaway-design]]'s Pallet consolidation
+  // entry) — max cases a single Pallet load of THIS SKU may hold before it
+  // auto-closes, overriding Company.defaultMaxCasesPerPallet. Same
+  // override-when-known/fall-back-to-company-default pattern as
+  // putawayBatchQty above. A manually-typed real-world number from staff
+  // experience ("tyres... we will need different bestfit for each SKU"),
+  // deliberately NOT calculated — a real geometric best-fit/packing
+  // algorithm was explicitly ruled out as a separate, much bigger future
+  // problem, same tier as the still-deferred GS1 barcode parsing.
+  maxCasesPerPallet  Decimal?
   createdAt          DateTime             @default(now())
   companyId          String
   company            Company              @relation(fields: [companyId], references: [id])
@@ -645,6 +667,7 @@ model Sku {
   receiptLines       InboundReceiptLine[]
   inboundScans       InboundReceiptScan[]
   putawayTasks       PutawayTask[]
+  palletLoads        PalletLoad[]
   outboundOrderLine  OutboundOrderLine[]
   allocations        Allocation[]
   returns            Return[]
@@ -741,8 +764,23 @@ model StockMovement {
   // separate per-company setting, see Company.agingGranularity below.
   receivedDate DateTime?
 
+  // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]) — tags a
+  // movement as belonging to a specific PalletLoad, so "how much is
+  // currently on this pallet" is always SUM(quantity) over this field,
+  // never a stored counter — same "always derive from the ledger"
+  // philosophy as on-hand stock itself. Set once, at the RECEIPT movement a
+  // palletized-receipt scan creates (the scan IS the marrying action — no
+  // separate consolidation screen, confirmed 2026-09-01: folding this into
+  // the existing scan avoids adding a second scanning layer on the floor),
+  // then carried forward unchanged onto PUTAWAY_OUT/PUTAWAY_IN exactly like
+  // receivedDate above. Null for every non-palletized movement — the
+  // overwhelming majority.
+  palletLoadId String?
+  palletLoad   PalletLoad? @relation(fields: [palletLoadId], references: [id])
+
   @@index([skuId, locationId])
   @@index([warehouseId])
+  @@index([palletLoadId])
 }
 
 // ------------------------------------------------------------
@@ -1668,6 +1706,22 @@ model InboundReceipt {
   vehicleId String?
   vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
 
+  // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]'s Pallet
+  // consolidation entry and ROADMAP.md's 2026-08-31 session note) —
+  // conditional, not universal: true only for a receipt where cases arrive
+  // LOOSE and need staff to physically stack/marry them onto a Pallet
+  // before Putaway; a receipt that arrives as ready-built pallets leaves
+  // this false and Putaway's existing BATCH/IMMEDIATE trigger logic is
+  // completely unaffected. Set at Match Order (GateEntriesService.
+  // matchReceipt()) — the first moment staff are physically at the dock and
+  // can see how this particular delivery actually arrived — defaulting
+  // false so every existing/ordinary receipt is untouched. When true,
+  // GateEntriesService.scan()/InboundReceiptsService.approveScan() require
+  // an active Pallet and route Putaway task creation through
+  // PalletsService/PutawayTasksService.createTaskForClosedPallet() instead
+  // of the normal per-scan/per-batch trigger.
+  requiresPalletConsolidation Boolean @default(false)
+
   lines InboundReceiptLine[]
   scans InboundReceiptScan[]
 
@@ -1716,6 +1770,7 @@ model InboundReceiptLine {
 
   putawayTasks PutawayTask[]
   scans        InboundReceiptScan[]
+  palletLoads  PalletLoad[]
 }
 
 // The full lifecycle of one scanned code during receiving (2026-08-27
@@ -1839,6 +1894,21 @@ model PutawayTask {
 
   createdAt DateTime @default(now())
 
+  // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]) — set only
+  // for a task created by PutawayTasksService.createTaskForClosedPallet()
+  // when a Pallet's load closes (full or a manual short-close); null for
+  // every ordinary BATCH/IMMEDIATE-triggered task. One task per closed
+  // PalletLoad, quantity = that load's own derived total — a receipt line
+  // split across several pallets gets several tasks, one per pallet,
+  // deliberately NOT the "one task per line" assumption
+  // createBatchTasksForReceipt's own duplicate-guard relies on (that guard
+  // is simply never used for this path). Carried onto this task's own
+  // PUTAWAY_OUT/PUTAWAY_IN movements (completeTrip()) so a pallet's
+  // contents stay traceable end-to-end — the still-unbuilt Picking module
+  // will need this to know how many pallets to pick from.
+  palletLoadId String?
+  palletLoad   PalletLoad? @relation(fields: [palletLoadId], references: [id])
+
   trips         PutawayTrip[]
   reassignments PutawayReassignment[]
 }
@@ -1920,6 +1990,98 @@ model PutawayReassignment {
   requestedById      String
   requestedBy        User        @relation("PutawayReassignmentRequestedBy", fields: [requestedById], references: [id])
   requestedAt        DateTime    @default(now())
+}
+
+// ------------------------------------------------------------
+// PALLET CONSOLIDATION ("marrying" loose cases onto a pallet)
+// ------------------------------------------------------------
+// 2026-09-01, see [[wms-putaway-design]]'s Pallet consolidation entry and
+// ROADMAP.md's 2026-08-31 session note for the full design conversation.
+// A real physical-operations gap: when loose cases (not pre-built pallets)
+// come off a truck, staff stack several onto a pallet before it goes into
+// a rack — this codebase had zero concept of a physical unit/pallet
+// identity before this, purely a quantity ledger.
+//
+// NOT to be confused with SkuStorageUnit.unitType's existing "PALLET"
+// value — that's an unrelated, older concept: a per-SKU quantity
+// MULTIPLIER (e.g. "1 PALLET = 480 eaches", used to convert a scanned
+// pack-level barcode into a base-uom quantity). It has no identity, no
+// location, isn't reusable — it's a counting-unit fact, not a trackable
+// physical object. Both coexist in this schema under the word "pallet" on
+// purpose; don't confuse one for the other, and don't merge them.
+enum PalletStatus {
+  AVAILABLE
+  IN_USE
+}
+
+// The physical asset — mirrors Vehicle's own shape (a real, reusable,
+// registered master; a truck doesn't get a new identity every trip and
+// neither does a pallet). Warehouse-scoped (doesn't roam between
+// warehouses — same reasoning as the 2026-08-28 Vehicle/Driver reversal:
+// different warehouses can be run by different 3PLs). Registered via a
+// bulk range generator (same shape as Locations'), with a print-labels
+// option — a real Code128 barcode goes on the physical pallet once, at
+// registration, same mechanism as Location Labels (bwip-js/archiver), not
+// reprinted per load.
+model Pallet {
+  id          String       @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse    @relation(fields: [warehouseId], references: [id])
+  code        String // e.g. PLT-0001, sequential per warehouse — the barcode's own encoded text
+  status      PalletStatus @default(AVAILABLE)
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+
+  loads PalletLoad[]
+
+  @@unique([warehouseId, code])
+}
+
+enum PalletLoadStatus {
+  OPEN
+  CLOSED
+}
+
+// One row per load cycle — mirrors VehicleGateEntry's "one row per visit"
+// shape against Vehicle's own master identity. Single-SKU-per-pallet only
+// (mixed-SKU pallets explicitly out of scope, per the design conversation)
+// — enforced in PalletsService.resolveLoadForScan(), not here. Quantity is
+// deliberately NOT a stored field on this model — always derived as
+// SUM(StockMovement.quantity WHERE palletLoadId = this row), same
+// "always derive from the ledger" philosophy as on-hand stock everywhere
+// else in this codebase. Once a load's own derived quantity fully depletes
+// (a future PICK movement referencing it, once Picking exists), the parent
+// Pallet frees back up for reuse — a real reusable physical asset, not a
+// disposable per-trip LPN, per the client's own call ("after that pallet's
+// dispatch is complete, we will use it again, why not").
+model PalletLoad {
+  id            String              @id @default(uuid())
+  palletId      String
+  pallet        Pallet              @relation(fields: [palletId], references: [id])
+  skuId         String
+  sku           Sku                 @relation(fields: [skuId], references: [id])
+  // The receipt line this load's stock is being received against — set
+  // once, at the first scan married onto this load (PalletsService.
+  // resolveLoadForScan()). Feeds PutawayTasksService.
+  // createTaskForClosedPallet()'s own staging-location/receipt lookup, same
+  // as an ordinary (non-palletized) PutawayTask's own receiptLineId.
+  receiptLineId String?
+  receiptLine   InboundReceiptLine? @relation(fields: [receiptLineId], references: [id])
+  status        PalletLoadStatus    @default(OPEN)
+  // Set only once CLOSED — CASES_FULL (auto-closed on hitting the
+  // effective max: Sku.maxCasesPerPallet ?? Company.
+  // defaultMaxCasesPerPallet) or MANUAL_SHORT_CLOSE (an operator ended it
+  // early — that SKU's remaining quantity ran out first on this vehicle).
+  closeReason   String?
+  openedAt      DateTime            @default(now())
+  closedAt      DateTime?
+  closedById    String?
+  closedBy      User?               @relation("PalletLoadClosedBy", fields: [closedById], references: [id])
+
+  movements    StockMovement[]
+  putawayTasks PutawayTask[]
+
+  @@index([palletId])
 }
 
 // The one way the mandatory single-SKU-per-multi-deep-lane rule (see

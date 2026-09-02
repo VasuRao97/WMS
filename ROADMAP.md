@@ -2,15 +2,91 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-08-29 (hardening-phase session,
-continued twice more: (1) the "still incoming" lane reservation for Class B & C, closing a real
-fragmentation gap; (2) a brand-new **Insights** page — the first of what's meant to be a real
-reporting section, not a one-off — with its first report, Storage Utilization by ABC Class, showing
-how much of a class's actively-used lane space is genuinely occupied vs. wasted. Two related items
-from the "still incoming" work were explicitly flagged, NOT built: a self-exclusion cap bug (worked
-around via a default change, not truly fixed), and `maxSkusClassA/B/C` being a completely dead/
-unwired field the client wants made client-configurable. See the session notes below and the
-`wms-putaway-design` memory for full detail).
+what to pick up next. Updated as priorities shift — last updated 2026-09-01: **Pallet consolidation
+("marrying" loose cases onto a pallet before Putaway) is now built and live-verified**, from the
+closed design the 2026-08-31 session below left ready. See CLAUDE.md's "Pallet consolidation"
+section for the full build detail and the `wms-putaway-design` memory for the complete design-to-
+build trail.
+
+## Session note (2026-09-01 — Pallet consolidation built and verified, from the 2026-08-31 design)
+Picked up the closed design below directly, per its own instruction ("nothing was built, this is a
+closed design for a future session to implement directly") — no re-discussion needed, one real
+mechanical gap surfaced and got resolved first: the design didn't specify HOW "marrying" touches the
+stock ledger. Two concrete options were laid out with worked examples — fold it into the existing
+Inbound scan (no new screen) vs. a genuinely separate "Load Pallet" step needing its own zero-net
+ledger write. **The client's call: fold it into the scan** — "we are just adding one more scanning
+layer from which we would loose time." Everything else matches the closed design exactly: `Pallet`/
+`PalletLoad` (mirroring Vehicle/VehicleGateEntry), single-SKU-per-pallet, auto-close on
+`Sku.maxCasesPerPallet ?? Company.defaultMaxCasesPerPallet` or manual short-close, warehouse-scoped
+bulk generation with Code128 labels (same mechanism as Location Labels), Putaway's task trigger
+shifting to "pallet closed" for this path only, and reuse (not a fresh id) once a load's stock fully
+depletes — though that depletion itself needs the still-unbuilt Picking module to ever actually fire.
+
+Verified two ways: a throwaway-company API script (42/42 — auto-close at the effective cap across
+multiple pallets each producing their own `PutawayTask`, the single-SKU lock blocking a genuinely
+different expected SKU, manual short-close sizing a task to exactly what was scanned, and a
+regression check confirming ordinary non-palletized receipts are completely untouched), a second
+script closing the loop all the way through a real Putaway bin suggestion, multi-trip claim/complete,
+and the receipt reaching `PUTAWAY_COMPLETE` (15/15), then a live browser pass through the real Pallet
+Master page, SKU Master's new field, Company Settings' new field (survived a real reload), and a
+real Match Order → Receiving → scan → Short Close cycle through the actual rendered UI. Full detail
+in CLAUDE.md's "Pallet consolidation" section.
+
+**Genuinely still open**: Picking doesn't exist yet, so a `Pallet` never actually gets exercised
+back to `AVAILABLE` in practice today — the field/logic is ready, just unexercised. Mixed-SKU
+pallets and a real geometric best-fit calculator remain explicitly out of scope, unchanged from the
+original design.
+
+## Session note (2026-08-31, design-only — Pallet consolidation ("marrying" cases to a pallet))
+A real physical-operations gap raised directly: when loose cases (not pre-built pallets) come off a
+truck, staff stack several onto a pallet before it goes into a rack. Today's system has zero concept
+of a physical unit/pallet identity — it's a pure quantity ledger (`StockMovement` only ever tracks
+SKU + Location + quantity). This session designed the concept end-to-end through several rounds of
+"let's discuss" — **nothing was built, this is a closed design for a future session to implement
+directly.**
+
+**The shape, settled point by point**:
+- Two new entities, mirroring the existing `Vehicle`/`VehicleGateEntry` pattern:
+  - **`Pallet`** — the physical asset. Warehouse-scoped (doesn't roam between warehouses, same
+    reasoning as the 2026-08-28 Vehicle/Driver reversal). Registered via a bulk range generator
+    (same shape as Locations' generator), with a print-labels option — a real barcode goes on the
+    physical pallet **once**, at registration, never reprinted per load. Sits `AVAILABLE`/`IN_USE`.
+  - **`PalletLoad`** — one row per load cycle (SKU, quantity, built/emptied timestamps).
+    `StockMovement` references the load, so "how much is on this pallet" is always derived from the
+    ledger, never a stored counter — same philosophy as everywhere else in this codebase.
+- **Where it happens**: after unloading, before Putaway — loose cases get scanned in exactly as
+  today, then married onto a `Pallet` as a new consolidation step. Conditional, not universal: a
+  receipt that arrives as ready-built pallets skips this entirely; it only applies when material
+  arrives as loose cases that need consolidating. "Depends on the industry" — the client's own
+  framing.
+- **Single SKU per pallet only** — no mixed-SKU pallets in this design.
+- **Ad hoc quantity, capped**: closed either by hitting a max-cases number, or by an operator's
+  manual short-close (that SKU's remaining quantity ran out first). The max itself follows the
+  exact override pattern this codebase already uses everywhere (`Company.putawayDefaultBatchQty` +
+  `Sku.putawayBatchQty`, `VehicleType.maxTonnage` + `Vehicle.maxTonnage`): a general company/category
+  default for standard case+pallet dimensions, plus a new **`Sku.maxCasesPerPallet`** override field
+  on the SKU Master page for anything non-standard (tyres — "not standard at all... we will need
+  different bestfit for each SKU"). That per-SKU number is manually typed in from real staff
+  experience, **not calculated** — an actual geometric best-fit/packing algorithm was explicitly
+  ruled out as a separate, much bigger future problem, same tier as the still-deferred GS1 barcode
+  parsing ("Reading B").
+- **Putaway's trigger shifts, for this path only**: instead of firing per scan/batch as today, a
+  task fires when the pallet is closed — one task, one pallet, moved as a single unit. Non-
+  palletized receipts keep today's behavior completely unchanged.
+- **Reuse, not a fresh ID per cycle**: once a `PalletLoad`'s contents are fully picked/dispatched
+  (derived quantity hits zero), the same physical `Pallet` — same id, same barcode sticker — frees
+  up for its next load. The client's own call: "after that pallet's dispatch is complete, we will
+  use it again, why not" — a real reusable physical asset, not a disposable per-trip LPN.
+- **Matters end-to-end, confirmed explicitly** — not just for Putaway. The client's own reasoning:
+  "if we need to pick 5 cases, we should know how many pallets to pick" — this is meant to inform
+  the still-unbuilt Picking module's design once that stage comes up, not just close out Putaway.
+
+**Explicitly out of scope, don't build without re-confirming**: mixed-SKU pallets, and any real
+geometric best-fit calculator for irregular items — both were raised and deliberately excluded.
+
+See `[[wms-putaway-design]]` in memory for the naming note (`SkuStorageUnit.unitType` already has an
+unrelated existing value literally called `"PALLET"` — a generic per-SKU quantity multiplier, not
+this new physical-asset concept; both will coexist in the schema, flagged so it isn't a surprise).
 
 ## Session note (2026-08-29, same hardening-phase session — new Insights page, Storage Utilization by ABC Class)
 A genuinely new feature, not a hardening fix — but a small, deliberately scoped one, worked out via
@@ -263,7 +339,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter. Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization — see `wms-putaway-design` memory |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, and (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path. Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, real queue-ordering/aging-based prioritization, and Pallet reuse (needs Picking to ever actually deplete a load) — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |

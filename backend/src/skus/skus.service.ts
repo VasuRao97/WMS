@@ -67,6 +67,11 @@ export class SkusService {
     if (data.moq !== undefined && data.moq !== null && data.moq !== '' && Number(data.moq) <= 0) {
       errors.push('MOQ must be a positive number.');
     }
+    // Pallet consolidation (2026-09-01) — overrides Company.
+    // defaultMaxCasesPerPallet, same shape as moq/grossWeight above.
+    if (data.maxCasesPerPallet !== undefined && data.maxCasesPerPallet !== null && data.maxCasesPerPallet !== '' && Number(data.maxCasesPerPallet) <= 0) {
+      errors.push('Max Cases Per Pallet must be a positive number.');
+    }
 
     if (!data.storageUnits || data.storageUnits.length === 0) {
       errors.push('At least one storage unit is required (e.g. Piece = 1).');
@@ -148,6 +153,7 @@ export class SkusService {
       currency: data.currency || undefined,
       standardCost: data.standardCost !== undefined && data.standardCost !== null && data.standardCost !== '' ? data.standardCost : undefined,
       moq: data.moq || undefined,
+      maxCasesPerPallet: data.maxCasesPerPallet || undefined,
       company: { connect: { id: companyId } },
       storageUnits: { create: data.storageUnits },
       barcodes: data.barcodes && data.barcodes.length ? { create: data.barcodes } : undefined,
@@ -389,6 +395,7 @@ export class SkusService {
         'Currency': s.currency || '',
         'Standard Cost': s.standardCost ?? '',
         'MOQ': s.moq ?? '',
+        'Max Cases Per Pallet': s.maxCasesPerPallet ?? '',
         'Storage Unit 1 Type': su1?.unitType || '',
         'Storage Unit 1 Qty': su1?.qtyInBaseUom ?? '',
         'Storage Unit 1 Preferred': su1?.isPreferred ? 'TRUE' : 'FALSE',

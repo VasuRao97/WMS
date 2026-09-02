@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, INBOUND_SCOPED_ROLES } from '../common/tenant.util';
 import { PutawayTasksService } from '../putaway/putaway-tasks.service';
+import { PalletsService } from '../pallets/pallets.service';
 
 const RECEIPT_INCLUDE = {
   warehouse: { select: { id: true, code: true, name: true, companyId: true } },
@@ -22,7 +23,7 @@ const SCAN_INCLUDE = {
   receiptLine: true,
   scannedBy: { select: { id: true, name: true } },
   reviewedBy: { select: { id: true, name: true } },
-  receipt: { select: { id: true, warehouseId: true, stagingLocationId: true, warehouse: { select: { companyId: true } } } },
+  receipt: { select: { id: true, warehouseId: true, stagingLocationId: true, requiresPalletConsolidation: true, warehouse: { select: { companyId: true } } } },
 };
 
 // Inbound receiving — the manual "order maker" (2026-08-27, see CLAUDE.md's
@@ -48,6 +49,7 @@ export class InboundReceiptsService {
   constructor(
     private prisma: PrismaService,
     private putawayTasks: PutawayTasksService,
+    private pallets: PalletsService,
   ) {}
 
   private async assertWarehouseAccess(warehouseId: string, user: any, errors: string[]) {
@@ -465,7 +467,10 @@ export class InboundReceiptsService {
   // recomputeReceiptStatus is duplicated from GateEntriesService rather
   // than imported cross-module — see that method's own comment for why.
   private async recomputeReceiptStatus(tx: any, receiptId: string) {
-    const before = await tx.inboundReceipt.findUnique({ where: { id: receiptId }, select: { status: true, warehouse: { select: { companyId: true } } } });
+    const before = await tx.inboundReceipt.findUnique({
+      where: { id: receiptId },
+      select: { status: true, requiresPalletConsolidation: true, warehouse: { select: { companyId: true } } },
+    });
     const lines = await tx.inboundReceiptLine.findMany({ where: { receiptId } });
     const allReceived = lines.length > 0 && lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
     const anyReceived = lines.some((l: any) => Number(l.receivedQty) > 0);
@@ -474,8 +479,9 @@ export class InboundReceiptsService {
 
     // BATCH putaway trigger mode — see GateEntriesService.recomputeReceiptStatus's
     // identical comment; duplicated here for the same reason this whole
-    // method is duplicated (each module queries Prisma directly).
-    if (before && before.status !== 'RECEIVED' && status === 'RECEIVED') {
+    // method is duplicated (each module queries Prisma directly). Also a
+    // no-op for a palletized receipt (2026-09-01) — see that same comment.
+    if (before && !before.requiresPalletConsolidation && before.status !== 'RECEIVED' && status === 'RECEIVED') {
       const company = await tx.company.findUnique({ where: { id: before.warehouse.companyId }, select: { putawayTriggerMode: true } });
       if (company?.putawayTriggerMode === 'BATCH') {
         await this.putawayTasks.createBatchTasksForReceipt(tx, receiptId);
@@ -548,6 +554,15 @@ export class InboundReceiptsService {
     const locationId = line.stagingLocationId ?? scan.receipt.stagingLocationId;
     if (!locationId) throw new BadRequestException('This order has no staging location set — match it to a dock/staging spot before approving scans.');
 
+    // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]) — a
+    // Supervisor approving a blocked scan on a palletized receipt still
+    // needs to say which pallet it's going onto, same as an ordinary
+    // auto-accepted scan (GateEntriesService.scan()'s identical check).
+    const palletId = data?.palletId;
+    if (scan.receipt.requiresPalletConsolidation && !palletId) {
+      throw new BadRequestException('This order requires pallet consolidation — select a pallet to load these cases onto before approving.');
+    }
+
     const receivedDate = await this.putawayTasks.resolveReceivedDate(this.prisma, scan.receiptId);
 
     return this.prisma.$transaction(async (tx) => {
@@ -557,6 +572,11 @@ export class InboundReceiptsService {
         include: SCAN_INCLUDE,
       });
       await tx.inboundReceiptLine.update({ where: { id: receiptLineId }, data: { receivedQty: { increment: quantity } } });
+
+      const palletLoadId = scan.receipt.requiresPalletConsolidation
+        ? await this.pallets.resolveLoadForScan(tx, { warehouseId: scan.receipt.warehouseId, skuId, palletId, receiptLineId })
+        : undefined;
+
       await tx.stockMovement.create({
         data: {
           warehouseId: scan.receipt.warehouseId,
@@ -569,19 +589,25 @@ export class InboundReceiptsService {
           createdById: user.userId,
           notes: 'Supervisor-approved override of a blocked scan.',
           receivedDate,
+          palletLoadId,
         },
       });
       await this.recomputeReceiptStatus(tx, scan.receiptId);
-      // IMMEDIATE putaway trigger mode only — see GateEntriesService.scan()'s
-      // identical hook for the full comment.
-      await this.putawayTasks.handleAcceptedScan(tx, {
-        receiptLineId,
-        skuId,
-        quantity,
-        locationId,
-        warehouseId: scan.receipt.warehouseId,
-        receiptId: scan.receiptId,
-      });
+
+      if (palletLoadId) {
+        await this.pallets.maybeAutoCloseLoad(tx, palletLoadId);
+      } else {
+        // IMMEDIATE putaway trigger mode only — see GateEntriesService.scan()'s
+        // identical hook for the full comment.
+        await this.putawayTasks.handleAcceptedScan(tx, {
+          receiptLineId,
+          skuId,
+          quantity,
+          locationId,
+          warehouseId: scan.receipt.warehouseId,
+          receiptId: scan.receiptId,
+        });
+      }
       return updated;
     });
   }

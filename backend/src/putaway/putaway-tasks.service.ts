@@ -461,6 +461,49 @@ export class PutawayTasksService {
   }
 
   // ------------------------------------------------------------
+  // Task creation — Pallet consolidation path (2026-09-01)
+  // ------------------------------------------------------------
+
+  // Called from PalletsService the moment a PalletLoad closes (auto, on
+  // hitting its effective max-cases cap, or a manual short-close) — see
+  // [[wms-putaway-design]]'s Pallet consolidation entry. Deliberately NOT
+  // reusing createBatchTasksForReceipt's per-line duplicate-guard: a single
+  // receipt line can spawn several pallets (several closed loads), each
+  // needing its own task with its own destination bin, since a task can
+  // only ever have one toLocationId. BATCH/IMMEDIATE triggers are bypassed
+  // entirely for a palletized receipt (see GateEntriesService.scan()'s own
+  // comment) — this is the ONLY task-creation path for that receipt.
+  async createTaskForClosedPallet(tx: any, palletLoadId: string) {
+    const load = await tx.palletLoad.findUnique({
+      where: { id: palletLoadId },
+      include: { receiptLine: { include: { receipt: { include: { warehouse: { select: { id: true } }, stagingLocation: { select: { id: true } } } } } } },
+    });
+    if (!load || !load.receiptLine) return; // shouldn't happen — receiptLineId is set at the first scan married onto this load
+
+    const agg = await tx.stockMovement.aggregate({ where: { palletLoadId }, _sum: { quantity: true } });
+    const qty = Number(agg._sum.quantity || 0);
+    if (qty <= 0) return; // a short-closed load nothing was ever scanned onto — nothing to put away
+
+    const fromLocationId = load.receiptLine.stagingLocationId ?? load.receiptLine.receipt.stagingLocationId;
+    if (!fromLocationId) return; // shouldn't happen — matchReceipt requires staging before any scan can occur
+
+    const receivedDate = await this.resolveReceivedDate(tx, load.receiptLine.receiptId);
+    const toLocationId = await this.suggestBin(tx, { warehouseId: load.receiptLine.receipt.warehouse.id, skuId: load.skuId, newStockDate: receivedDate });
+
+    await tx.putawayTask.create({
+      data: {
+        receiptLineId: load.receiptLineId,
+        palletLoadId,
+        skuId: load.skuId,
+        fromLocationId,
+        toLocationId: toLocationId ?? undefined,
+        quantity: qty,
+        status: toLocationId ? 'PENDING' : 'NEEDS_BIN',
+      },
+    });
+  }
+
+  // ------------------------------------------------------------
   // Read
   // ------------------------------------------------------------
 
@@ -594,6 +637,11 @@ export class PutawayTasksService {
         data: { status: 'COMPLETED', scannedLocationId: targetLocation.id, completedAt: new Date() },
       });
 
+      // palletLoadId carried forward unchanged, same as receivedDate above
+      // (2026-09-01, see [[wms-putaway-design]]) — null for every ordinary
+      // task, so a pallet's contents stay traceable end-to-end through
+      // Putaway for whenever Picking needs to know how many pallets to
+      // pick from.
       await tx.stockMovement.create({
         data: {
           warehouseId: targetLocation.warehouseId,
@@ -605,6 +653,7 @@ export class PutawayTasksService {
           referenceId: tripId,
           createdById: user.userId,
           receivedDate,
+          palletLoadId: task.palletLoadId ?? undefined,
         },
       });
       await tx.stockMovement.create({
@@ -618,6 +667,7 @@ export class PutawayTasksService {
           referenceId: tripId,
           createdById: user.userId,
           receivedDate,
+          palletLoadId: task.palletLoadId ?? undefined,
         },
       });
 
