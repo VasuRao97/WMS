@@ -15,6 +15,7 @@ import PutawayPage from './PutawayPage';
 import InsightsPage from './InsightsPage';
 import PalletsPage from './PalletsPage';
 import AnalyticsPage from './AnalyticsPage';
+import SimulationPage from './SimulationPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -32,8 +33,12 @@ const CAN_VIEW_INSIGHTS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPE
 // identical today, since Insights and the real Analytics module are
 // deliberately distinct destinations that could diverge in access later.
 const CAN_VIEW_ANALYTICS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
+// Same tier as SimulationController's own @Roles() gate (MASTER_DATA_WRITE_ROLES)
+// — the simulation writes real Location/Sku/StockMovement rows into the
+// sandbox, same write-tier as generating Locations or managing SKUs.
+const CAN_RUN_SIMULATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets' | 'analytics';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets' | 'analytics' | 'simulation';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -140,6 +145,11 @@ function App() {
         <button onClick={() => setTab('putaway')} style={{ fontWeight: tab === 'putaway' ? 'bold' : 'normal' }}>
           Putaway
         </button>
+        {CAN_RUN_SIMULATION.includes(user?.role) && (
+          <button onClick={() => setTab('simulation')} style={{ fontWeight: tab === 'simulation' ? 'bold' : 'normal' }}>
+            Simulation
+          </button>
+        )}
         {user?.role === 'COMPANY_ADMIN' && (
           <button onClick={() => setTab('companysettings')} style={{ fontWeight: tab === 'companysettings' ? 'bold' : 'normal' }}>
             Company Settings
@@ -174,6 +184,8 @@ function App() {
         <InsightsPage />
       ) : tab === 'analytics' ? (
         <AnalyticsPage />
+      ) : tab === 'simulation' ? (
+        <SimulationPage />
       ) : tab === 'companysettings' ? (
         <CompanySettingsPage />
       ) : tab === 'inboundorders' ? (

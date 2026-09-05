@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react';
-import { Canvas, type ThreeEvent } from '@react-three/fiber';
+import { useMemo, useRef, useState } from 'react';
+import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Edges, Grid, Html } from '@react-three/drei';
-import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, ZONE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
+import * as THREE from 'three';
+import { RACK_STORAGE_TYPES, type Location } from './LocationsPage';
 import { STORAGE_TYPE_COLORS, DEFAULT_BOX_COLOR } from './LocationsPlanView';
+import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
+import { DetailPanel } from './LocationDetailPanel';
 
 // True-3D companion to LocationsPlanView.tsx's top-down SVG (2026-09-05 — see
 // [[wms-putaway-design]]/CLAUDE.md for the design conversation). Built after
@@ -66,12 +69,6 @@ function naturalCompare(a: string, b: string): number {
 }
 function uniqSorted(values: (string | undefined)[]): string[] {
   return Array.from(new Set(values.filter((v): v is string => !!v))).sort(naturalCompare);
-}
-
-function buildRackName(l: Location, depthCount: number): string {
-  const parts = [l.flankNumber != null ? `R${l.flankNumber}` : 'R?', posOf(l) ?? '?'];
-  if (depthCount > 1 && l.depth != null) parts.push(`D${l.depth}`);
-  return parts.join('-');
 }
 
 type BoxSpec = { key: string; location: Location; x: number; y: number; z: number; w: number; h: number; d: number };
@@ -184,8 +181,7 @@ function buildWarehouseLayout(locations: Location[]): AisleLayout[] {
   return layouts;
 }
 
-function LocationBox({ box, isSelected, onSelect }: { box: BoxSpec; isSelected: boolean; onSelect: (l: Location) => void }) {
-  const color = STORAGE_TYPE_COLORS[box.location.storageType] || DEFAULT_BOX_COLOR;
+function LocationBox({ box, isSelected, onSelect, color }: { box: BoxSpec; isSelected: boolean; onSelect: (l: Location) => void; color: { fill: string; stroke: string } }) {
   const inactive = !box.location.isActive;
 
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
@@ -223,38 +219,90 @@ function AisleFootprint({ layout, onSelect }: { layout: AisleLayout; onSelect: (
   );
 }
 
-function DetailPanel({ location, onClose }: { location: Location; onClose: () => void }) {
-  // Always shows the -D{n} suffix when a depth value exists at all, rather
-  // than re-deriving whether this position genuinely has more than one
-  // depth (2D's own rule) — the "Depth position" field below already gives
-  // the precise number either way, this header is just a convenience label.
-  const rackName = RACK_STORAGE_TYPES.includes(location.storageType) ? buildRackName(location, location.depth != null ? 2 : 1) : location.code;
-  return (
-    <div style={{ position: 'absolute', top: 12, right: 12, width: 240, background: '#fff', border: '1px solid #ccc', borderRadius: 8, padding: 12, fontSize: 13, boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <strong>{rackName}</strong>
-        <button type="button" onClick={onClose} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 14 }}>✕</button>
-      </div>
-      <p style={{ margin: '4px 0' }}><strong>Code:</strong> {location.code}</p>
-      <p style={{ margin: '4px 0' }}><strong>Zone Type:</strong> {labelFor(ZONE_TYPE_OPTIONS, location.zoneType)}</p>
-      <p style={{ margin: '4px 0' }}><strong>Storage Type:</strong> {labelFor(STORAGE_TYPE_OPTIONS, location.storageType)}</p>
-      <p style={{ margin: '4px 0' }}><strong>Category:</strong> {location.category?.name || '—'}</p>
-      {RACK_STORAGE_TYPES.includes(location.storageType) ? (
-        <>
-          <p style={{ margin: '4px 0' }}><strong>Level:</strong> {location.level ?? '—'}</p>
-          <p style={{ margin: '4px 0' }}><strong>Depth position:</strong> {location.depth ?? 1}</p>
-        </>
-      ) : (
-        <p style={{ margin: '4px 0' }}><strong>Dimensions (D×W×H):</strong> {location.depth ?? 1}×{location.width ?? 1}×{location.height ?? 1}</p>
-      )}
-      <p style={{ margin: '4px 0' }}><strong>Status:</strong> {location.isActive ? 'Active' : 'Inactive'}</p>
-    </div>
-  );
+// Camera auto-focus (2026-09-05 "upgrade mode" backlog, item 4) — checking
+// an aisle into detail used to leave the camera exactly where it was (a
+// fixed whole-warehouse overview computed once on mount), so finding what
+// you just selected meant manually orbiting/zooming over to it yourself.
+// This computes a real camera position + OrbitControls target that FITS
+// whichever aisles are currently selected — confirmed directly rather than
+// picking "most recently checked": with several aisles checked at once,
+// the camera frames all of them together, not just the last one. With
+// NONE selected (including on first mount), "fit" naturally degrades to
+// fitting every aisle — the same whole-warehouse view as before, so the
+// initial load and the "uncheck everything" case both land on the exact
+// same framing without needing a special case for either.
+function computeFocus(aislesToFit: AisleLayout[]): { camPos: [number, number, number]; target: [number, number, number] } {
+  const minX = Math.min(...aislesToFit.map((l) => l.footprint.x - l.footprint.w / 2));
+  const maxX = Math.max(...aislesToFit.map((l) => l.footprint.x + l.footprint.w / 2));
+  const maxZ = Math.max(...aislesToFit.map((l) => l.footprint.z + l.footprint.d / 2));
+  const centerX = (minX + maxX) / 2;
+  const span = Math.max(maxX - minX, maxZ, 4); // a floor so a single small aisle doesn't zoom in absurdly close
+  return {
+    camPos: [centerX, Math.max(6, span / 2.5), maxZ + span * 0.6 + 4],
+    target: [centerX, 1, maxZ / 2],
+  };
 }
 
-function Locations3DView({ locations }: { locations: Location[] }) {
+// Smoothly (not a snap-instant jump, confirmed directly) nudges the real
+// three.js camera + OrbitControls target toward whatever computeFocus()
+// last returned, every frame, until close enough — then stops, so it never
+// fights a user who manually orbits/pans afterward. Lives inside <Canvas>
+// (useFrame only works there) as its own component purely for that reason;
+// it renders nothing.
+function CameraRig({ camPos, target, controlsRef }: { camPos: [number, number, number]; target: [number, number, number]; controlsRef: React.RefObject<any> }) {
+  // `focusRef` is written fresh on every render (a plain assignment, not an
+  // effect) so `useFrame`'s callback — registered once, called every frame
+  // by R3F's own render loop, independent of React's render cycle — always
+  // reads the CURRENT `camPos`/`target` instead of whatever closure it
+  // happened to capture at registration time. A real bug caught during
+  // build, not a defensive habit: an earlier `useEffect([camPos[0], ...])`
+  // version compiled clean and looked correct, but the camera never
+  // actually moved on selection change — direct instrumentation showed the
+  // computed focus itself updated correctly every render, yet `useFrame`
+  // kept animating toward the ORIGINAL mount-time target forever. This ref
+  // pattern sidesteps the whole question of whether useFrame re-captures
+  // its closure by never relying on the closure for the values at all.
+  const focusRef = useRef({ camPos, target });
+  focusRef.current = { camPos, target };
+  const animating = useRef(true);
+  const prevKey = useRef('');
+  const key = `${camPos.join(',')}|${target.join(',')}`;
+  if (key !== prevKey.current) {
+    prevKey.current = key;
+    animating.current = true;
+  }
+
+  useFrame(({ camera }) => {
+    if (!animating.current) return;
+    const { camPos: cp, target: tg } = focusRef.current;
+    camera.position.set(
+      THREE.MathUtils.lerp(camera.position.x, cp[0], 0.08),
+      THREE.MathUtils.lerp(camera.position.y, cp[1], 0.08),
+      THREE.MathUtils.lerp(camera.position.z, cp[2], 0.08),
+    );
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.target.set(
+        THREE.MathUtils.lerp(controls.target.x, tg[0], 0.08),
+        THREE.MathUtils.lerp(controls.target.y, tg[1], 0.08),
+        THREE.MathUtils.lerp(controls.target.z, tg[2], 0.08),
+      );
+      controls.update();
+    }
+    const dx = camera.position.x - cp[0];
+    const dy = camera.position.y - cp[1];
+    const dz = camera.position.z - cp[2];
+    if (dx * dx + dy * dy + dz * dz < 0.01) animating.current = false;
+  });
+  return null;
+}
+
+function Locations3DView({ locations, colorMode, occupancy }: { locations: Location[]; colorMode: ColorMode; occupancy: Occupancy[] }) {
   const [selected, setSelected] = useState<Location | null>(null);
   const [selectedAisles, setSelectedAisles] = useState<Set<string>>(new Set());
+  // Called unconditionally, alongside the other hooks above — the empty-
+  // state early return below must never skip a hook call between renders.
+  const controlsRef = useRef<any>(null);
 
   const layouts = useMemo(() => buildWarehouseLayout(locations), [locations]);
 
@@ -271,11 +319,60 @@ function Locations3DView({ locations }: { locations: Location[] }) {
     });
   };
 
+  // Occupancy overlay (2026-09-05) — only applies to a SELECTED aisle's real
+  // per-bin boxes. An unselected aisle's footprint block stays colored by
+  // storageType regardless of mode — it's a simplified stand-in for many
+  // bins with potentially many different occupants, there's no single
+  // category/class it could honestly represent, so it deliberately doesn't
+  // try; the real occupancy detail only shows once you drill into it.
+  const occupancyByLocationId = new Map(occupancy.map((o) => [o.locationId, o]));
+  const categoryColors = buildCategoryColorMap(occupancy);
+  const getColor = (location: Location): { fill: string; stroke: string } => {
+    const overlay = occupancyColorFor(colorMode, occupancyByLocationId.get(location.id), categoryColors);
+    return overlay ?? STORAGE_TYPE_COLORS[location.storageType] ?? DEFAULT_BOX_COLOR;
+  };
+
+  // totalWidth/totalDepth size the floor/grid to the WHOLE warehouse always
+  // — only the camera refocuses on a selection, the ground plane itself
+  // shouldn't shrink or disappear just because fewer aisles are detailed.
   const totalWidth = Math.max(...layouts.map((l) => l.footprint.x + l.footprint.w / 2));
   const totalDepth = Math.max(...layouts.map((l) => l.footprint.d));
 
+  const aislesToFit = selectedAisles.size > 0 ? layouts.filter((l) => selectedAisles.has(l.aisleCode)) : layouts;
+  const focus = computeFocus(aislesToFit);
+
   return (
     <div>
+      {colorMode !== 'structural' && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8, fontSize: 12 }}>
+          <span style={{ color: '#888' }}>
+            {colorMode === 'category' ? 'Colored by occupant Category (selected aisles only):' : "Colored by occupant A/B/C Class (selected aisles only):"}
+          </span>
+          {colorMode === 'class' &&
+            (['A', 'B', 'C'] as const).map((cls) => (
+              <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 2, background: ABC_CLASS_COLORS[cls].fill, border: `1.5px solid ${ABC_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
+                Class {cls}
+              </span>
+            ))}
+          {colorMode === 'category' &&
+            [...new Map(occupancy.filter((o) => o.categoryId).map((o) => [o.categoryId, o.categoryName])).entries()]
+              .sort((a, b) => (a[1] || '').localeCompare(b[1] || ''))
+              .map(([categoryId, categoryName]) => {
+                const color = categoryColors.get(categoryId!)!;
+                return (
+                  <span key={categoryId} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ width: 12, height: 12, borderRadius: 2, background: color.fill, border: `1.5px solid ${color.stroke}`, display: 'inline-block' }} />
+                    {categoryName}
+                  </span>
+                );
+              })}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 12, height: 12, borderRadius: 2, background: NEUTRAL_COLOR.fill, border: `1.5px solid ${NEUTRAL_COLOR.stroke}`, display: 'inline-block' }} />
+            Empty
+          </span>
+        </div>
+      )}
       {/* The slicer — plain checkboxes, same "no component library" style as
           every other control in this app. Multiple aisles can be checked at
           once; each one independently swaps between its footprint block and
@@ -291,7 +388,8 @@ function Locations3DView({ locations }: { locations: Location[] }) {
       </div>
 
       <div style={{ position: 'relative', border: '1px solid #ddd', borderRadius: 8, height: 520 }}>
-        <Canvas camera={{ position: [totalWidth / 2, Math.max(6, totalWidth / 3), totalDepth + 10], fov: 50 }} onPointerMissed={() => setSelected(null)}>
+        <Canvas camera={{ position: focus.camPos, fov: 50 }} onPointerMissed={() => setSelected(null)}>
+          <CameraRig camPos={focus.camPos} target={focus.target} controlsRef={controlsRef} />
           <ambientLight intensity={0.7} />
           <directionalLight position={[10, 15, 10]} intensity={0.8} />
           {/* Solid floor beneath the grid lines — without this the "ground"
@@ -307,11 +405,14 @@ function Locations3DView({ locations }: { locations: Location[] }) {
           {layouts.map((layout) =>
             selectedAisles.has(layout.aisleCode)
               ? layout.boxes.map((box) => (
-                  <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} />
+                  <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} />
                 ))
               : <AisleFootprint key={layout.aisleCode} layout={layout} onSelect={toggleAisle} />,
           )}
-          <OrbitControls target={[totalWidth / 2, 1, totalDepth / 2]} makeDefault />
+          {/* No `target` prop here — CameraRig above owns the target
+              imperatively (smoothly nudging it every frame), a static prop
+              here would fight that. */}
+          <OrbitControls ref={controlsRef} makeDefault />
         </Canvas>
         <p style={{ position: 'absolute', bottom: 8, left: 12, fontSize: 11, color: '#888', margin: 0 }}>
           Drag to orbit, scroll to zoom, right-drag to pan. Click an aisle block (or check it above) to see its bins; click a bin for details.

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
@@ -76,6 +76,14 @@ export class LocationsController {
   @Roles(...MASTER_DATA_READ_ROLES)
   findAll(@CurrentUser() user: any) {
     return this.locationsService.findAll(user);
+  }
+
+  // Plan View occupancy overlay (2026-09-05) — one row per currently-
+  // occupied location, for the Category/ABC-Class coloring modes.
+  @Get('occupancy')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  occupancy(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+    return this.locationsService.occupancyByWarehouse(warehouseId, user);
   }
 
   // Location Labels (2026-08-29) — a ZIP of one Code128 PNG per requested

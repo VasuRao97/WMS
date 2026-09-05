@@ -3401,6 +3401,227 @@ real stacked-box detail while Aisle 2/3 correctly stayed as footprints, confirme
 a direct DOM check of the checkbox states. `tsc -b` clean. Cleaned up the throwaway company
 afterward.
 
+### Locations/Bins Plan View: occupancy overlay — By Category / By A/B/C Class (2026-09-05)
+
+The first item off a real "upgrade mode" backlog the client asked for after the 3D Plan View
+shipped — a full list of Plan View directions was proposed, the client picked which to build and
+which to decline, then this one first: "which ever bins are used, we need to keep different colour
+in this... these should be picked from the actual storage data." Two new, independent color modes,
+never blended with each other or with today's default storageType ("Structural") coloring — a
+3-way toggle, confirmed directly rather than assumed:
+- **By Category** — each bin's current occupant SKU's Category gets its own color.
+- **By A/B/C Class** — each bin's current occupant's `abcClass` gets its own color (unclassified
+  defaults to C, same convention `suggestBin()`/Insights already use).
+
+An empty bin (nothing occupying it) always renders plain neutral grey in either mode, confirmed
+directly — "which ever bins are used" was explicitly about occupied vs. not, not a full heatmap.
+
+**A new backend read, not a client-side compute.** Both Plan Views only ever fetched structural
+location data before this — no stock data at all. `LocationsService.occupancyByWarehouse()`
+(`GET /locations/occupancy?warehouseId=X`) returns one row per currently-OCCUPIED location (on-hand
+> 0, derived from `StockMovement`, same "always derive, never store a counter" convention as
+`suggestBin()`/Insights) — an empty location simply doesn't appear in the result, letting the
+frontend treat "absent" as the neutral case for free. Fetching every movement client-side and
+computing balances in the browser was deliberately ruled out — a real warehouse's movement history
+would only grow, this stays a small, server-computed, per-location summary instead.
+
+**New shared `occupancyColors.ts`** (same "one palette, many callers" convention as
+`STORAGE_TYPE_COLORS` itself) — a fixed 3-color A/B/C palette (green/amber/red, a traffic-light
+convention matching how this kind of classification is usually read), and a 12-color rotating
+palette for Categories, assigned by sorted category name so the same category gets the same color
+consistently within a session without any per-category configuration anywhere. `colorMode` state
+(`'structural' | 'category' | 'class'`) and the fetched `occupancy` array both live in
+`LocationsPage.tsx`, shared by both `LocationsPlanView` (2D) and `Locations3DView` (3D) — switching
+between 2D and 3D keeps whatever color mode you were already in.
+
+**3D's own wrinkle**: the occupancy overlay only ever colors a SELECTED (fully-detailed) aisle's
+real per-bin boxes — an aisle still shown as its simplified footprint block stays colored by
+storageType regardless of mode, deliberately. A footprint stands in for potentially many bins with
+different occupants; there's no single category/class it could honestly represent, so it doesn't
+try — the real occupancy detail only appears once you drill into a specific aisle, consistent with
+the footprint/detail split the 3D view already established.
+
+Verified two ways: a throwaway-company diagnostic script calling `occupancyByWarehouse()` directly
+against the real dev DB (6/6 — correct SKU/Category/Class attribution for two distinct occupied
+locations, a never-moved location and a fully-net-zero-depleted location both correctly absent from
+the result, an unclassified SKU correctly defaulting to Class C); then a live browser pass — real
+SKUs created via the actual `/skus` API (one Class A/Car Tyres, one Class B/Water) with stock seeded
+directly onto four real generated locations (two occupied by the Class A SKU, one by the Class B
+SKU, one left empty), confirmed via screenshot in BOTH views: 2D's Category mode showed the exact
+right blue/red/grey pattern across the four boxes with a correct legend, 2D's Class mode showed the
+exact right green/amber/grey pattern, and 3D's Class mode (aisle selected into detail) showed the
+same four colors present in the right proportions on the real 3D boxes. `tsc -b` clean.
+
+### Locations/Bins 2D Plan View: click-to-inspect (2026-09-05, backlog item 2)
+
+Closes the original 2026-08-25 Plan View's own deferred item for real — 3D got click-to-inspect
+first (landing there was explicit, not an oversight), 2D was always the other half of that same
+backlog entry. Straightforward this time: the shape was already fully settled by 3D's own build,
+nothing new to design.
+
+**Extracted the shared `DetailPanel` component (+ `buildRackName` helper) into a new
+`LocationDetailPanel.tsx`**, moved out of `Locations3DView.tsx` — same "one component, many callers"
+convention as `STORAGE_TYPE_COLORS`/`occupancyColors.ts` — so 2D and 3D show byte-identical detail
+(Rack Name, code, Zone Type, Storage Type, Category, Level/Depth or Dimensions, Status), not two
+copies that could quietly drift apart. `Locations3DView.tsx` now imports it instead of defining its
+own.
+
+**2D's own wiring**: `AisleCellBox`'s `<rect>` gained an `onClick` (threaded down through `Flank`)
+and `cursor: pointer`; `LocationsPlanView` gained its own `selected` state and a `locationById` map
+built from the full `locations` prop (the box only carries a summarized `Box` shape internally, the
+panel needs the real, un-abbreviated `Location` row). The outer wrapping `<div>` gained
+`position: relative` so the panel — identical absolute-positioned top-right placement to 3D — floats
+correctly over the (potentially scrollable) SVG. Clicking a different box while the panel is open
+correctly swaps its content rather than requiring a close-then-reopen.
+
+Verified live: a real generated 3-rack SPR aisle, clicking the first box opened the panel with the
+exact correct content (`R1-01`, code `1-R01-L01-B1`, Zone Type Actual Storage, Storage Type SPR,
+Level 01, Depth position 1, Status Active); the close button correctly cleared it; clicking a
+different box (`R1-03`) while starting fresh correctly showed that box's own details, confirming
+the click handler always resolves the CURRENT box, not a stale one. `tsc -b` clean.
+
+### Locations/Bins 2D Plan View: Level toggle (2026-09-05, backlog item 3)
+
+A top-down plan can't show height spatially — a Rack position with several Levels has always
+collapsed into one box with a level-RANGE line (`G-G+2`, via `levelRangeLabel()`). This lets you
+narrow to exactly one real Level instead, so a box on screen shows that Level alone, not a range.
+
+**Reuses every existing box-building rule completely unchanged** — no second rendering path, no new
+box shape. The toggle just filters WHICH rows feed into the already-existing `buildLayout()`/
+`buildCell()` before they ever run: `filteredLocations = selectedLevel === 'all' ? locations :
+locations.filter(l => !l.level || l.level === selectedLevel)`. A Rack position that doesn't reach
+the selected Level (e.g. a 2-level rack when "G+2" is picked) simply has no box for it — the correct
+physical answer — and Ground/Floor/Stillage rows (no `level` field at all) pass the filter
+unconditionally either way, so the toggle only ever visibly affects Rack types. The available Level
+list itself is derived from whatever Levels genuinely exist in the warehouse's own data
+(`uniqSorted`), not a fixed range — same "real data, not assumed" convention as everything else here.
+
+Deliberately 2D-only — 3D already shows real Levels as actual vertical position, it never needed
+this in the first place.
+
+Verified live: a real generated 3-rack, 3-level SPR aisle plus an unrelated 2-block Ground/Floor
+aisle. "All Levels" showed each SPR box's level line as `G+2` (the full range); selecting "G+1"
+narrowed all 3 SPR boxes to show exactly `G+1` (confirmed via direct SVG text-node inspection, not
+just a page-text guess) while both Ground/Floor boxes stayed completely untouched — the aisle count
+itself stayed at 2 throughout, since Ground/Floor was never filtered out. `tsc -b` clean.
+
+### 3D Plan View: camera auto-focus (2026-09-05, backlog item 4)
+
+Checking an aisle into detail used to leave the camera exactly where it was (a fixed whole-warehouse
+overview computed once on mount) — finding what you just selected meant manually orbiting/zooming
+over to it. Three real forks confirmed before building, not assumed: **smooth** (a real transition,
+not an instant snap), **fit ALL currently-selected aisles together** (not just whichever was checked
+most recently — with several checked at once, the camera frames the whole group), and unchecking
+back to zero **returns to the full-warehouse view**.
+
+**`computeFocus(aislesToFit)`** takes whichever `AisleLayout[]` should be framed and returns a camera
+position + `OrbitControls` target that fits them — elegantly, "fit all selected" and "back to full
+warehouse when none selected" turned out to be the exact same function: `aislesToFit = selectedAisles.
+size > 0 ? layouts.filter(...) : layouts` naturally degrades to "fit everything" the moment nothing
+is checked, including on first mount — no special-casing needed for either the initial load or the
+uncheck-everything case.
+
+**A real bug caught during verification, not just reasoned about**: the first working version used a
+`useEffect([camPos[0], camPos[1], camPos[2], ...])` to detect a new focus target and restart the
+lerp — compiled clean, read correctly, but the camera never actually moved when a different aisle
+was checked. Direct instrumentation (temporarily logging `computeFocus()`'s own output on every
+render, and a visible test mesh confirming the rig component really was mounting) proved the
+computed focus itself updated correctly every time — the bug was `useFrame`'s callback closure
+capturing the ORIGINAL mount-time `camPos`/`target` values and never re-reading fresher ones, so it
+kept lerping toward the first-ever target forever regardless of what was actually selected
+afterward. Fixed by writing `camPos`/`target` into a ref on every render (a plain assignment, not an
+effect) and having the `useFrame` callback read from that ref instead of closing over the props
+directly — sidesteps the closure-freshness question entirely rather than trying to out-guess it.
+Worth remembering for any future `useFrame` callback that depends on values which change after
+mount: prefer a ref updated during render over relying on the callback's own closure.
+
+Verified live: two real aisles at different X positions. The default view correctly framed both;
+checking Aisle 2 alone visibly zoomed/shifted the camera toward just that aisle (confirmed via
+screenshot comparison — Aisle 2's boxes rendered larger/closer, Aisle 1 shifted position in frame);
+unchecking it correctly animated back to the exact original whole-warehouse framing. `tsc -b` clean.
+
+### Putaway Simulation — a sandbox to watch the real algorithm work (2026-09-06)
+
+A tangent off the visual-upgrade backlog, not one of its numbered items — the client's own question:
+"can we have a simulation for me to check our visuals? which uses our algo/logic to fill in racks...
+we will get to know how and whats happening." Refined via clarifying questions into a concrete scope
+before building: synthetic/made-up data (not a replay of real historical receipts), the real Putaway
+bin-suggestion algorithm first (Pick Face re-slotting simulation deliberately deferred to a later
+pass), step-by-step playback with speed controls ("we can speeden it also 3x 5x etc"), a dedicated
+sandbox warehouse (never a real one), and auto-generated synthetic SKUs (not manually configured
+per run).
+
+**Architecture: one backend call computes the whole real batch; the frontend only replays it.** This
+was the key design decision — `POST /simulation/putaway/run` runs `unitCount` sequential placements
+server-side, each one a genuine call to the actual `PutawayTasksService.suggestBin()` (never a
+reimplementation, same standing principle as Pick Face's own eviction logic reusing it), immediately
+followed by a real `PUTAWAY_IN` `StockMovement` so the NEXT step's suggestion sees accurate occupancy
+(lane-fullness preference, same-SKU top-up, class caps all stay genuinely real, step to step) — and
+returns the complete ordered `SimStep[]` result in one response. The frontend's playback is then a
+pure client-side `setInterval` revealing one more already-computed step at a time; speed changes and
+pause/resume are instant with zero backend round-trips, since nothing about the algorithm's decisions
+is being driven live over the network. Deliberately skips `PutawayTask`/`PutawayTrip` and the whole
+staging/claim/scan machinery — those model the OPERATOR's physical workflow, which isn't what this
+feature visualizes; one `PUTAWAY_IN` movement per placed unit is enough to make occupancy real for
+`suggestBin()` to react to, and the sandbox's ledger is wholly disposable via Reset regardless.
+
+**Sandbox, not new schema.** No new tables at all — the sandbox is an ordinary `Warehouse` row found/
+created by a well-known per-company code (`SIM-SANDBOX`, a simple 3×3×3 SPR grid auto-created lazily
+on first use), and synthetic SKUs are tagged by a `SIM-` code prefix, evenly spread across A/B/C
+classes and reused across runs (not regenerated every time, so the same SIM- codes keep meaning the
+same thing run to run). Both are plain data conventions the rest of the app has no idea are special —
+a completely normal warehouse and normal SKUs to every other feature. A run also has a mild same-SKU
+clustering bias (70% chance to repeat the previous step's SKU rather than a pure uniform draw) to
+better resemble how a real truck actually unloads and to exercise the same-SKU-top-up/lane-fullness
+logic more than fully independent random picks would.
+
+**Reuses the existing Plan View components completely unchanged** — `LocationsPlanView`/
+`Locations3DView`, 2D/3D toggle, and the occupancy-overlay color modes (Structural/Category/Class)
+all get fed the sandbox's own locations plus an `Occupancy[]` built from however many steps have been
+"revealed" so far by the playback — same shape the real occupancy overlay already consumes, same "one
+component, many callers" convention as everywhere else in this codebase.
+
+**A real race condition caught during verification, not assumed away.** On the sandbox's very first-
+ever setup, an "Internal server error" appeared alongside an otherwise-working sandbox (created by
+whichever of two racing requests won — almost certainly React StrictMode double-invoking the mount
+effect, though nothing rules out two browser tabs doing the same). Root cause: `ensureSandbox()`
+originally used `findFirst` + `create` for both the `Warehouse` and `ProductCategory` rows — a
+classic check-then-act race where two near-simultaneous first calls both see "doesn't exist yet" and
+both try to create, and the loser hits a raw unique-constraint violation surfaced as an unhandled
+500. Fixed by switching both to `upsert` (keyed on `Warehouse`'s `companyId_code` compound unique
+constraint, `ProductCategory`'s unique `name`), wrapping the `WarehouseStorageType.create()` in a
+try/catch that silently swallows a concurrent duplicate, and adding `skipDuplicates: true` to the
+`Location.createMany()` call — "already exists" becomes a normal, silent outcome instead of an error
+to catch. Worth remembering for any future lazy-create-on-first-use pattern: `upsert`/
+`skipDuplicates` beat `findFirst`-then-`create` the moment two callers can plausibly race, and
+React's own StrictMode is a real, easy-to-forget source of that race in dev, not just multiple tabs.
+
+**Backend**: new `simulation/` module (`SimulationController`/`Service`) — `POST /simulation/sandbox`
+(idempotent get-or-create), `POST /simulation/sandbox/reset` (clears the sandbox's `StockMovement`s
+and `SIM-` SKUs back to a blank slate, leaves the Location layout untouched so a customized layout
+survives a rerun), `POST /simulation/putaway/run` (body `{ unitCount }`, clamped 1-200) — all gated
+`MASTER_DATA_WRITE_ROLES` (Company Admin/Warehouse Manager), imports `PutawayModule` so it can inject
+the real `PutawayTasksService` directly (same cross-module reuse pattern `NotificationsModule`
+established). **Frontend**: new standalone `SimulationPage.tsx`, wired into `App.tsx` as a top-level
+"Simulation" nav tab (same role gate as the backend) — unit-count input, Run/Reset buttons, a step
+counter with live per-step description text, Play/Pause + 1x/3x/5x speed buttons, and the same 2D/3D
++ color-mode toggles the real Plan View has.
+
+Verified live end-to-end (throwaway company `SIMCHK1`, sandbox `SIM-SANDBOX`): fixed the race above
+and confirmed a clean reload with no error; ran a 20-unit simulation and watched the real backend
+batch return and play back step by step with live text (`"Step 13 / 20 — SIM-A15 (Class A), qty 2 →
+R1-01-L3"`) through to completion; screenshotted both 2D and 3D in A/B/C Class color mode and
+confirmed an algorithm-realistic placement pattern — Aisle 1's Class A positions each locked to a
+single-SKU lane per the real class-cap rule, Aisle 3 heavily filled with Class C across all three
+rack positions, matching between the two views exactly; clicked Reset and confirmed via a direct API
+check (not just the UI losing its step counter) that on-hand occupancy genuinely returned to zero
+while the Location layout's 27 rows survived untouched. `tsc --noEmit`/`tsc -b` both clean. Throwaway
+company cleaned up via a short-lived Prisma script afterward, per this project's standing convention.
+
+**Explicitly deferred, per the confirmed scope**: Pick Face re-slotting simulation (the algorithm
+this feature is built to extend to next), and anything beyond a placement-decision visualization —
+no operator-workflow modeling (claim/scan/trip) at all.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -3654,6 +3875,23 @@ waiting rather than just "busy," with a two-tier Supervisor-then-Manager escalat
 Detention's own alert pattern) if it's ignored. New `User.canOperateMhe`/`canHandleGroundBlock`
 (optional, unset = no restriction) and `Company.putawayAssignmentGraceMinutes` (default 2, one dial
 reused for both escalation steps).
+
+**A Locations/Bins 3D Plan View now exists** (2026-09-05, see "Locations/Bins: 3D Plan View" above)
+— a real WebGL camera (Three.js/React Three Fiber, the first such dependency in this codebase)
+alongside the existing 2D top-down view, whole-warehouse by default as simplified per-aisle
+footprint blocks with a checkbox "slicer" to swap one or more aisles into full per-bin detail.
+Several upgrades landed the same day off a confirmed backlog — see the "Plan View upgrade mode"
+ROADMAP session note — occupancy overlay (By Category / By A/B/C Class, both views), click-to-inspect
+on 2D, a Level toggle on 2D, and smooth camera auto-focus in 3D. Zone Type coloring and Ground/
+Stillage sub-boxes stay declined/parked; a Putaway location-override toggle, discrepancy
+highlighting, and a Docks/Staging visual are confirmed-to-build, not yet started (see ROADMAP.md).
+
+**A Putaway Simulation sandbox now exists** (2026-09-06, see "Putaway Simulation" above) — a separate
+tangent off that same backlog, not one of its numbered items: a dedicated sandbox warehouse running
+the real, unmodified `suggestBin()` algorithm against auto-generated synthetic SKUs, replayed as a
+speed-adjustable step-by-step animation through the same 2D/3D Plan View components. Pick Face
+re-slotting simulation (the same sandbox idea applied to the OTHER algorithm) is the explicitly
+deferred next phase for this feature specifically.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

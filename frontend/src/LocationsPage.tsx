@@ -212,6 +212,24 @@ function LocationsPage() {
   // state living inside Locations3DView itself — nothing else here depends
   // on which aisle(s) are currently shown in detail.
   const [planMode, setPlanMode] = useState<'2d' | '3d'>('2d');
+  // Occupancy overlay (2026-09-05, same memory) — a color MODE shared by
+  // both 2D and 3D, so switching views doesn't reset which one you're
+  // looking at. 'structural' (today's storageType coloring) stays the
+  // default; 'category'/'class' are fetched on demand, not on every
+  // warehouse load, since most sessions will just look at the structural
+  // layout.
+  const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class'>('structural');
+  const [occupancy, setOccupancy] = useState<import('./occupancyColors').Occupancy[]>([]);
+  const [occupancyLoading, setOccupancyLoading] = useState(false);
+
+  useEffect(() => {
+    if (colorMode === 'structural' || !planWarehouseId) return;
+    setOccupancyLoading(true);
+    fetch(`http://localhost:3000/locations/occupancy?warehouseId=${planWarehouseId}`, { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? [] : res.json()))
+      .then((data) => setOccupancy(Array.isArray(data) ? data : []))
+      .finally(() => setOccupancyLoading(false));
+  }, [colorMode, planWarehouseId]);
 
   const loadLocations = () => {
     fetch('http://localhost:3000/locations', { headers: authHeaders() })
@@ -940,6 +958,15 @@ function LocationsPage() {
                 slicers to select which part... they want to check." */}
             <button type="button" onClick={() => setPlanMode('2d')} style={{ fontWeight: planMode === '2d' ? 'bold' : 'normal' }}>2D</button>
             <button type="button" onClick={() => setPlanMode('3d')} style={{ fontWeight: planMode === '3d' ? 'bold' : 'normal' }}>3D</button>
+            {/* Occupancy overlay color mode (2026-09-05) — shared by both 2D
+                and 3D so switching views keeps the same coloring. Only one
+                mode active at a time; Structural (storageType) stays the
+                default, Category/Class are fetched on demand. */}
+            <span style={{ marginLeft: 8, fontSize: 12, color: '#888' }}>Color by:</span>
+            <button type="button" onClick={() => setColorMode('structural')} style={{ fontWeight: colorMode === 'structural' ? 'bold' : 'normal' }}>Structural</button>
+            <button type="button" onClick={() => setColorMode('category')} style={{ fontWeight: colorMode === 'category' ? 'bold' : 'normal' }}>Category</button>
+            <button type="button" onClick={() => setColorMode('class')} style={{ fontWeight: colorMode === 'class' ? 'bold' : 'normal' }}>A/B/C Class</button>
+            {occupancyLoading && <span style={{ fontSize: 12, color: '#888' }}>Loading occupancy...</span>}
           </div>
           {!planWarehouseId ? (
             <p style={{ marginTop: 16, color: '#666' }}>Pick a warehouse above to render its layout.</p>
@@ -947,9 +974,11 @@ function LocationsPage() {
             <LocationsPlanView
               locations={locations.filter((l) => l.warehouseId === planWarehouseId)}
               warehouseLabel={labelFor(warehouses.map((w) => ({ value: w.id, label: `${w.code} — ${w.name}` })), planWarehouseId)}
+              colorMode={colorMode}
+              occupancy={occupancy}
             />
           ) : (
-            <Locations3DView locations={locations.filter((l) => l.warehouseId === planWarehouseId)} />
+            <Locations3DView locations={locations.filter((l) => l.warehouseId === planWarehouseId)} colorMode={colorMode} occupancy={occupancy} />
           )}
         </div>
       )}

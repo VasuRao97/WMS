@@ -1,4 +1,7 @@
+import { useState } from 'react';
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
+import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
+import { DetailPanel } from './LocationDetailPanel';
 
 // Top-down structural floor-plan view of one warehouse's Locations — built
 // after a dedicated design conversation (see CLAUDE.md's Locations/Bins
@@ -253,10 +256,9 @@ function buildLayout(locations: Location[]): { aisles: AisleBlock[]; skipped: nu
   return { aisles, skipped };
 }
 
-function AisleCellBox({ box, x, y }: { box: Box; x: number; y: number }) {
-  const color = STORAGE_TYPE_COLORS[box.storageType] || DEFAULT_BOX_COLOR;
+function AisleCellBox({ box, x, y, color, onClick }: { box: Box; x: number; y: number; color: { fill: string; stroke: string }; onClick: (locationId: string) => void }) {
   return (
-    <g>
+    <g onClick={() => onClick(box.key)} style={{ cursor: 'pointer' }}>
       <rect
         x={x}
         y={y}
@@ -289,7 +291,7 @@ function AisleCellBox({ box, x, y }: { box: Box; x: number; y: number }) {
 // edgeX is the walkway's right edge and boxes grow rightward (deeper lanes
 // extend further from the aisle); for the left flank, edgeX is the
 // walkway's left edge and boxes grow leftward. `direction` controls which.
-function Flank({ cells, edgeX, direction, yForRow }: { cells: Cell[]; edgeX: number; direction: 1 | -1; yForRow: (r: number) => number }) {
+function Flank({ cells, edgeX, direction, yForRow, getColor, onSelect }: { cells: Cell[]; edgeX: number; direction: 1 | -1; yForRow: (r: number) => number; getColor: (box: Box) => { fill: string; stroke: string }; onSelect: (locationId: string) => void }) {
   return (
     <>
       {cells.map((cell, r) => {
@@ -300,7 +302,7 @@ function Flank({ cells, edgeX, direction, yForRow }: { cells: Cell[]; edgeX: num
             {cell.boxes.map((box) => {
               const x = direction === 1 ? cursor : cursor - box.width;
               cursor = direction === 1 ? cursor + box.width : cursor - box.width;
-              return <AisleCellBox key={box.key} box={box} x={x} y={y} />;
+              return <AisleCellBox key={box.key} box={box} x={x} y={y} color={getColor(box)} onClick={onSelect} />;
             })}
           </g>
         );
@@ -309,14 +311,39 @@ function Flank({ cells, edgeX, direction, yForRow }: { cells: Cell[]; edgeX: num
   );
 }
 
-function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[]; warehouseLabel: string }) {
+function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: { locations: Location[]; warehouseLabel: string; colorMode: ColorMode; occupancy: Occupancy[] }) {
+  // Click-to-inspect (2026-09-05 "upgrade mode" backlog, item 2) — closes
+  // the original 2026-08-25 deferred item, 3D got it first. Hook called
+  // unconditionally before the early-return empty states below, same rule
+  // every other stateful component in this codebase follows.
+  const [selected, setSelected] = useState<Location | null>(null);
+  const locationById = new Map(locations.map((l) => [l.id, l]));
+
+  // Level toggle (2026-09-05 "upgrade mode" backlog, item 3) — a top-down
+  // plan can't show height spatially, so a Rack position with several
+  // Levels has always collapsed into one box with a level-range line
+  // ("G-G+2"). This lets you narrow to exactly one real Level instead —
+  // reuses every existing box-building rule unchanged by simply filtering
+  // WHICH rows feed into it, rather than adding a second rendering path.
+  // Ground/Floor and Stillage rows have no Level at all, so they pass the
+  // filter untouched either way — the toggle only ever affects Rack types.
+  const [selectedLevel, setSelectedLevel] = useState<string>('all');
+  const availableLevels = uniqSorted(locations.map((l) => l.level));
+  const filteredLocations = selectedLevel === 'all' ? locations : locations.filter((l) => !l.level || l.level === selectedLevel);
+
   if (locations.length === 0) {
     return <p style={{ marginTop: 16 }}>No locations in this warehouse yet — generate or import some first.</p>;
   }
 
-  const { aisles, skipped } = buildLayout(locations);
+  const { aisles, skipped } = buildLayout(filteredLocations);
   if (aisles.length === 0) {
-    return <p style={{ marginTop: 16 }}>None of this warehouse's {locations.length} location(s) have an Aisle set — nothing to plot.</p>;
+    return (
+      <p style={{ marginTop: 16 }}>
+        {selectedLevel === 'all'
+          ? `None of this warehouse's ${locations.length} location(s) have an Aisle set — nothing to plot.`
+          : `Nothing at ${levelLabel(parseInt(selectedLevel, 10) || 1)} — try a different level.`}
+      </p>
+    );
   }
 
   const maxRows = Math.max(...aisles.map((a) => Math.max(a.rightCells.length, a.leftCells.length)));
@@ -337,28 +364,85 @@ function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[
   const yForRow = (rowIndex: number) => PAD_TOP + (maxRows - 1 - rowIndex) * rowBandH;
 
   // Legend only lists Storage Types actually present, not all five always —
-  // keeps it relevant to what's actually on screen.
-  const presentStorageTypes = Array.from(new Set(locations.map((l) => l.storageType))).sort();
+  // keeps it relevant to what's actually on screen (post level-filter).
+  const presentStorageTypes = Array.from(new Set(filteredLocations.map((l) => l.storageType))).sort();
+
+  // Occupancy overlay (2026-09-05, see [[wms-putaway-design]]) — "By
+  // Category"/"By Class" are alternate color MODES, never blended with
+  // Structural. getColor() is the one place that decides which color a box
+  // actually renders; the inactive grey/dashed treatment inside
+  // AisleCellBox still overrides whatever color comes back, in every mode —
+  // that signal stays distinct on purpose, same as it always has been.
+  const occupancyByLocationId = new Map(occupancy.map((o) => [o.locationId, o]));
+  const categoryColors = buildCategoryColorMap(occupancy);
+  const getColor = (box: Box): { fill: string; stroke: string } => {
+    const overlay = occupancyColorFor(colorMode, occupancyByLocationId.get(box.key), categoryColors);
+    return overlay ?? STORAGE_TYPE_COLORS[box.storageType] ?? DEFAULT_BOX_COLOR;
+  };
 
   return (
-    <div>
+    <div style={{ position: 'relative' }}>
+      {selected && <DetailPanel location={selected} onClose={() => setSelected(null)} />}
       <p style={{ fontSize: 12, color: '#666', marginTop: 4, marginBottom: 12 }}>
-        <strong>{warehouseLabel}</strong> — {aisles.length} aisle(s), structural layout only (no occupancy).
-        Aisle 1 sits closest to the bottom-right corner; each further aisle is added to its left. A single-sided
+        <strong>{warehouseLabel}</strong> — {aisles.length} aisle(s).{' '}
+        {colorMode === 'structural'
+          ? 'Structural layout only (no occupancy).'
+          : colorMode === 'category'
+            ? "Colored by each bin's current occupant Category — plain grey means empty."
+            : "Colored by each bin's current occupant's A/B/C Class — plain grey means empty."}
+        {' '}Aisle 1 sits closest to the bottom-right corner; each further aisle is added to its left. A single-sided
         aisle draws as one flank on the right; a second flank (left) only appears when it was actually generated (a
         Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number.
         {skipped > 0 ? ` ${skipped} location(s) with no Aisle set are not shown.` : ''}
       </p>
+      {availableLevels.length > 0 && (
+        <div style={{ marginBottom: 10, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <label>Level:</label>
+          <select value={selectedLevel} onChange={(e) => setSelectedLevel(e.target.value)} style={{ padding: 4 }}>
+            <option value="all">All Levels</option>
+            {availableLevels.map((lvl) => (
+              <option key={lvl} value={lvl}>{levelLabel(parseInt(lvl, 10) || 1)}</option>
+            ))}
+          </select>
+          {selectedLevel !== 'all' && <span style={{ color: '#888' }}>Ground/Floor and Stillage bins always show (no Level of their own).</span>}
+        </div>
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 10, fontSize: 12 }}>
-        {presentStorageTypes.map((st) => {
-          const color = STORAGE_TYPE_COLORS[st] || DEFAULT_BOX_COLOR;
-          return (
-            <span key={st} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 12, height: 12, borderRadius: 2, background: color.fill, border: `1.5px solid ${color.stroke}`, display: 'inline-block' }} />
-              {labelFor(STORAGE_TYPE_OPTIONS, st)}
+        {colorMode === 'structural' &&
+          presentStorageTypes.map((st) => {
+            const color = STORAGE_TYPE_COLORS[st] || DEFAULT_BOX_COLOR;
+            return (
+              <span key={st} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 2, background: color.fill, border: `1.5px solid ${color.stroke}`, display: 'inline-block' }} />
+                {labelFor(STORAGE_TYPE_OPTIONS, st)}
+              </span>
+            );
+          })}
+        {colorMode === 'class' &&
+          (['A', 'B', 'C'] as const).map((cls) => (
+            <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 12, height: 12, borderRadius: 2, background: ABC_CLASS_COLORS[cls].fill, border: `1.5px solid ${ABC_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
+              Class {cls}
             </span>
-          );
-        })}
+          ))}
+        {colorMode === 'category' &&
+          [...new Map(occupancy.filter((o) => o.categoryId).map((o) => [o.categoryId, o.categoryName])).entries()]
+            .sort((a, b) => (a[1] || '').localeCompare(b[1] || ''))
+            .map(([categoryId, categoryName]) => {
+              const color = categoryColors.get(categoryId!)!;
+              return (
+                <span key={categoryId} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <span style={{ width: 12, height: 12, borderRadius: 2, background: color.fill, border: `1.5px solid ${color.stroke}`, display: 'inline-block' }} />
+                  {categoryName}
+                </span>
+              );
+            })}
+        {colorMode !== 'structural' && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#888' }}>
+            <span style={{ width: 12, height: 12, borderRadius: 2, background: '#f3f4f6', border: '1.5px solid #9ca3af', display: 'inline-block' }} />
+            Empty
+          </span>
+        )}
       </div>
       <div style={{ overflow: 'auto', border: '1px solid #ddd', borderRadius: 8, padding: 8 }}>
         <svg width={totalWidth} height={totalHeight} viewBox={`0 0 ${totalWidth} ${totalHeight}`}>
@@ -506,8 +590,8 @@ function LocationsPlanView({ locations, warehouseLabel }: { locations: Location[
                       R{aisle.leftFlankNumber}
                     </text>
                   )}
-                  <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} />
-                  <Flank cells={aisle.rightCells} edgeX={walkwayRightX} direction={1} yForRow={yForRow} />
+                  <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} getColor={getColor} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
+                  <Flank cells={aisle.rightCells} edgeX={walkwayRightX} direction={1} yForRow={yForRow} getColor={getColor} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
                 </g>
               );
             });

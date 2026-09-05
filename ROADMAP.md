@@ -2,12 +2,32 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-05: **the Locations/Bins
-Plan View now has a real 3D mode** — a real WebGL camera via Three.js/React Three Fiber, showing the
-WHOLE warehouse by default as simplified per-aisle footprint blocks, with a checkbox "slicer" to
-swap one or more aisles into full per-bin detail in place (unselected aisles stay visible for
-spatial context), plus click-to-inspect — alongside the existing top-down 2D view. The first
-genuinely visual/3D feature and the first new rendering dependency in this codebase. 2026-09-02:
+what to pick up next. Updated as priorities shift — last updated 2026-09-06: **a Putaway Simulation
+sandbox is now built and verified** — a dedicated sandbox warehouse running the real, unmodified
+`suggestBin()` algorithm against auto-generated synthetic SKUs, replayed as a speed-adjustable
+step-by-step animation through the existing 2D/3D Plan View. A tangent off the Plan View backlog
+below, not one of its numbered items. Caught and fixed a real race condition in the sandbox's lazy
+first-time setup along the way (see CLAUDE.md — `upsert`/`skipDuplicates` beat `findFirst`-then-
+`create` once two callers can race, and React StrictMode is a real source of that race in dev). Pick
+Face re-slotting simulation (the same sandbox idea applied to the other algorithm) is the deferred
+next phase. Previously, 2026-09-05: **3D's Plan View gained
+camera auto-focus** (backlog item 4) — checking an aisle now smoothly flies the camera to fit
+whichever aisle(s) are selected, back to the full warehouse when none are. Caught and fixed a real
+`useFrame` stale-closure bug along the way (see CLAUDE.md for the full story — a ref updated during
+render, not an effect, is the fix). Same day, earlier: **2D's Plan View gained a Level toggle**
+(backlog item 3) — narrows the view to exactly one real Level instead of the usual collapsed
+level-range box, by filtering which rows feed the existing box-builder (no new rendering path). Same
+day, earlier still: **2D's Plan View gained click-to-inspect** (backlog item 2, 3D
+already had it) — a shared `DetailPanel` component now used by both views. Same day, earlier still:
+**the Locations/Bins Plan View gained an occupancy overlay** — two new color modes, By Category and By A/B/C Class, both
+driven from real `StockMovement` data (a new `GET /locations/occupancy` endpoint), applied to both
+the 2D and 3D views alongside today's default storageType coloring. First item off a real "upgrade
+mode" backlog for the Plan View. Same day, earlier: **the Locations/Bins Plan View gained a real 3D
+mode** — a real WebGL camera via Three.js/React Three Fiber, showing the WHOLE warehouse by default
+as simplified per-aisle footprint blocks, with a checkbox "slicer" to swap one or more aisles into
+full per-bin detail in place (unselected aisles stay visible for spatial context), plus
+click-to-inspect — alongside the existing top-down 2D view. The first genuinely visual/3D feature
+and the first new rendering dependency in this codebase. 2026-09-02:
 **Putaway now has a
 real operator-assignment fairness layer** (live "who goes next" recommendation + Supervisor/Manager
 escalation, oldest-staged-stock priority signal) — **the real Analytics module has begun**
@@ -18,6 +38,59 @@ consolidation ("marrying" loose cases onto a pallet before
 Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
 ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
 for the complete design-to-build trail.
+
+## Session note (2026-09-06 — Putaway Simulation: a sandbox to watch the real algorithm work)
+The client's own question, a tangent off the Plan View backlog rather than one of its numbered
+items: "can we have a simulation for me to check our visuals? which uses our algo/logic to fill in
+racks... we will get to know how and whats happening." Scoped via clarifying questions before
+building: synthetic data (not a real historical replay), the real Putaway bin-suggestion algorithm
+first (Pick Face re-slotting simulation deferred to a later pass), step-by-step playback with speed
+controls, a dedicated sandbox warehouse (never a real one), auto-generated SKUs.
+
+**Built and verified**: one backend call (`POST /simulation/putaway/run`) runs the whole batch
+server-side — a genuine call to the real, unmodified `suggestBin()` per unit, each followed by a
+real `PUTAWAY_IN` movement so later steps see accurate occupancy — and returns the complete step
+list for the frontend to replay client-side (instant speed/pause changes, no further network calls).
+The sandbox is plain data (a well-known `SIM-SANDBOX` warehouse code, `SIM-`-prefixed SKUs), no new
+schema. Reuses the existing 2D/3D Plan View components and occupancy-overlay color modes completely
+unchanged. A real race condition in the sandbox's lazy first-time setup was caught and fixed
+(`upsert`/`skipDuplicates` instead of `findFirst`+`create`) — see CLAUDE.md's "Putaway Simulation"
+section for the full technical detail and verification trail.
+
+**Next for this feature specifically**: Pick Face re-slotting simulation, the deferred phase 2.
+
+## Session note (2026-09-05, same day — Plan View "upgrade mode": a full backlog, then item 1 built)
+Right after the 3D Plan View shipped, the client asked to go into "upgrade mode" for the Plan View —
+a proposed list of directions, then their own points added, closed into one backlog:
+
+**Built this session**: item 1, occupancy overlay — By Category and By A/B/C Class color modes,
+applied to both 2D and 3D. Item 2, click-to-inspect on 2D (3D already had it) — extracted a shared
+`DetailPanel` component so both views show identical detail, not two copies. Item 3, a Level toggle
+for 2D — narrows to exactly one real Level instead of today's collapsed level-range box, by
+filtering which rows reach the existing box-builder (2D-only; 3D already shows real Levels
+spatially). Item 4, camera auto-focus in 3D — checking an aisle (or several) smoothly flies the
+camera to fit them, back to the full warehouse when none are selected; caught a real `useFrame`
+stale-closure bug during verification (fixed via a ref updated on every render instead of an
+effect). See CLAUDE.md's matching sections for full build/verification detail on each.
+
+**Confirmed to build, not yet started** (in the order raised): Yard spatial schema only for now (no visual yet — groundwork for a future Yard
+Plan View); a Putaway location-override toggle on Company Settings (for clients who want operators
+able to complete a trip at a location other than the one assigned, instead of today's hard block);
+discrepancy highlighting on the Plan View once that override toggle exists — flag any location
+where a completed trip's real scanned location differs from the task's originally assigned one, so
+it can be corrected fast (this only becomes possible once the override toggle exists, since today's
+hard block means the two can never differ in the ledger); and a Docks/Staging area visual (shape
+still to be worked out, its own conversation when picked up).
+
+**Already built, nothing more needed**: inactive-bin coloring (2D: grey/dashed; 3D: grey/
+transparent) — raised as a new ask, turned out to already exist in both views.
+
+**Declined/parked**: Zone Type coloring (not needed for now); Ground/Floor & Stillage sub-boxes
+(developing Ground generally later); a separate utilization heatmap (covered by the occupancy
+overlay above).
+
+**Still genuinely open, not decided either way**: charts on Insights/Analytics — the alternative
+"visualization" direction raised before 3D took priority, never explicitly confirmed or declined.
 
 ## Session note (2026-09-05 — Locations/Bins 3D Plan View, designed and built)
 A genuinely new topic: "first we need to start with showing a 3d view... we need to give a toggle

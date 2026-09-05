@@ -534,6 +534,74 @@ export class LocationsService {
     return locations.map((l) => this.attachCapacity(l));
   }
 
+  // Plan View occupancy overlay (2026-09-05 — see [[wms-putaway-design]]) —
+  // "which ever bins are used, we need to keep different colour in this...
+  // these should be picked from the actual storage data." One row per
+  // currently-occupied location (on-hand > 0, derived from StockMovement,
+  // same "always derive, never store a counter" convention as
+  // suggestBin()/Insights) — an empty location simply doesn't appear in the
+  // result, the frontend renders anything absent as neutral. A location
+  // with more than one real occupant SKU (only possible for a multi-SKU
+  // lane sharing depths, per suggestBin()'s own maxSkusClass* rule) reports
+  // just the first one found — this is per-LOCATION-ROW occupancy for a
+  // Plan View box, not per-lane, and a genuine multi-occupant single row
+  // isn't a real scenario this schema allows.
+  async occupancyByWarehouse(warehouseId: string, user: any) {
+    if (!warehouseId) throw new BadRequestException('warehouseId is required.');
+    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+    if (!warehouse) throw new NotFoundException('Warehouse not found.');
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) {
+      throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+
+    const locations = await this.prisma.location.findMany({ where: { warehouseId }, select: { id: true } });
+    const locationIds = locations.map((l) => l.id);
+    if (locationIds.length === 0) return [];
+
+    const movements = await this.prisma.stockMovement.findMany({
+      where: { locationId: { in: locationIds } },
+      select: { locationId: true, skuId: true, quantity: true },
+    });
+
+    const balanceByLocSku = new Map<string, number>();
+    for (const m of movements) {
+      const key = `${m.locationId}|${m.skuId}`;
+      balanceByLocSku.set(key, (balanceByLocSku.get(key) || 0) + Number(m.quantity));
+    }
+    const occupantSkuIdByLocation = new Map<string, string>();
+    for (const [key, qty] of balanceByLocSku) {
+      if (qty <= 0) continue;
+      const [locationId, skuId] = key.split('|');
+      if (!occupantSkuIdByLocation.has(locationId)) occupantSkuIdByLocation.set(locationId, skuId);
+    }
+    if (occupantSkuIdByLocation.size === 0) return [];
+
+    const skuIds = [...new Set(occupantSkuIdByLocation.values())];
+    const skus = await this.prisma.sku.findMany({
+      where: { id: { in: skuIds } },
+      select: { id: true, code: true, abcClass: true, category: { select: { id: true, name: true } } },
+    });
+    const skuById = new Map(skus.map((s) => [s.id, s]));
+
+    return [...occupantSkuIdByLocation.entries()].map(([locationId, skuId]) => {
+      const sku = skuById.get(skuId);
+      return {
+        locationId,
+        skuId,
+        skuCode: sku?.code ?? null,
+        // Unclassified defaults to C — same convention suggestBin()/Insights
+        // already use, confirmed 2026-08-28.
+        categoryId: sku?.category?.id ?? null,
+        categoryName: sku?.category?.name ?? null,
+        abcClass: (sku?.abcClass || 'C').toUpperCase(),
+      };
+    });
+  }
+
   // Location Labels (2026-08-29) — a genuine, simple stand-in for a real
   // barcode: since we're the sole source of a bin's identity (unlike a
   // SKU, which can have multiple manufacturer-printed barcodes across pack
