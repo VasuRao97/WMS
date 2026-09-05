@@ -215,16 +215,16 @@ enum GatePassResetPeriod {
 }
 
 model User {
-  id                 String       @id @default(uuid())
-  email              String       @unique
-  passwordHash       String
-  name               String
-  role               Role
+  id                   String       @id @default(uuid())
+  email                String       @unique
+  passwordHash         String
+  name                 String
+  role                 Role
   // Free-text specialization label for Supervisor/Operator (e.g. "Inbound Sup",
   // "Shift Sup", "Picking") — descriptive only for now, for future KPI/task-routing
   // reporting. Not read by any permission check; the real access rules run purely
   // off `role` + `assignedWarehouses`.
-  functionTag        String?
+  functionTag          String?
   // Contact number, added 2026-08-27 specifically so staff (Managers/
   // Admins) can actually receive SMS/WhatsApp notifications — a real gap
   // found while building detention alerting: only Driver had a phone
@@ -233,7 +233,7 @@ model User {
   // either way, same as before this field existed. No uniqueness
   // constraint (same reasoning as Driver.phone — not a reliable natural
   // key to enforce).
-  phone              String?
+  phone                String?
   // Operator capability flags (2026-09-02, Putaway assignment deep-dive) —
   // "loader and picker should not be same at big warehouses, but its
   // possible that in small locations they both are same." Both nullable
@@ -250,24 +250,25 @@ model User {
   // (see [[wms-putaway-design]]), so nothing routes off this field until
   // that module exists; captured now so it isn't a second field-adding
   // pass later, same "schema now, logic later" shape as DockLocationDistance.
-  canOperateMhe      Boolean?
+  canOperateMhe        Boolean?
   canHandleGroundBlock Boolean?
-  isActive           Boolean      @default(true)
-  createdAt          DateTime     @default(now())
+  isActive             Boolean      @default(true)
+  createdAt            DateTime     @default(now())
   // Fast "last seen" lookup — a cached/derived convenience, same relationship
   // to `LoginEvent` below as on-hand stock has to `StockMovement`: the ledger
   // (LoginEvent, append-only, one row per login, forever) is the source of
   // truth; this field is just the latest value read off it, updated
   // alongside every LoginEvent insert so the two never drift.
-  lastLoginAt        DateTime?
-  companyId          String?
-  company            Company?     @relation(fields: [companyId], references: [id])
-  assignedWarehouses Warehouse[]
-  loginEvents        LoginEvent[]
+  lastLoginAt          DateTime?
+  companyId            String?
+  company              Company?     @relation(fields: [companyId], references: [id])
+  assignedWarehouses   Warehouse[]
+  loginEvents          LoginEvent[]
 
   receiptsCreated               InboundReceipt[]        @relation("ReceiptCreatedBy")
   putawayTripsClaimed           PutawayTrip[]           @relation("PutawayTripClaimedBy")
   putawayReassignmentsRequested PutawayReassignment[]   @relation("PutawayReassignmentRequestedBy")
+  pickFaceTripsClaimed          PickFaceTrip[]          @relation("PickFaceTripClaimedBy")
   palletLoadsClosed             PalletLoad[]            @relation("PalletLoadClosedBy")
   multiSkuLaneRequestsRequested MultiSkuLaneException[] @relation("MultiSkuLaneRequestedBy")
   multiSkuLaneRequestsReviewed  MultiSkuLaneException[] @relation("MultiSkuLaneReviewedBy")
@@ -350,6 +351,16 @@ model Warehouse {
   // control.
   agingGranularity AgingGranularity?
 
+  // Pick Face (2026-09-05, SPR only — see [[wms-putaway-design]] and
+  // CLAUDE.md's "Pick Face" section) — the warehouse-level on/off switch for
+  // the whole feature, per the client's own explicit ask ("we need to have a
+  // toggle at a warehouse level, if pickface needs to be implemented or
+  // not"). PickFaceScheduler only ever touches a warehouse with this true.
+  // Defaults false so every existing/new warehouse is completely unaffected
+  // until an admin opts in — same "off until explicitly turned on" shape as
+  // Company.allowErpInboundPush.
+  pickFaceEnabled Boolean @default(false)
+
   // Number of physical parking/yard slots at this facility (2026-08-25,
   // Yard Management design conversation) — drives how many real `YardSlot`
   // rows get generated for this warehouse (see that model's comment). Same
@@ -394,6 +405,7 @@ model Warehouse {
   vehicles               Vehicle[]
   drivers                Driver[]
   pallets                Pallet[]
+  pickFaceTasks          PickFaceTask[]
 
   @@unique([companyId, code])
 }
@@ -624,6 +636,9 @@ model Location {
   putawayTripsScanned     PutawayTrip[]          @relation("PutawayTripScannedLocation")
   putawayReassignedFrom   PutawayReassignment[]  @relation("PutawayReassignmentFrom")
   putawayReassignedTo     PutawayReassignment[]  @relation("PutawayReassignmentTo")
+  pickFaceFrom            PickFaceTask[]         @relation("PickFaceFromLocation")
+  pickFaceTo              PickFaceTask[]         @relation("PickFaceToLocation")
+  pickFaceTripsScanned    PickFaceTrip[]         @relation("PickFaceTripScannedLocation")
   receiptLinesStaged      InboundReceiptLine[]
   // A receipt-level default staging spot, chosen once the vehicle is
   // actually at the dock (2026-08-27 — see InboundReceipt.stagingLocationId's
@@ -699,6 +714,7 @@ model Sku {
   receiptLines       InboundReceiptLine[]
   inboundScans       InboundReceiptScan[]
   putawayTasks       PutawayTask[]
+  pickFaceTasks      PickFaceTask[]
   palletLoads        PalletLoad[]
   outboundOrderLine  OutboundOrderLine[]
   allocations        Allocation[]
@@ -757,6 +773,14 @@ enum MovementType {
   DISPATCH // - stock at dispatch/staging (order left the building)
   RETURN_IN // + stock at returns location
   ADJUSTMENT // +/- manual correction, always requires a reason
+  // Pick Face replenishment/eviction (2026-09-05, SPR only — see
+  // [[wms-putaway-design]] and CLAUDE.md's "Pick Face" section). A genuinely
+  // different kind of move from PUTAWAY_OUT/IN: it's not receipt-driven (no
+  // InboundReceiptLine involved at all) — it's an internal reserve<->pick-face
+  // transfer, created by PickFaceScheduler once a real Picking module can
+  // deplete a pick face slot. OUT/IN pair mirrors PUTAWAY_OUT/IN exactly.
+  PICK_FACE_REPLENISH_OUT // - stock at the reserve (ACTUAL_STORAGE) source location
+  PICK_FACE_REPLENISH_IN // + stock at the PICK_FACE destination location
 }
 
 model StockMovement {
@@ -2030,6 +2054,112 @@ model PutawayReassignment {
   requestedById      String
   requestedBy        User        @relation("PutawayReassignmentRequestedBy", fields: [requestedById], references: [id])
   requestedAt        DateTime    @default(now())
+}
+
+// ------------------------------------------------------------
+// PICK FACE (SPR only) — 2026-09-05, see [[wms-putaway-design]] and
+// CLAUDE.md's "Pick Face" section for the full design conversation.
+// ------------------------------------------------------------
+// Deliberately NOT a PutawayTask: every PutawayTask requires a real
+// receiptLineId (inbound-receipt-driven by construction), but a pick face
+// move has no receipt at all — it's a purely internal reserve<->pick-face
+// transfer. Mirrors PutawayTask/PutawayTrip's own shape (task + scan-driven
+// claim/complete trip) so operators use the exact same claim-by-barcode/
+// complete-by-location-scan discipline they already know from Putaway.
+//
+// Created ONLY by PickFaceScheduler's own daily run (a periodic reslotting
+// pass, not a live/continuous reaction — the client's own call, given this
+// means real physical labor to move a still-good pallet) for a
+// `pickFaceEnabled` warehouse's SPR `PICK_FACE` locations:
+//   - REFILL: a PICK_FACE location is currently empty (on-hand 0) and an
+//     eligible unslotted A/B-class SKU with real reserve stock exists —
+//     move that SKU's leanest reserve location's stock in.
+//   - EVICTION: a PICK_FACE location's current occupant is a STRICTLY
+//     LOWER class than some unslotted candidate (A can evict B, B/C never
+//     evict each other, nothing ever evicts A) — move it back to reserve
+//     (destination chosen via PutawayTasksService.suggestBin(), the exact
+//     same ACTUAL_STORAGE bin-suggestion logic as any other putaway). The
+//     freed slot's own REFILL happens on the NEXT scheduled run once the
+//     eviction trip actually completes and the location reads empty again —
+//     deliberately not a single paired "swap" task, to avoid depending on
+//     one trip's completion before the second can even be suggested.
+//
+// No fixed/permanent SKU-to-location binding exists anywhere in this schema
+// (a deliberate choice — the client's own "dynamic... keep on understanding
+// which are the latest A class material" answer) — which SKU currently
+// "owns" a pick face slot is purely derived from live on-hand stock there,
+// same as everywhere else in this codebase ("always derive, never store a
+// counter"). At most one active pick-face slot per SKU per warehouse is the
+// v1 interpretation — a SKU that already has one slot is never a candidate
+// for a second.
+enum PickFaceTaskStatus {
+  PENDING
+  COMPLETED
+}
+
+enum PickFaceTaskReason {
+  REFILL // reserve -> pick face
+  EVICTION // pick face -> reserve
+}
+
+model PickFaceTask {
+  id          String    @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  skuId       String
+  sku         Sku       @relation(fields: [skuId], references: [id])
+
+  fromLocationId String
+  fromLocation   Location @relation("PickFaceFromLocation", fields: [fromLocationId], references: [id])
+  toLocationId   String
+  toLocation     Location @relation("PickFaceToLocation", fields: [toLocationId], references: [id])
+
+  // The full on-hand quantity at the chosen source location at the moment
+  // this task was created — moved as one whole unit, not split into a
+  // computed "one pallet" amount. This codebase has no numeric Location
+  // capacity anywhere (see [[wms-putaway-design]]'s "still incoming"
+  // reservation design conversation) and reserve stock isn't reliably
+  // tracked pallet-by-pallet outside the palletized-Putaway path, so "move
+  // whatever this location holds" is the same kind of deliberate
+  // placeholder simplification as Sku.maxCasesPerPallet's plain manual
+  // number — a real geometric/pallet-aware split is a separate, bigger
+  // problem, explicitly out of scope here.
+  quantity Decimal
+  status   PickFaceTaskStatus @default(PENDING)
+  reason   PickFaceTaskReason
+
+  createdAt DateTime @default(now())
+
+  trips PickFaceTrip[]
+}
+
+// Mirrors PutawayTrip's scan-driven shape exactly — claim by scanning the
+// source location's barcode, complete only by scanning the task's own
+// toLocationId, no operator override. No ABANDONED/claim-expiry status yet
+// (unlike PutawayTrip) — deliberately out of scope for this pass; flagged
+// as a still-open item, same shape as Putaway's own claim-expiry was before
+// it got built.
+enum PickFaceTripStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+model PickFaceTrip {
+  id     String       @id @default(uuid())
+  taskId String
+  task   PickFaceTask @relation(fields: [taskId], references: [id])
+
+  quantity Decimal
+  status   PickFaceTripStatus @default(IN_PROGRESS)
+
+  claimedById          String
+  claimedBy            User     @relation("PickFaceTripClaimedBy", fields: [claimedById], references: [id])
+  claimedAt            DateTime @default(now())
+  sourceBarcodeScanned String?
+
+  scannedLocationId String?
+  scannedLocation   Location? @relation("PickFaceTripScannedLocation", fields: [scannedLocationId], references: [id])
+  completedAt       DateTime?
 }
 
 // ------------------------------------------------------------

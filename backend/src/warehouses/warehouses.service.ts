@@ -402,6 +402,19 @@ export class WarehousesService {
     });
   }
 
+  // Pick Face's warehouse-level on/off switch (2026-09-05 — see
+  // [[wms-putaway-design]] and CLAUDE.md's "Pick Face" section) — same
+  // "no general Warehouse Edit form, so it hangs off Company Settings'
+  // per-warehouse picker" shape as setAgingGranularity above.
+  async setPickFaceEnabled(id: string, pickFaceEnabled: boolean, user: any) {
+    await this.assertAccess(id, user);
+    return this.prisma.warehouse.update({
+      where: { id },
+      data: { pickFaceEnabled: !!pickFaceEnabled },
+      select: { id: true, code: true, pickFaceEnabled: true },
+    });
+  }
+
   async removeAll(user: any) {
     const warehouses = await this.prisma.warehouse.findMany({
       where: companyFilter(user),

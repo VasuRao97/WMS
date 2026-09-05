@@ -41,7 +41,9 @@ type Settings = {
 // small "pick a warehouse, edit its own setting" control living here on
 // Company Settings instead — same pattern EquipmentPage.tsx's own
 // "Configure Equipment Type Matrix" section already established.
-type WarehouseRow = { id: string; code: string; name: string; agingGranularity?: 'DAY' | 'WEEK' | 'MONTH' | null };
+// pickFaceEnabled (2026-09-05) rides the same WarehouseRow/picker as Aging
+// Methodology above — same "no general Warehouse Edit form" reason.
+type WarehouseRow = { id: string; code: string; name: string; agingGranularity?: 'DAY' | 'WEEK' | 'MONTH' | null; pickFaceEnabled?: boolean };
 
 function CompanySettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -65,6 +67,14 @@ function CompanySettingsPage() {
   const [agingError, setAgingError] = useState('');
   const [agingSaved, setAgingSaved] = useState(false);
   const [agingSaving, setAgingSaving] = useState(false);
+
+  // Pick Face (2026-09-05, SPR only — see [[wms-putaway-design]]) — the
+  // warehouse-level on/off switch, riding the same warehouse picker as
+  // Aging Methodology above.
+  const [pickFaceEnabled, setPickFaceEnabled] = useState(false);
+  const [pickFaceError, setPickFaceError] = useState('');
+  const [pickFaceSaved, setPickFaceSaved] = useState(false);
+  const [pickFaceSaving, setPickFaceSaving] = useState(false);
 
   const load = () => {
     fetch('http://localhost:3000/companies/settings', { headers: authHeaders() })
@@ -93,6 +103,7 @@ function CompanySettingsPage() {
         if (data.length > 0) {
           setAgingWarehouseId((prev) => prev || data[0].id);
           setAgingGranularity((data[0].agingGranularity as any) || 'DAY');
+          setPickFaceEnabled(!!data[0].pickFaceEnabled);
         }
       });
   };
@@ -110,8 +121,11 @@ function CompanySettingsPage() {
     setAgingWarehouseId(id);
     setAgingError('');
     setAgingSaved(false);
+    setPickFaceError('');
+    setPickFaceSaved(false);
     const wh = warehouses.find((w) => w.id === id);
     setAgingGranularity((wh?.agingGranularity as any) || 'DAY');
+    setPickFaceEnabled(!!wh?.pickFaceEnabled);
   };
 
   const handleSaveAgingGranularity = async () => {
@@ -132,6 +146,26 @@ function CompanySettingsPage() {
     }
     setWarehouses((prev) => prev.map((w) => (w.id === agingWarehouseId ? { ...w, agingGranularity: data.agingGranularity } : w)));
     setAgingSaved(true);
+  };
+
+  const handleSavePickFaceEnabled = async () => {
+    if (!agingWarehouseId) return;
+    setPickFaceError('');
+    setPickFaceSaved(false);
+    setPickFaceSaving(true);
+    const res = await fetch(`http://localhost:3000/warehouses/${agingWarehouseId}/pick-face-enabled`, {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ pickFaceEnabled }),
+    });
+    const data = await res.json();
+    setPickFaceSaving(false);
+    if (!res.ok) {
+      setPickFaceError(errorText(data, 'Could not save Pick Face setting.'));
+      return;
+    }
+    setWarehouses((prev) => prev.map((w) => (w.id === agingWarehouseId ? { ...w, pickFaceEnabled: data.pickFaceEnabled } : w)));
+    setPickFaceSaved(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -308,6 +342,32 @@ function CompanySettingsPage() {
           </div>
           {agingError && <p style={{ color: 'crimson', marginTop: 8 }}>{agingError}</p>}
           {agingSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
+        </div>
+
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #eee' }}>
+          <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Pick Face (per warehouse, SPR only)</label>
+          <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>
+            When on, a daily job keeps this warehouse's SPR "Pick Face" locations stocked with its
+            highest-priority A/B-class SKUs — refilling an empty slot from reserve, or evicting a
+            lower-class occupant for a higher one. Off by default; uses the same warehouse picker
+            as Aging Methodology above.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={agingWarehouseId} onChange={(e) => handleAgingWarehouseChange(e.target.value)} style={{ padding: 6, minWidth: 180 }}>
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+              ))}
+            </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={pickFaceEnabled} onChange={(e) => setPickFaceEnabled(e.target.checked)} />
+              Enabled
+            </label>
+            <button type="button" onClick={handleSavePickFaceEnabled} disabled={pickFaceSaving || !agingWarehouseId}>
+              {pickFaceSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {pickFaceError && <p style={{ color: 'crimson', marginTop: 8 }}>{pickFaceError}</p>}
+          {pickFaceSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
         </div>
       </div>
 

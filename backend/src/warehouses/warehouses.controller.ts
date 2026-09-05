@@ -75,6 +75,15 @@ export class WarehousesController {
     return this.warehousesService.setAgingGranularity(id, body.agingGranularity ?? null, user);
   }
 
+  // Pick Face (2026-09-05) — same shape as Aging Methodology above: no
+  // general Warehouse Edit form exists yet, so this hangs off Company
+  // Settings' per-warehouse picker instead.
+  @Patch(':id/pick-face-enabled')
+  @Roles('COMPANY_ADMIN')
+  setPickFaceEnabled(@Param('id') id: string, @Body() body: { pickFaceEnabled: boolean }, @CurrentUser() user: any) {
+    return this.warehousesService.setPickFaceEnabled(id, !!body.pickFaceEnabled, user);
+  }
+
   // Route order matters — @Delete('all') must be declared before
   // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')

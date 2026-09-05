@@ -3306,6 +3306,134 @@ selected at all (confirming the auto-scoping fix); the MHE Capable tri-state sel
 correctly once Role was set to Operator; the Grace Minutes field loaded and displayed the real
 saved value (0) after a page load. `tsc --noEmit`/`tsc -b` both clean.
 
+### Pick Face for SPR — a new, deliberately separate reslotting concept (2026-09-05)
+
+A brand-new topic, not a Putaway extension — raised directly: "we need to have a toggle at a
+warehouse level, if pickface needs to be implemented or not." `LocationZoneType` already had both
+`PICK_FACE` and `FORWARD_PICK` as distinct values (see the "Locations/Bins zone & storage model"
+section above), but neither had ever had real logic built against it — a `PICK_FACE`-tagged
+location was invisible to `suggestBin()` (`zoneType: 'ACTUAL_STORAGE'` only) and to Insights'
+Storage Utilization report, same universe. This session builds real logic for `PICK_FACE`, scoped
+to **SPR only** (Drive-in/ASRS/Ground/Stillage pick faces are explicitly out of scope, same
+"finish one storage type properly before generalizing" rhythm as the Drive-in split above).
+
+**The real-world shape, in the client's own words**: "in SPR, usually the bottom most position is
+left as pickface, so that people can do case/unit picking or even pallet picking easily... all
+SKUs (mostly A+B) are accessible from the bottom most position itself... there is then a
+consolidation strategy where when the pickface location is EMPTY for that particular sku, we
+re-fill this location with another pallet of the same sku." A short "explain what you understood"
+detour happened early — worth remembering as a real technique: laying out the two genuinely
+different WMS models (Putaway places into the pick face directly vs. pick face is purely a future
+Picking-module replenishment concern) surfaced a much richer answer than either option alone.
+
+**A key finding that reframed the whole feature**: `MovementType.PICK` already exists in the schema
+(`- stock at storage/picking location`) but has never been written anywhere in the actual code —
+schema-only, exactly like `User.canHandleGroundBlock` before Ground/Stillage got built. This means
+nothing in this system can currently make a pick face location's on-hand actually reach zero through
+real operation — there is no Picking/Dispatch module writing consumption yet. So "detect empty,
+refill" has no real trigger to fire from until Picking exists — same "schema/logic ready,
+unexercised until X" situation as Pallet reuse-on-depletion. Confirmed with the client to build it
+now anyway, dormant until then, rather than defer the whole design.
+
+**Design resolutions, point by point** (full back-and-forth lives in the `wms-putaway-design`
+memory — this is the settled shape):
+- **Warehouse-level toggle**: `Warehouse.pickFaceEnabled` (default `false`). No general Warehouse
+  Edit form exists (same gap `agingGranularity` hit) — hangs off Company Settings' existing
+  per-warehouse picker instead, right next to Aging Methodology.
+- **Physical granularity**: the WHOLE bottom level (`Level 1`, every depth) of an SPR lane counts as
+  pick face, not just the single front slot — confirmed explicitly.
+- **No fixed SKU-to-location binding, ever.** The client's own correction to an early "dedicated
+  bin, one-time assignment" framing: "DYNAMIC, we need to keep on understanding which are the
+  latest A class material [and] prioritize them into the pickface." Which SKU currently "owns" a
+  pick face slot is purely derived from live on-hand stock there — same "always derive, never store
+  a counter" philosophy as everywhere else in this codebase. At most one active pick-face slot per
+  SKU per warehouse is the v1 interpretation.
+- **Eviction is real and proactive**, not just "refill when empty" — a still-occupied slot CAN be
+  emptied early for a higher-priority SKU, not only when it happens to deplete on its own. This was
+  the single biggest scope jump in the conversation — confirmed directly rather than assumed.
+- **Cadence: a periodic daily job, not live/continuous** — the client's own reasoning: real physical
+  labor is involved in swapping a still-good pallet, closer to a warehouse's periodic reslotting
+  exercise than a live dispatch signal.
+- **Execution: auto-creates and executes as a task, no separate approval step** — once flagged, it's
+  just queue work like any other, not a recommendation awaiting sign-off.
+- **Winner rule: class-tier order only, A/B eligible, C never gets in.** `Sku.abcClass` is a flat,
+  manually-typed A/B/C tag with no velocity/recency data anywhere in this system (confirmed by
+  checking `SkusService` directly, not assumed) — so eviction only ever respects the class TIER (A
+  can evict B, B/C never evict each other, nothing ever evicts A), never a same-class tie-break. A
+  slot with no eligible A/B candidate stays empty rather than falling back to C — "leave it empty,"
+  confirmed directly.
+
+**Schema** (`PickFaceTask`/`PickFaceTrip`, new models — NOT a `PutawayTask` variant, since
+`PutawayTask.receiptLineId` is a required field tied to an `InboundReceiptLine`, and a pick face
+move has no receipt at all): mirrors `PutawayTask`/`PutawayTrip`'s own scan-driven claim/complete
+shape exactly, so operators use the identical discipline they already know from Putaway.
+`PickFaceTask.reason` (`REFILL` = reserve → pick face, `EVICTION` = pick face → reserve) is the only
+new vocabulary. Two new `MovementType` values, `PICK_FACE_REPLENISH_OUT`/`_IN`, mirror
+`PUTAWAY_OUT`/`_IN` exactly — a genuinely different kind of move (internal reserve↔pick-face, not
+receipt-driven) deserved its own pair rather than overloading `PUTAWAY_OUT`/`_IN`'s meaning.
+
+**The algorithm (`PickFaceReplenishmentScheduler`, `@Cron(EVERY_DAY_AT_1AM)`)**, per
+`pickFaceEnabled` warehouse's SPR `PICK_FACE` locations:
+1. Determine each pick face location's current occupant (derived from `StockMovement`, first
+   positive balance found) and every SKU's current reserve (`ACTUAL_STORAGE`, any storage type —
+   the SKU's reserve doesn't care where it sits, only the pick face SLOT is SPR-specific) stock.
+2. Build the unslotted-candidate queue: `abcClass` A or B, real reserve stock, not already occupying
+   any pick face slot anywhere in the warehouse, sorted A-before-B then by SKU code (deterministic,
+   no better signal exists).
+3. An EMPTY slot gets the next queued candidate, sourced from that SKU's LEANEST reserve location
+   (consolidates/empties the thinnest position first — `suggestBin()`'s own "prefer the fullest
+   lane" logic, mirrored in reverse for a source pick instead of a destination pick).
+4. An OCCUPIED slot gets evicted only if a strictly higher-class candidate remains in the queue —
+   destination chosen via `PutawayTasksService.suggestBin()` directly (this SKU just needs an
+   ordinary reserve bin again, zero pick-face-specific logic needed for that half).
+5. **Deliberately NOT a single paired "swap" task** — eviction only creates the OUT task; the freed
+   slot's own REFILL happens on the NEXT day's run once that trip actually completes and the
+   location reads empty again. Avoids depending on one trip's completion before a second can even be
+   suggested, at the cost of a one-cycle delay — a defensible v1 simplification, not a bug.
+6. Guards against duplicating work already in flight (same "pending-reservation blind spot" lesson
+   `suggestBin()` itself learned 2026-08-29) — a location already targeted by an open `PENDING` task
+   from a prior run is skipped, not piled on top of again.
+
+**Deliberate simplifications, flagged rather than silently assumed**: a `PickFaceTask` moves the
+FULL on-hand quantity at its chosen source location, not a computed "one pallet" amount — this
+codebase has no numeric `Location` capacity anywhere (see the "still incoming" reservation design)
+and reserve stock isn't reliably tracked pallet-by-pallet outside the palletized-Putaway path, so
+"move whatever this location holds" is the same kind of placeholder as `Sku.maxCasesPerPallet`'s
+plain manual number. `Location.categoryId` narrowing (which `suggestBin()` applies for regular
+Putaway) is deliberately NOT applied to pick face candidate selection this pass — not discussed,
+not decided, left as a real gap for later rather than silently extended. No claim-expiry/`ABANDONED`
+state exists for `PickFaceTrip` yet (unlike `PutawayTrip`'s real 30-minute auto-expiry) — out of
+scope for this pass, same shape Putaway's own claim-expiry was before it got built.
+
+**Backend**: new `pick-face/` module (`PickFaceTasksController`/`Service`/
+`PickFaceReplenishmentScheduler`), importing `PutawayModule` to reuse `suggestBin()` directly rather
+than a second copy of the ACTUAL_STORAGE bin-suggestion logic. `WarehousesService.
+setPickFaceEnabled()` mirrors `setAgingGranularity()` exactly (`PATCH
+/warehouses/:id/pick-face-enabled`, Company-Admin-only).
+
+**Frontend**: new standalone `PickFacePage.tsx` (top-level nav tab next to Putaway) — the same
+scan-to-claim/scan-to-complete UX as `PutawayPage.tsx`, a queue table with a `Reason` column
+(Refill/Eviction), no exception workflow or operator-recommendation banner (out of scope this pass).
+`CompanySettingsPage.tsx`'s Aging Methodology block gained a sibling "Pick Face (per warehouse, SPR
+only)" checkbox + Save, reusing the exact same warehouse picker.
+
+Verified via a throwaway-company diagnostic script invoking `PickFaceReplenishmentScheduler`/
+`PickFaceTasksService` directly against the real dev DB (25/25) — cold-start REFILL correctly
+skipped the ineligible C-class SKU and picked the LEANER of two reserve locations for the same SKU;
+an immediate re-run created no duplicate tasks; completing a REFILL trip correctly wrote the
+`PICK_FACE_REPLENISH_OUT`/`_IN` pair and depleted the source; introducing a fresh Class A SKU
+correctly evicted the Class B occupant (never the Class A one) while leaving the eviction's own
+destination bin correctly chosen via `suggestBin()`; a same-class SKU never triggered an eviction;
+a `pickFaceEnabled: false` warehouse produced zero tasks even through the real
+`runDailyReslotting()` cron entrypoint. Then re-verified live through the actual rendered UI (a
+throwaway company registered through the real Login/Register flow): the Company Settings toggle
+saved and persisted across a fresh API-level read, and `PickFacePage.tsx` rendered the correct
+warehouse filter and empty-queue table with no console errors. `tsc --noEmit`/`tsc -b` both clean.
+Both throwaway companies were fully cleaned up from the dev DB afterward — one of them survived an
+earlier failed script run (a real reminder: a throwaway-company script that crashes mid-run before
+reaching its own cleanup step leaves real orphaned rows, which then surfaced as a leftover
+`ProductCategory` option in a completely unrelated live UI session while checking the build).
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -3559,6 +3687,17 @@ waiting rather than just "busy," with a two-tier Supervisor-then-Manager escalat
 Detention's own alert pattern) if it's ignored. New `User.canOperateMhe`/`canHandleGroundBlock`
 (optional, unset = no restriction) and `Company.putawayAssignmentGraceMinutes` (default 2, one dial
 reused for both escalation steps).
+
+**Pick Face now has real logic, SPR only** (2026-09-05, see "Pick Face for SPR" above) — a
+`Warehouse.pickFaceEnabled` toggle gates a daily `PickFaceReplenishmentScheduler` job that keeps
+each SPR pick face location (the whole bottom level of a lane) stocked with the warehouse's current
+highest-priority A/B-class SKUs: refilling an empty slot from reserve, or proactively evicting a
+lower-class occupant for a higher one (strict class-tier order, C never eligible). No fixed
+SKU-to-location binding anywhere — purely derived from live on-hand, same as everywhere else in this
+codebase. New `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant — no receipt
+involved) with the same scan-driven claim/complete execution UX as Putaway, and a new standalone
+`PickFacePage.tsx`. Dormant against real depletion until a future Picking module actually writes
+`MovementType.PICK` — that value has existed in the schema but has never been written anywhere.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

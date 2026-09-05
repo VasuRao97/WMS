@@ -23,6 +23,7 @@ import { PutawayModule } from './putaway/putaway.module';
 import { InsightsModule } from './insights/insights.module';
 import { PalletsModule } from './pallets/pallets.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { PickFaceModule } from './pick-face/pick-face.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     InsightsModule,
     PalletsModule,
     AnalyticsModule,
+    PickFaceModule,
   ],
   controllers: [AppController],
   providers: [AppService],

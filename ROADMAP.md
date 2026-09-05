@@ -2,8 +2,11 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-02: **Putaway now has a
-real operator-assignment fairness layer** (live "who goes next" recommendation + Supervisor/Manager
+what to pick up next. Updated as priorities shift — last updated 2026-09-05: **Pick Face now has
+real logic, SPR only** (a warehouse-level toggle + daily reslotting job keeping each SPR pick face
+stocked with the highest-priority A/B-class SKUs, refilling from reserve or proactively evicting a
+lower-class occupant, dormant against real depletion until a future Picking module exists). 2026-09-02:
+**Putaway now has a real operator-assignment fairness layer** (live "who goes next" recommendation + Supervisor/Manager
 escalation, oldest-staged-stock priority signal) — **the real Analytics module has begun**
 (operator productivity at the Pallet level, split per operator, plus abandoned-claim flagging) —
 and **Drive-in bin suggestion now has its own strategy, split from SPR/ASRS** (whole-column absolute
@@ -12,6 +15,50 @@ consolidation ("marrying" loose cases onto a pallet before
 Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
 ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
 for the complete design-to-build trail.
+
+## Session note (2026-09-05 — Pick Face for SPR, designed and built same session)
+A brand-new topic, not a Putaway extension: "we need to have a toggle at a warehouse level, if
+pickface needs to be implemented or not." `LocationZoneType.PICK_FACE` had existed since the
+Locations zone model was designed but never had real logic — invisible to both `suggestBin()` and
+Insights' Storage Utilization report. Real-world shape, in the client's own words: "in SPR, usually
+the bottom most position is left as pickface... all SKUs (mostly A+B) are accessible from the
+bottom most position itself... when the pickface location is EMPTY for that particular sku, we
+re-fill this location with another pallet of the same sku."
+
+A genuine align-before-coding pass, not a rushed one — several rounds of `AskUserQuestion` surfaced
+a much bigger design than "refill when empty": the SKU-to-slot assignment is **dynamic, never
+fixed** ("keep on understanding which are the latest A class material [and] prioritize them into
+the pickface"), and eviction is **proactive** — a still-occupied slot can be emptied early for a
+higher-priority SKU, confirmed directly rather than assumed as the smaller "only refill empty slots"
+option. A real code-level finding reframed the trigger question entirely: `MovementType.PICK` has
+existed in the schema but has never been written anywhere — nothing in this system can currently
+deplete a pick face location through real operation, since no Picking/Dispatch module exists yet.
+Built anyway, dormant until then, same "schema/logic ready, unexercised until X" shape as Pallet
+reuse-on-depletion.
+
+**Confirmed shape**: `Warehouse.pickFaceEnabled` toggle (Company Settings, per-warehouse picker,
+same home as Aging Methodology); the WHOLE bottom level of an SPR lane counts as pick face, not just
+the front slot; a daily (not live) scheduled job, since eviction means real physical labor; tasks
+auto-create and execute directly, no separate approval step; eviction respects strict class-tier
+order only (A can evict B, B/C never evict each other, nothing evicts A) since `Sku.abcClass` is a
+flat manually-typed tag with no velocity/recency data to break a same-class tie; a slot with no
+eligible A/B candidate stays empty rather than falling back to C.
+
+New `PickFaceTask`/`PickFaceTrip` models — deliberately NOT a `PutawayTask` variant, since
+`PutawayTask.receiptLineId` is required and a pick face move has no receipt at all — mirroring
+Putaway's own scan-driven claim/complete execution exactly. `PickFaceReplenishmentScheduler` reuses
+`PutawayTasksService.suggestBin()` directly for eviction destinations, rather than a second copy of
+the bin-suggestion logic. New standalone `PickFacePage.tsx`.
+
+Verified via a throwaway-company diagnostic script invoking the real scheduler/service methods
+directly against the dev DB (25/25) — covering cold-start REFILL (leanest-reserve-location
+selection, C correctly excluded), idempotency across repeated runs, a real eviction (Class B
+occupant evicted for a fresh Class A candidate, Class A never evicted), same-class never evicting,
+and a `pickFaceEnabled: false` warehouse producing zero tasks through the real cron entrypoint —
+plus a live browser pass through the actual Company Settings toggle and the new Pick Face page. Full
+detail in `CLAUDE.md`'s "Pick Face for SPR" section; design conversation in the `wms-putaway-design`
+memory. Still explicitly deferred: Pick Face for Drive-in/ASRS/Ground/Stillage, `Location.categoryId`
+narrowing for candidate selection, and `PickFaceTrip` claim-expiry.
 
 ## Session note (2026-09-02, same session — Putaway operator-assignment fairness)
 Direct question: "when vehicle unloading is happening, we need to think on how/who assigns work to
@@ -408,7 +455,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, ASRS's own bin-suggestion strategy, Ground/Block operator routing, unloading-team assignment fairness, and Pallet reuse (needs Picking to ever actually deplete a load) — see `wms-putaway-design` memory |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, ASRS's own bin-suggestion strategy, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), and Pick Face for Drive-in/ASRS/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |

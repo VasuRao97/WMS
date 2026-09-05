@@ -12,6 +12,7 @@ import InboundOrdersPage from './InboundOrdersPage';
 import DockDoorsPage from './DockDoorsPage';
 import EquipmentPage from './EquipmentPage';
 import PutawayPage from './PutawayPage';
+import PickFacePage from './PickFacePage';
 import InsightsPage from './InsightsPage';
 import PalletsPage from './PalletsPage';
 import AnalyticsPage from './AnalyticsPage';
@@ -33,7 +34,7 @@ const CAN_VIEW_INSIGHTS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPE
 // deliberately distinct destinations that could diverge in access later.
 const CAN_VIEW_ANALYTICS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets' | 'analytics';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'pickface' | 'insights' | 'pallets' | 'analytics';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -140,6 +141,9 @@ function App() {
         <button onClick={() => setTab('putaway')} style={{ fontWeight: tab === 'putaway' ? 'bold' : 'normal' }}>
           Putaway
         </button>
+        <button onClick={() => setTab('pickface')} style={{ fontWeight: tab === 'pickface' ? 'bold' : 'normal' }}>
+          Pick Face
+        </button>
         {user?.role === 'COMPANY_ADMIN' && (
           <button onClick={() => setTab('companysettings')} style={{ fontWeight: tab === 'companysettings' ? 'bold' : 'normal' }}>
             Company Settings
@@ -170,6 +174,8 @@ function App() {
         <PalletsPage />
       ) : tab === 'putaway' ? (
         <PutawayPage />
+      ) : tab === 'pickface' ? (
+        <PickFacePage />
       ) : tab === 'insights' ? (
         <InsightsPage />
       ) : tab === 'analytics' ? (
