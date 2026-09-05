@@ -2,7 +2,13 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-02: **Putaway now has a
+what to pick up next. Updated as priorities shift — last updated 2026-09-05: **the Locations/Bins
+Plan View now has a real 3D mode** — a real WebGL camera via Three.js/React Three Fiber, showing the
+WHOLE warehouse by default as simplified per-aisle footprint blocks, with a checkbox "slicer" to
+swap one or more aisles into full per-bin detail in place (unselected aisles stay visible for
+spatial context), plus click-to-inspect — alongside the existing top-down 2D view. The first
+genuinely visual/3D feature and the first new rendering dependency in this codebase. 2026-09-02:
+**Putaway now has a
 real operator-assignment fairness layer** (live "who goes next" recommendation + Supervisor/Manager
 escalation, oldest-staged-stock priority signal) — **the real Analytics module has begun**
 (operator productivity at the Pallet level, split per operator, plus abandoned-claim flagging) —
@@ -12,6 +18,48 @@ consolidation ("marrying" loose cases onto a pallet before
 Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
 ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
 for the complete design-to-build trail.
+
+## Session note (2026-09-05 — Locations/Bins 3D Plan View, designed and built)
+A genuinely new topic: "first we need to start with showing a 3d view... we need to give a toggle
+to show 3d one also." The real gap: the existing top-down `LocationsPlanView.tsx` (2026-08-25)
+collapses Level into text (`G+2`) — no way to see racks actually stacked vertically.
+
+A visual mockup preceded the tech decision — two rendering styles (isometric/SVG vs. true 3D/WebGL)
+were sketched side by side so the real tradeoff (cheap + fixed angle vs. a new dependency + free
+camera) could be seen, not just described. Confirmed: **true 3D with a real camera**, via
+`three` + `@react-three/fiber` + `@react-three/drei` (`OrbitControls`) — a first for this codebase,
+proposed directly rather than silently added.
+
+Click-to-inspect included (closing the original 2026-08-25 Plan View's own deferred item, landing in
+3D first); occupancy overlay and Zone Type coloring explicitly confirmed OUT of scope for this pass,
+not silently bundled in.
+
+New `Locations3DView.tsx` reuses `LocationsPlanView.tsx`'s own grouping rules (flank/position/depth)
+and its exported color map exactly — Level becomes a real Y position instead of text, Ground/
+Stillage's dimensions become real box sizes instead of a text string.
+
+**Same-day reconsideration**: "cant we just show the full warehouse first, then give slicers to
+select which part of warehouse they want to check." A real fork, not a small tweak — clarified
+"slicers" means Excel-style filter checkboxes (not a CAD clipping plane), confirmed unselected
+aisles stay visible as simplified footprint blocks (keeping whole-warehouse spatial context) rather
+than hiding, and confirmed multi-select (check several aisles into detail at once). The original
+one-aisle-at-a-time scope's real reason (rendering every bin in a whole warehouse at once is a
+genuine WebGL performance risk) is preserved via two levels of detail instead of dropped: every
+aisle always renders as a plain labeled footprint block; checking it (or clicking the block itself)
+swaps it into full per-bin detail in place. `LocationsPage.tsx` lost its own aisle dropdown — the
+whole aisle-selection concern now lives inside `Locations3DView` itself.
+
+Also same day: a solid floor plane added beneath the grid ("make the bottom look to be ground") —
+the grid alone left empty white space showing through below it, reading as void rather than a
+warehouse floor.
+
+Verified live end-to-end at each step: a real generated SPR aisle rendered as 3 stacked-by-level
+columns with the 2nd depth lane correctly offset behind (confirmed via screenshot); click-to-inspect
+showed the correct Rack Name/code/Zone Type/Storage Type/Level/Depth; three real aisles (two
+different SPR sizes + one Ground/Floor) rendered as correctly distinct-sized/colored/labeled
+footprint blocks by default, and checking one correctly swapped it into detail while the others
+stayed as footprints. `tsc -b` clean throughout. Full detail in `CLAUDE.md`'s "Locations/Bins: 3D
+Plan View" section.
 
 ## Session note (2026-09-02, same session — Putaway operator-assignment fairness)
 Direct question: "when vehicle unloading is happening, we need to think on how/who assigns work to

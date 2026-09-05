@@ -3306,6 +3306,101 @@ selected at all (confirming the auto-scoping fix); the MHE Capable tri-state sel
 correctly once Role was set to Operator; the Grace Minutes field loaded and displayed the real
 saved value (0) after a page load. `tsc --noEmit`/`tsc -b` both clean.
 
+### Locations/Bins: 3D Plan View (2026-09-05)
+
+A genuinely new topic — "first we need to start with showing a 3d view... we need to give a
+toggle to show 3d one also." A real design conversation happened before any code (see the flow
+below); the motivating gap, confirmed directly: the existing top-down `LocationsPlanView.tsx`
+(2026-08-25) collapses `Level` into text (`G+2`) — it can't show vertical stacking at all, which is
+the actual point of wanting 3D.
+
+**A visual mockup preceded the tech decision.** Rather than assuming an approach, two rendering
+styles were sketched side by side (isometric/SVG, flat and cheap vs. true 3D/WebGL, shaded and free-
+camera but a new dependency) so the tradeoff could be seen, not just described. The client picked
+**true 3D with a real camera** after seeing both.
+
+**Stack, a first for this codebase**: `three` + `@react-three/fiber` (JSX-based scene graph,
+avoiding a second, totally separate imperative rendering paradigm alongside the rest of this React
+app) + `@react-three/drei` (for `OrbitControls` — the actual drag-to-orbit camera — and `<Grid>`).
+Proposed directly and not objected to, rather than silently added.
+
+**Click-to-inspect included** — clicking a box shows its full detail in a side panel. This
+deliberately also closes the original 2026-08-25 Plan View's own long-deferred "click-to-inspect"
+item, just landing in 3D first rather than 2D. **Explicitly out of scope, confirmed directly rather
+than silently bundled in**: occupancy overlay (showing real on-hand stock per bin, newly viable now
+that Putaway writes real `StockMovement` rows, unlike back in 2026-08-25 when there was none) and
+Zone Type coloring — both real, independent future directions for the Plan View, deliberately not
+touched this pass.
+
+**Geometry reuses `LocationsPlanView.tsx`'s own grouping rules exactly** (`flankNumber` decides
+left/right — lower flank = positive X, higher = negative X, mirroring 2D's right/left; `posOf()`
+picks rack/block/stack depending on storageType; a Rack position's distinct `depth` values each get
+their own box, exactly like 2D's one-box-per-depth rule) — same real, persisted fields, same
+"position pairs by index, not by raw stored number" rule 2D already established. What's genuinely
+different in 3D: `Level` becomes an actual Y (vertical) position instead of collapsed text, and
+Ground/Floor/Stillage's `depth×width×height` render as real box dimensions instead of text in one
+fixed-size box (still not physically-accurate meters — these fields are COUNTS on this schema, same
+non-physical-accuracy treatment 2D already gives them, just scaled into 3D units instead of printed
+as a string). Colors are imported directly from `LocationsPlanView.tsx`'s own exported
+`STORAGE_TYPE_COLORS` map — one color language for both views, not two to keep in sync.
+
+**Frontend**: new `Locations3DView.tsx`. `LocationsPage.tsx`'s existing Plan View gained its own
+2D/3D sub-toggle; the 2D view itself is completely unchanged.
+`three`/`@react-three/fiber`/`@react-three/drei` added as real dependencies (versions pinned to
+React 19-compatible releases — `@react-three/fiber`'s own peer range is `>=19 <19.3`, this project's
+React is `^19.2.8`).
+
+Verified live end-to-end (not just `tsc`, since this is the first genuinely visual/WebGL feature in
+the codebase): a throwaway company, a real generated SPR aisle (3 racks × 3 levels × 2-deep), the
+3D canvas rendering exactly 3 stacked-by-level columns with the 2nd depth lane visibly offset
+behind the 1st (confirmed via screenshot, not just "no console errors"); clicking a box opened the
+detail panel with the correct Rack Name (`R1-03-D1`), code, Zone Type, Storage Type, Level, and
+Depth position, plus the correct amber selection-highlight edge; the close button correctly
+cleared the selection. `tsc -b` clean. Cleaned up the throwaway company afterward.
+
+**Same-day follow-up — a solid floor** ("make the bottom look to be ground"): the drei `<Grid>`
+alone left the area below it as the page's own transparent/white background showing through,
+reading as empty void rather than a warehouse floor. Added a plain `meshStandardMaterial` plane
+sitting a hair below the grid (`y = -0.02`, avoiding z-fighting) in a flat concrete-grey
+(`#c9c7bd`), with the grid's own line colors darkened slightly so they stay visible against it.
+Verified live via screenshot — the floor now reads as solid ground with the rack correctly sitting
+on top of it, no floating/z-fighting.
+
+**Same-day reconsideration — whole-warehouse overview + a slicer, replacing the one-aisle-at-a-time
+scope.** Raised directly: "cant we just show the full warehouse first, then give slicers to select
+which part of warehouse they want to check." A real design fork, not a small tweak — worth
+confirming precisely rather than assumed from the word "slicer" alone (clarified as Excel/Power-BI-
+style filter controls, not a literal CAD clipping-plane tool), and two follow-up questions closed
+the interaction model: unselected aisles **stay visible as simplified footprint blocks** (keeping
+whole-warehouse spatial context, not hiding everything else — the actual point of the ask), and
+**multiple aisles can be checked at once** (true slicer behavior, not a single swap).
+
+The real constraint behind the ORIGINAL one-aisle scope stays true — rendering every real bin across
+a whole warehouse at once is a genuine WebGL performance risk — so it's resolved with two levels of
+detail rather than dropped: every aisle always renders as one plain, semi-transparent **footprint
+block** (a bounding box sized/positioned from that aisle's own real layout, colored by its
+storageType, labeled via drei's `<Html>` — cheap here since at most a handful of these exist per
+warehouse, unlike the hundreds of real bins each one stands in for); checking an aisle in the new
+checkbox slicer (or clicking its footprint block directly, wired to the exact same toggle function)
+swaps JUST that aisle into full per-bin detail, in place.
+
+**`buildWarehouseLayout()`** groups every location by Aisle (not just one), computes each aisle's
+own box layout independently via a per-aisle `buildBoxesForAisle()` (relative to its own
+centerline), then places aisles side by side along a global X axis — Aisle 1 first, each next aisle
+starting where the previous one's real footprint ends plus a fixed gap (a simplified left-to-right
+version of 2D's own "aisle 1 anchors a corner, each next one added further away" ordering — the
+exact corner-anchoring direction stopped carrying the same meaning once the camera is free to orbit
+anywhere). `LocationsPage.tsx` has no aisle dropdown at all — the whole "which aisle(s) are in
+detail" concern lives inside `Locations3DView` itself as self-contained state, taking just the
+warehouse's full location list.
+
+Verified live: three real generated aisles (2 SPR racks, 4 SPR racks, 3 Ground/Floor blocks) — the
+default view showed exactly 3 correctly distinct-sized, correctly-colored (blue/blue/orange)
+labeled footprint blocks side by side on the solid floor; checking "Aisle 1" swapped it into its
+real stacked-box detail while Aisle 2/3 correctly stayed as footprints, confirmed via screenshot and
+a direct DOM check of the checkbox states. `tsc -b` clean. Cleaned up the throwaway company
+afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import LocationsPlanView from './LocationsPlanView';
+import Locations3DView from './Locations3DView';
 
 export type ProductCategory = { id: string; name: string };
 export type Warehouse = { id: string; code: string; name: string };
@@ -206,6 +207,11 @@ function LocationsPage() {
   // --- View mode: Table vs. Plan (top-down structural floor plan) ---
   const [viewMode, setViewMode] = useState<'table' | 'plan'>('table');
   const [planWarehouseId, setPlanWarehouseId] = useState('');
+  // Plan View's own 2D/3D sub-mode (2026-09-05 — see [[wms-putaway-design]]).
+  // 3D shows the whole warehouse by default, with its own aisle-slicer
+  // state living inside Locations3DView itself — nothing else here depends
+  // on which aisle(s) are currently shown in detail.
+  const [planMode, setPlanMode] = useState<'2d' | '3d'>('2d');
 
   const loadLocations = () => {
     fetch('http://localhost:3000/locations', { headers: authHeaders() })
@@ -919,19 +925,31 @@ function LocationsPage() {
 
       {viewMode === 'plan' && (
         <div style={{ marginBottom: 32 }}>
-          <div style={{ marginBottom: 8 }}>
+          <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
             <select value={planWarehouseId} onChange={(e) => setPlanWarehouseId(e.target.value)} style={{ width: 220 }}>
               <option value="">Select a Warehouse to view its plan...</option>
               {warehouses.map((w) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
             </select>
+            {/* Plan View's own 2D/3D sub-mode (2026-09-05) — independent of
+                the Table/Plan toggle above. 3D shows the WHOLE warehouse by
+                default (every aisle as a simplified footprint block) — its
+                own per-aisle checkbox "slicer" for swapping specific aisles
+                into full per-bin detail lives inside Locations3DView itself,
+                same-day reconsideration of the original "one aisle at a
+                time" scope: "show the full warehouse first, then give
+                slicers to select which part... they want to check." */}
+            <button type="button" onClick={() => setPlanMode('2d')} style={{ fontWeight: planMode === '2d' ? 'bold' : 'normal' }}>2D</button>
+            <button type="button" onClick={() => setPlanMode('3d')} style={{ fontWeight: planMode === '3d' ? 'bold' : 'normal' }}>3D</button>
           </div>
-          {planWarehouseId ? (
+          {!planWarehouseId ? (
+            <p style={{ marginTop: 16, color: '#666' }}>Pick a warehouse above to render its layout.</p>
+          ) : planMode === '2d' ? (
             <LocationsPlanView
               locations={locations.filter((l) => l.warehouseId === planWarehouseId)}
               warehouseLabel={labelFor(warehouses.map((w) => ({ value: w.id, label: `${w.code} — ${w.name}` })), planWarehouseId)}
             />
           ) : (
-            <p style={{ marginTop: 16, color: '#666' }}>Pick a warehouse above to render its layout.</p>
+            <Locations3DView locations={locations.filter((l) => l.warehouseId === planWarehouseId)} />
           )}
         </div>
       )}

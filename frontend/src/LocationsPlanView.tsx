@@ -128,14 +128,16 @@ type Box = {
 // 2026-08-25. Light pastel fills keep the black text legible; an inactive
 // box overrides this with the existing grey/dashed treatment (that signal
 // stays distinct from storage type, not blended into it).
-const STORAGE_TYPE_COLORS: Record<string, { fill: string; stroke: string }> = {
+// Exported so Locations3DView.tsx can use the identical mapping — one color
+// language across the 2D and 3D Plan Views, not two copies to keep in sync.
+export const STORAGE_TYPE_COLORS: Record<string, { fill: string; stroke: string }> = {
   SPR: { fill: '#dbeafe', stroke: '#2563eb' },
   DRIVE_IN: { fill: '#ede9fe', stroke: '#7c3aed' },
   ASRS: { fill: '#ccfbf1', stroke: '#0d9488' },
   GROUND_FLOOR: { fill: '#ffedd5', stroke: '#ea580c' },
   STILLAGE: { fill: '#fce7f3', stroke: '#db2777' },
 };
-const DEFAULT_BOX_COLOR = { fill: '#ffffff', stroke: '#333' };
+export const DEFAULT_BOX_COLOR = { fill: '#ffffff', stroke: '#333' };
 
 type Cell = {
   posVal: string;
