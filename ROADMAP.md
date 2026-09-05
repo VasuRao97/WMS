@@ -60,6 +60,13 @@ detail in `CLAUDE.md`'s "Pick Face for SPR" section; design conversation in the 
 memory. Still explicitly deferred: Pick Face for Drive-in/ASRS/Ground/Stillage, `Location.categoryId`
 narrowing for candidate selection, and `PickFaceTrip` claim-expiry.
 
+**Same-day follow-up**: asked directly whether Insights or Analytics needed to change now that Pick
+Face is real. **Insights: left untouched** — its Storage Utilization report is about reserve rack
+usage by class, a different concept from a pick face slot. **Analytics: extended** with a fourth,
+separately-reported metric — Pick Face trip time per operator (grouped by task, not pallet, since a
+`PickFaceTask` has no `palletLoadId`). Verified via a throwaway-company script (10/10) plus a live
+browser pass. Full detail in `CLAUDE.md`'s Pick Face section, same-day follow-up.
+
 ## Session note (2026-09-02, same session — Putaway operator-assignment fairness)
 Direct question: "when vehicle unloading is happening, we need to think on how/who assigns work to
 the operators (unloading & putaway team), manual or auto." Reopened a 2026-08-28 decision (no
@@ -461,7 +468,7 @@ Returns → Analytics
 | Picking | ⬜ Not started |
 | Dispatch | ⬜ Not started |
 | Returns | ⬜ Not started |
-| **Analytics** | 🟨 Started (2026-09-02) — the real module, distinct from the earlier one-off **Insights** page (which still only has Storage Utilization by ABC Class). First report: operator productivity at the Pallet level — marrying time and putaway time per operator (always split, never blended), plus abandoned Putaway claims flagged against the operator who claimed and never completed them. No new schema, entirely derived from existing Pallet/Putaway data. |
+| **Analytics** | 🟨 Started (2026-09-02) — the real module, distinct from the earlier one-off **Insights** page (which still only has Storage Utilization by ABC Class). First report: operator productivity at the Pallet level — marrying time and putaway time per operator (always split, never blended), plus abandoned Putaway claims flagged against the operator who claimed and never completed them. No new schema, entirely derived from existing Pallet/Putaway data. (2026-09-05) Gained a fourth, separately-reported metric — Pick Face trip time per operator, grouped by task rather than pallet. |
 
 ## Session note (2026-08-27, Inbound deep-dive)
 Rather than starting the next module, this session went deeper into Inbound per your own ask.

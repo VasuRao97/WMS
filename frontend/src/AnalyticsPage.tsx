@@ -22,6 +22,10 @@ type Warehouse = { id: string; code: string; name: string };
 type MarryingRow = { operatorId: string; operatorName: string; palletCode: string; skuCode: string; scanCount: number; durationMinutes: number };
 type PutawayRow = { operatorId: string; operatorName: string; palletCode: string; skuCode: string; tripCount: number; durationMinutes: number };
 type AbandonedRow = { operatorId: string; operatorName: string; palletCode: string; skuCode: string; claimedAt: string };
+// Pick Face (2026-09-05, see [[wms-putaway-design]]) — a third metric, NOT
+// pallet-level like the two above (a PickFaceTask has no palletLoadId).
+type PickFaceRow = { operatorId: string; operatorName: string; reason: 'REFILL' | 'EVICTION'; skuCode: string; fromCode: string; toCode: string; tripCount: number; durationMinutes: number };
+const PICK_FACE_REASON_LABELS: Record<string, string> = { REFILL: 'Refill', EVICTION: 'Eviction' };
 
 function formatMinutes(m: number) {
   if (m < 1) return '<1 min';
@@ -37,6 +41,7 @@ function AnalyticsPage() {
   const [marrying, setMarrying] = useState<MarryingRow[] | null>(null);
   const [putaway, setPutaway] = useState<PutawayRow[] | null>(null);
   const [abandoned, setAbandoned] = useState<AbandonedRow[] | null>(null);
+  const [pickFace, setPickFace] = useState<PickFaceRow[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -64,12 +69,13 @@ function AnalyticsPage() {
         if (!result) return;
         if (!result.ok) {
           setError(Array.isArray(result.data?.message) ? result.data.message.join(' | ') : result.data?.message || 'Could not load productivity data.');
-          setMarrying(null); setPutaway(null); setAbandoned(null);
+          setMarrying(null); setPutaway(null); setAbandoned(null); setPickFace(null);
           return;
         }
         setMarrying(result.data.marrying);
         setPutaway(result.data.putaway);
         setAbandoned(result.data.abandoned);
+        setPickFace(result.data.pickFace);
       });
   }, [warehouseId]);
 
@@ -77,8 +83,8 @@ function AnalyticsPage() {
     <div style={{ maxWidth: 1000, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
       <h1 style={{ textAlign: 'center' }}>Analytics</h1>
       <p style={{ textAlign: 'center', color: '#888', fontSize: 13, marginTop: -8, marginBottom: 24 }}>
-        Operator productivity at the Pallet level — how long each operator spent marrying cases onto a pallet, and
-        separately, how long they took putting a closed pallet away.
+        Operator productivity — marrying and putaway time at the Pallet level, plus Pick Face reserve↔pick-face
+        move time (SPR only) — always reported separately per operator, never blended.
       </p>
 
       <div style={{ display: 'flex', justifyContent: 'center', gap: 8, alignItems: 'center', marginBottom: 24 }}>
@@ -180,6 +186,42 @@ function AnalyticsPage() {
           ))}
           {abandoned && abandoned.length === 0 && (
             <tr><td colSpan={4} style={{ padding: 12, color: '#888' }}>No abandoned claims.</td></tr>
+          )}
+        </tbody>
+      </table>
+
+      <h3 style={{ marginBottom: 4, marginTop: 28 }}>Pick Face — time spent on reserve↔pick-face moves</h3>
+      <p style={{ color: '#888', fontSize: 12, marginTop: 0, marginBottom: 8 }}>
+        Not pallet-level like the reports above — a Pick Face task is a plain SKU move, not a Pallet
+        consolidation concept. Sum of claim-to-complete time per operator per task; a multi-trip task split
+        across operators shows one row per operator.
+      </p>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ textAlign: 'center', borderBottom: '1px solid #ccc' }}>
+            <th style={{ padding: 6 }}>Operator</th>
+            <th style={{ padding: 6 }}>Reason</th>
+            <th style={{ padding: 6 }}>SKU</th>
+            <th style={{ padding: 6 }}>From</th>
+            <th style={{ padding: 6 }}>To</th>
+            <th style={{ padding: 6 }}>Trips</th>
+            <th style={{ padding: 6 }}>Time Spent</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(pickFace || []).map((r, i) => (
+            <tr key={i} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
+              <td style={{ padding: 6 }}>{r.operatorName}</td>
+              <td style={{ padding: 6 }}>{PICK_FACE_REASON_LABELS[r.reason]}</td>
+              <td style={{ padding: 6 }}>{r.skuCode}</td>
+              <td style={{ padding: 6 }}>{r.fromCode}</td>
+              <td style={{ padding: 6 }}>{r.toCode}</td>
+              <td style={{ padding: 6 }}>{r.tripCount}</td>
+              <td style={{ padding: 6 }}>{formatMinutes(r.durationMinutes)}</td>
+            </tr>
+          ))}
+          {pickFace && pickFace.length === 0 && (
+            <tr><td colSpan={7} style={{ padding: 12, color: '#888' }}>No completed Pick Face trips yet.</td></tr>
           )}
         </tbody>
       </table>

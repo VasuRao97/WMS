@@ -3434,6 +3434,26 @@ earlier failed script run (a real reminder: a throwaway-company script that cras
 reaching its own cleanup step leaves real orphaned rows, which then surfaced as a leftover
 `ProductCategory` option in a completely unrelated live UI session while checking the build).
 
+**Same-day follow-up: does this touch Insights or Analytics?** — asked directly rather than
+assumed, since both pages already only see `ACTUAL_STORAGE`/pallet-level data and Pick Face is
+neither. **Insights (Storage Utilization by ABC Class): left untouched, a considered "no."** Its
+purpose is reserve/bulk rack utilization by class; a pick face slot isn't the same kind of thing
+(it's meant to be full of whatever's currently prioritized, not "space that might be wasted"), so
+folding it in would muddy what the metric means. **Analytics: extended — a third metric, Pick Face
+trip time**, alongside the existing marrying/putaway numbers, always reported separately (never
+blended into either). Unlike those two, a `PickFaceTask` has no `palletLoadId` at all (it's a plain
+reserve↔pick-face SKU move, not a Pallet consolidation concept), so this groups by `(taskId,
+claimedById)` instead of `(palletLoadId, claimedById)` — same "sum every trip an operator ran
+against one unit of work" shape, just keyed differently. No abandoned-claim equivalent exists for
+Pick Face yet, since `PickFaceTrip` has no `ABANDONED` status/claim-expiry (see the still-open list
+above). `AnalyticsService.operatorProductivity()`'s response gained a fourth key, `pickFace`
+(`{ operatorId, operatorName, reason, skuCode, fromCode, toCode, tripCount, durationMinutes }`);
+`AnalyticsPage.tsx` gained a matching fourth table. Verified via a throwaway-company diagnostic
+script (10/10) — correct operator/SKU/reason/From-To attribution, correct trip count, a real
+~7-minute duration (not zero, via a deliberately backdated `claimedAt`), and confirmed zero
+cross-contamination into the marrying/putaway/abandoned arrays — plus a live browser pass
+confirming the new table renders with no console errors. `tsc --noEmit`/`tsc -b` both clean.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -3698,6 +3718,9 @@ codebase. New `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant 
 involved) with the same scan-driven claim/complete execution UX as Putaway, and a new standalone
 `PickFacePage.tsx`. Dormant against real depletion until a future Picking module actually writes
 `MovementType.PICK` — that value has existed in the schema but has never been written anywhere.
+Insights' Storage Utilization report was deliberately left untouched (a considered "no," not an
+oversight); Analytics gained a fourth, separately-reported metric — Pick Face trip time per
+operator, grouped by task rather than pallet since a `PickFaceTask` has no `palletLoadId`.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
