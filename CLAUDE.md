@@ -3622,6 +3622,53 @@ company cleaned up via a short-lived Prisma script afterward, per this project's
 this feature is built to extend to next), and anything beyond a placement-decision visualization —
 no operator-workflow modeling (claim/scan/trip) at all.
 
+**Follow-up, same day: configurable sandbox layout (Storage Type/Level/Depth).** The client's own
+follow-up ask: "add option to tell which level and depth" / "which kind of storage - spr / drive in
+etc." Confirmed via clarifying questions before building: Storage Type restricted to the three rack
+types `suggestBin()` has real logic for (SPR/Drive-in/ASRS — Ground/Floor and Stillage would just
+always come back "needs bin" today); Aisles/Racks stay fixed at the sandbox's existing 3×3 default,
+only Level and Depth become configurable (they're what actually drive the interesting behavior —
+lane depth, multi-level fill order — Aisles/Racks don't); and changing any of the three and clicking
+Run auto-rebuilds the sandbox's layout to match, rather than needing a separate explicit rebuild
+step.
+
+**`ensureSandbox()` gained an optional `desiredConfig` parameter** with a careful split, confirmed
+directly rather than assumed: called with NO config (plain page-load bootstrap), it only ever builds
+a layout if none exists yet, defaults otherwise — an existing layout is never touched no matter its
+shape, so reloading the page can never silently wipe a layout you already ran a simulation against.
+Called WITH a config (only ever from `runPutawaySimulation`, carrying whatever the Run form
+currently has selected): builds fresh if nothing exists, wipes and rebuilds if the existing layout
+doesn't match (different Storage Type, or a different max Level/Depth present), leaves it completely
+untouched if it already matches — so running again with the same settings never resets progress,
+confirmed live (see below). `layoutMatches()` characterizes the sandbox's current shape from its own
+data (all rows the same Storage Type, the highest Level/Depth number present) rather than storing a
+separate "current config" field anywhere — the sandbox only ever holds one shape at a time, so this
+is enough.
+
+**A Depth > 1 now generates one real Location row per depth position** (`buildLayout()`), same "one
+real row per real position, not text in one box" convention `LocationsService.generate()` already
+uses for a multi-deep lane — this is what actually lets a Drive-in configuration exercise its own
+deepest-tier-first, bottom-up fill order for real, not just say the word "Drive-in."
+
+**A small pre-existing gap fixed along the way**: the step list's `rackName` was a hand-rolled
+`R{flank}-{rack}-L{level}` inline in `runPutawaySimulation()` that never included the `-D{n}` depth
+suffix — harmless while every sandbox was single-deep, but would have shown an identical rackName
+for every depth position the moment Depth became configurable. Replaced with a call to the real
+shared `buildRackName()` (`common/rack-name.util.ts`, the exact same formula the Putaway task queue
+and Plan View already use) instead of re-deriving it a second time.
+
+Verified via a short-lived diagnostic script directly against the real dev DB, instantiating
+`SimulationService` the same way this project's other backend-logic diagnostics do (no browser
+needed for this pass): Run 1 (SPR, levels=2, depth=1) produced exactly 18 locations, all SPR, no
+depth suffix; Run 2 with the IDENTICAL config correctly did NOT rebuild (same location ids before
+and after) and correctly accumulated stock on top of Run 1 rather than resetting; Run 3 (switched to
+DRIVE_IN, levels=3, depth=2) correctly rebuilt (54 = 3×3×3×2 locations, all DRIVE_IN, both depth
+values present) and a 4-unit same-class run landed in exactly the documented deepest-tier-first/
+bottom-up order — `R1-01-L1-D2 → R1-01-L2-D2 → R1-01-L3-D2 → R1-01-L1-D1` — confirming the
+real, unmodified Drive-in bin-suggestion logic is genuinely being exercised, not just visualized in
+name. `tsc --noEmit`/`tsc -b` both clean. Throwaway company cleaned up via the script itself before
+its own file was deleted.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full

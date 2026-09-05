@@ -52,6 +52,17 @@ function SimulationPage() {
   const [error, setError] = useState('');
 
   const [unitCount, setUnitCount] = useState('20');
+  // Sandbox layout config (2026-09-06 — "add option to tell which level and
+  // depth" / "which kind of storage") — Aisles/Racks stay fixed at the
+  // sandbox's own 3x3 default; Storage Type is restricted to the three rack
+  // types Putaway's suggestBin() actually has real logic for (SPR/Drive-in/
+  // ASRS — Ground/Floor and Stillage would just always come back "needs
+  // bin" today). Sent along with every Run — the backend only rebuilds the
+  // sandbox's layout if this doesn't already match what's there, so running
+  // again with the same settings never wipes anything.
+  const [storageType, setStorageType] = useState('SPR');
+  const [levels, setLevels] = useState('3');
+  const [depth, setDepth] = useState('1');
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<SimStep[]>([]);
   const [revealedCount, setRevealedCount] = useState(0);
@@ -93,7 +104,12 @@ function SimulationPage() {
     const res = await fetch('http://localhost:3000/simulation/putaway/run', {
       method: 'POST',
       headers: jsonHeaders(),
-      body: JSON.stringify({ unitCount: Number(unitCount) || 20 }),
+      body: JSON.stringify({
+        unitCount: Number(unitCount) || 20,
+        storageType,
+        levels: Number(levels) || 3,
+        depth: Number(depth) || 1,
+      }),
     });
     const data = await res.json();
     setRunning(false);
@@ -166,11 +182,25 @@ function SimulationPage() {
       ) : (
         <>
           {sandbox && (
-            <p style={{ textAlign: 'center', fontSize: 12, color: '#888', marginTop: -8, marginBottom: 12 }}>
+            <p style={{ textAlign: 'center', fontSize: 12, color: '#888', marginTop: -8, marginBottom: 4 }}>
               Sandbox warehouse: <strong>{sandbox.code}</strong> — {sandbox.name}. This is never one of your real warehouses.
             </p>
           )}
+          <p style={{ textAlign: 'center', fontSize: 12, color: '#888', marginTop: 0, marginBottom: 12 }}>
+            Changing Storage Type/Levels/Depth and running again rebuilds the sandbox's layout to match — this clears
+            its current stock (same as Reset), so switch settings BEFORE a run you want to keep watching, not mid-way.
+          </p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 12, padding: 12, border: '1px solid #ccc', borderRadius: 8 }}>
+            <label style={{ fontSize: 13 }}>Storage Type:</label>
+            <select value={storageType} onChange={(e) => setStorageType(e.target.value)} disabled={running} style={{ padding: 6 }}>
+              <option value="SPR">SPR</option>
+              <option value="DRIVE_IN">Drive-in</option>
+              <option value="ASRS">ASRS</option>
+            </select>
+            <label style={{ fontSize: 13 }}>Levels:</label>
+            <input type="number" min={1} max={10} value={levels} onChange={(e) => setLevels(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
+            <label style={{ fontSize: 13 }}>Depth:</label>
+            <input type="number" min={1} max={6} value={depth} onChange={(e) => setDepth(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
             <label style={{ fontSize: 13 }}>Units to simulate:</label>
             <input type="number" min={1} max={200} value={unitCount} onChange={(e) => setUnitCount(e.target.value)} style={{ width: 70, padding: 6 }} />
             <button type="button" onClick={handleRun} disabled={running}>{running ? 'Running...' : 'Run Simulation'}</button>

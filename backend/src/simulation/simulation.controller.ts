@@ -29,7 +29,13 @@ export class SimulationController {
 
   @Post('putaway/run')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  runPutaway(@Body('unitCount') unitCount: number, @CurrentUser() user: any) {
-    return this.simulationService.runPutawaySimulation(user, unitCount);
+  runPutaway(
+    @Body('unitCount') unitCount: number,
+    @Body('storageType') storageType: string,
+    @Body('levels') levels: number,
+    @Body('depth') depth: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.simulationService.runPutawaySimulation(user, unitCount, { storageType, levels, depth });
   }
 }
