@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
 import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
+import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
 // Top-down structural floor-plan view of one warehouse's Locations — built
 // after a dedicated design conversation (see CLAUDE.md's Locations/Bins
@@ -72,18 +73,6 @@ const PAD_TOP = 46;
 const PAD_BOTTOM = 46;
 const PAD_X = 16;
 
-// Numeric-aware sort so "2" < "10" instead of the default lexical "10" < "2".
-function naturalCompare(a: string, b: string): number {
-  const na = Number(a);
-  const nb = Number(b);
-  if (a.trim() !== '' && b.trim() !== '' && !Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
-  return a.localeCompare(b);
-}
-
-function uniqSorted(values: (string | undefined)[]): string[] {
-  return Array.from(new Set(values.filter((v): v is string => !!v))).sort(naturalCompare);
-}
-
 // Real-world building/racking convention (Ground, then G+1, G+2...) instead
 // of L1/L2 — Level 1 is ground level itself, everything above counts up
 // from there. Confirmed 2026-08-25.
@@ -106,12 +95,6 @@ function levelRangeLabel(levels: string[]): string | undefined {
   const max = nums[nums.length - 1];
   if (min === 1) return levelLabel(max);
   return `${levelLabel(min)}-${levelLabel(max)}`;
-}
-
-function posOf(l: Location): string | undefined {
-  if (l.storageType === 'GROUND_FLOOR') return l.block;
-  if (l.storageType === 'STILLAGE') return l.stack;
-  return l.rack;
 }
 
 // One footprint position (a Rack, a Ground block, a Stillage stack) can draw

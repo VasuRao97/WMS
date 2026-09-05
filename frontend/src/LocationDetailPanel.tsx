@@ -1,4 +1,5 @@
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, ZONE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
+import { posOf } from './locationBoxUtils';
 
 // Click-to-inspect side panel — originally built for Locations3DView.tsx
 // (2026-09-05, closing the original 2026-08-25 2D Plan View's own deferred
@@ -6,12 +7,6 @@ import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, ZONE_TYPE_OPTIONS, labelFor, 
 // click-to-inspect (same-day "upgrade mode" backlog, item 2) shows IDENTICAL
 // detail in the identical shape — one component, two callers, same
 // convention as STORAGE_TYPE_COLORS/occupancyColors.ts.
-
-function posOf(l: Location): string | undefined {
-  if (l.storageType === 'GROUND_FLOOR') return l.block;
-  if (l.storageType === 'STILLAGE') return l.stack;
-  return l.rack;
-}
 
 // Always shows the -D{n} suffix when a depth value exists at all, rather
 // than re-deriving whether this position genuinely has more than one depth

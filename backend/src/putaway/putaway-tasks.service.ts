@@ -1,9 +1,12 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
-import { RACK_STORAGE_TYPES, buildRackName, displayCode, laneKeyOf } from '../common/rack-name.util';
+import { buildRackName, displayCode, laneKeyOf } from '../common/rack-name.util';
 
-// Rack storage types (imported above) share the LIFO depth constraint (see
+// Rack storage types (RACK_STORAGE_TYPES in rack-name.util.ts, used here only
+// indirectly through laneKeyOf()/buildRackName() — this file no longer needs
+// it directly, see the 2026-09-06 hardening-pass cleanup) share the LIFO
+// depth constraint (see
 // schema.prisma's comment on Location.depth and [[wms-putaway-design]] in
 // memory) — SPR, Drive-in, and ASRS all use `depth`; the constraint is
 // keyed off whether a given (aisle, rack, level) group actually HAS more
@@ -226,7 +229,6 @@ export class PutawayTasksService {
       }
 
       let laneEligible = true;
-      let sameSku = false;
 
       if (occupantSkuIds.size === 0) {
         laneEligible = true;
@@ -234,7 +236,6 @@ export class PutawayTasksService {
         // Same-SKU top-up — always eligible on distinct-SKU-count grounds;
         // gated instead by the aging check (rule: only if age matches, or
         // no prior age is on file to compare against).
-        sameSku = true;
         let existingDate: Date | null = null;
         for (const loc of laneLocations) {
           const d = lastReceivedDateByLocSku.get(`${loc.id}|${skuId}`);

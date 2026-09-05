@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
 import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
-import { displayCode } from '../common/rack-name.util';
+import { displayCode, RACK_STORAGE_TYPES } from '../common/rack-name.util';
 import * as bwipjs from 'bwip-js';
 import { ZipArchive } from 'archiver';
 
@@ -38,7 +38,10 @@ const STORAGE_TYPE_LABELS: Record<string, string> = {
   STILLAGE: 'Stillage',
 };
 const STORAGE_TYPE_VALUES = Object.keys(STORAGE_TYPE_LABELS);
-const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+// RACK_STORAGE_TYPES itself now comes from common/rack-name.util.ts (imported
+// above) — this file used to keep its own private copy of the exact same
+// three values, a leftover from before that shared constant existed;
+// consolidated 2026-09-06 (hardening pass) rather than left duplicated.
 
 // Generation batches are capped so a mistyped range (e.g. "1-99999") fails
 // fast with a clear message instead of hanging the request or the DB.

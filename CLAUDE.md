@@ -3622,6 +3622,43 @@ company cleaned up via a short-lived Prisma script afterward, per this project's
 this feature is built to extend to next), and anything beyond a placement-decision visualization —
 no operator-workflow modeling (claim/scan/trip) at all.
 
+### Redundant-code pass before the next module (2026-09-06, same session)
+A deliberate pause, requested directly ("go through all code again and see if there are any
+redundant ones... let's correct them now before we proceed") rather than assumed — not a full
+line-by-line audit of the whole codebase (unrealistic in one pass), but a real sweep of everything
+touched by the last few sessions plus a full-codebase lint pass for the mechanical class of
+findings (unused imports/locals) linting actually catches reliably. Three genuine issues found and
+fixed, all verified via `tsc --noEmit`(backend)/`tsc -b`(frontend) staying clean plus a re-run of
+`npm run lint` confirming zero remaining `no-unused-vars` findings on either side:
+
+- **`posOf()`/`naturalCompare()`/`uniqSorted()` were byte-identical copies duplicated across THREE
+  frontend files** (`LocationsPlanView.tsx`, `Locations3DView.tsx`, `LocationDetailPanel.tsx`) — a
+  real leak from copy-pasting during the 3D build, not a documented deliberate choice (unlike this
+  codebase's genuinely intentional per-page duplication, e.g. `authHeaders()`/`SignaturePad`, which
+  exists because pages have no shared imports between them at all — these three files already
+  import from each other). Extracted into a new shared `locationBoxUtils.ts`, all three now import
+  from it — same "one function, many callers" convention this codebase already applies on the
+  backend (`rack-name.util.ts`, `occupancyColors.ts`).
+- **`LocationsService` kept its own private `RACK_STORAGE_TYPES` const**, identical to the one
+  `common/rack-name.util.ts` already exports and that this same file already imports `displayCode`
+  from — a leftover from before that shared constant existed, not a deliberate copy (unlike
+  `WarehousesService`'s own separate `RACK_STORAGE_TYPES` copy, which carries an explicit comment
+  explaining why it's kept duplicated there — that one was left alone, since undoing a documented
+  decision wasn't asked for). Consolidated to the shared import.
+- **`PutawayTasksService` had a genuinely dead import (`RACK_STORAGE_TYPES`, no longer referenced
+  directly since `laneKeyOf()`/`buildRackName()` already encapsulate it) and a dead variable
+  (`sameSku`, written but never read)** — both leftovers from the 2026-08-29 "lane-fullness
+  preference" rework documented above, which replaced the separate `sameSku`/`hasOccupant` tiers
+  with one `occupancyCount` number but never cleaned up the now-unused pieces it left behind. Removed
+  both.
+
+Worth remembering: this codebase's backend `tsconfig.json` does NOT enable `noUnusedLocals`/
+`noUnusedParameters` (the frontend's does, and `tsc -b` already proved zero unused locals exist
+anywhere in the frontend) — `npm run lint`'s `no-unused-vars` rule is the only thing that actually
+catches a dead backend import/variable like the two above; `tsc --noEmit` alone would stay clean
+regardless. Worth an occasional `npm run lint` sweep on the backend specifically for this reason,
+not just when chasing a specific bug.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No

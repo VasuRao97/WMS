@@ -6,6 +6,7 @@ import { RACK_STORAGE_TYPES, type Location } from './LocationsPage';
 import { STORAGE_TYPE_COLORS, DEFAULT_BOX_COLOR } from './LocationsPlanView';
 import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
+import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
 // True-3D companion to LocationsPlanView.tsx's top-down SVG (2026-09-05 — see
 // [[wms-putaway-design]]/CLAUDE.md for the design conversation). Built after
@@ -54,22 +55,6 @@ const DEPTH_SPACING = 1.4;
 const WALKWAY_HALF_WIDTH = 1.2;
 const GROUND_UNIT = 0.9; // scales Ground/Stillage's depth/width/height COUNTS (not real meters — same "not physically accurate" treatment 2D already gives these) into scene units
 const AISLE_GAP = 3; // world-space gap between one aisle's footprint and the next
-
-function posOf(l: Location): string | undefined {
-  if (l.storageType === 'GROUND_FLOOR') return l.block;
-  if (l.storageType === 'STILLAGE') return l.stack;
-  return l.rack;
-}
-
-function naturalCompare(a: string, b: string): number {
-  const na = Number(a);
-  const nb = Number(b);
-  if (a.trim() !== '' && b.trim() !== '' && !Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
-  return a.localeCompare(b);
-}
-function uniqSorted(values: (string | undefined)[]): string[] {
-  return Array.from(new Set(values.filter((v): v is string => !!v))).sort(naturalCompare);
-}
 
 type BoxSpec = { key: string; location: Location; x: number; y: number; z: number; w: number; h: number; d: number };
 
