@@ -3669,6 +3669,36 @@ real, unmodified Drive-in bin-suggestion logic is genuinely being exercised, not
 name. `tsc --noEmit`/`tsc -b` both clean. Throwaway company cleaned up via the script itself before
 its own file was deleted.
 
+**A real bug caught by the client's own live testing, same day**: "i had done level 5, 3 deep, but
+the below simulation hasn't changed... its same." The backend's config-aware rebuild (above) was
+working correctly — a run's `rackName` genuinely showed the new Level/Depth (e.g. `R3-03-L1-D2`) —
+but `SimulationPage.tsx`'s `locations` state (what the 2D/3D Plan View actually renders from) was
+only ever fetched once, on page mount (`loadSandbox()`). `handleRun()` never refreshed it after a
+run, so a config change that rebuilt the sandbox's Location rows server-side left the Plan View
+still rendering the OLD layout it had in memory from before — the mismatch was only ever visible in
+the step text, never in the picture itself. Fixed by extracting a plain `refreshLocations()` (no
+`loading` flag, so it doesn't flash a full "Setting up the sandbox..." reload) and calling it after
+every successful run, using the run response's own `warehouseId`.
+
+While in `Locations3DView.tsx` verifying this fix, a second, related gap surfaced from the same root
+cause (Levels becoming configurable makes a genuinely tall layout possible for the first time):
+`computeFocus()` had only ever sized the camera off the X/Z footprint, never how TALL anything
+actually was. A 5-level layout's camera could settle below/inside the stack instead of above and
+back from it — reproduced live (a totally blank canvas that only resolved after several seconds of
+the smooth-lerp animation finishing its (wrong) journey, not a rendering crash). Fixed by factoring
+a `maxY` (the tallest footprint's top edge) into both the camera's height and pull-back distance,
+and aiming the target at mid-height instead of a fixed low `y=1` — degrades to the original framing
+for a typical short (2-3 level) layout, since `maxY` stays small enough there to never be the
+binding term.
+
+Verified live end-to-end (throwaway company `SIMBUG1`, backend+frontend dev servers freshly started
+for this pass): ran Levels=5/Depth=3/SPR through the real UI, confirmed the Level filter dropdown
+correctly grew to `G` through `G+4` (previously would have stayed frozen at `G+2`), confirmed the 2D
+Plan View correctly rendered `R3-03-D1/D2/D3` boxes each showing `G+4`, and confirmed reloading the
+page and re-entering 3D on Aisle 1 now correctly settles into a visible, well-framed view within a
+few seconds with no manual zoom needed (previously stayed blank indefinitely until a manual
+scroll-to-zoom). `tsc -b` clean both times. Throwaway company cleaned up afterward.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full

@@ -220,11 +220,20 @@ function computeFocus(aislesToFit: AisleLayout[]): { camPos: [number, number, nu
   const minX = Math.min(...aislesToFit.map((l) => l.footprint.x - l.footprint.w / 2));
   const maxX = Math.max(...aislesToFit.map((l) => l.footprint.x + l.footprint.w / 2));
   const maxZ = Math.max(...aislesToFit.map((l) => l.footprint.z + l.footprint.d / 2));
+  // Top edge of the tallest footprint being fit — factored into both the
+  // camera's height and the pull-back distance (2026-09-06, caught live
+  // once the Simulation's own Levels became configurable: a 5-level layout
+  // could start the camera below/inside the stack, since this used to size
+  // the view purely off the X/Z footprint and never looked at how TALL
+  // anything actually was). Degrades to the original framing for a typical
+  // short (2-3 level) layout — `maxY` stays small enough there that it
+  // never becomes the binding term in either `Math.max`.
+  const maxY = Math.max(...aislesToFit.map((l) => l.footprint.y + l.footprint.h / 2));
   const centerX = (minX + maxX) / 2;
-  const span = Math.max(maxX - minX, maxZ, 4); // a floor so a single small aisle doesn't zoom in absurdly close
+  const span = Math.max(maxX - minX, maxZ, maxY, 4); // a floor so a single small aisle doesn't zoom in absurdly close
   return {
-    camPos: [centerX, Math.max(6, span / 2.5), maxZ + span * 0.6 + 4],
-    target: [centerX, 1, maxZ / 2],
+    camPos: [centerX, Math.max(6, span / 2.5, maxY + 4), maxZ + span * 0.6 + 4],
+    target: [centerX, maxY / 2, maxZ / 2],
   };
 }
 

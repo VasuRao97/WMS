@@ -72,6 +72,18 @@ function SimulationPage() {
   const [colorMode, setColorMode] = useState<ColorMode>('class'); // Class, not Category, is the informative default here — every sim SKU shares the one auto-generated "Simulation" category, so Category mode would just paint everything one color.
   const [resetting, setResetting] = useState(false);
 
+  // Plain fetch-and-set, no `loading` flag — reused after Run, which can
+  // rebuild the sandbox's layout server-side (different Location rows
+  // entirely, e.g. a new Levels/Depth) without needing a full "Setting up
+  // the sandbox..." reload. Also called from loadSandbox() itself below.
+  const refreshLocations = (warehouseId: string) => {
+    return fetch(`http://localhost:3000/locations`, { headers: authHeaders() })
+      .then((r) => (r.status === 401 ? [] : r.json()))
+      .then((locs) => {
+        setLocations(Array.isArray(locs) ? locs.filter((l: Location) => l.warehouseId === warehouseId) : []);
+      });
+  };
+
   const loadSandbox = () => {
     setLoading(true);
     setError('');
@@ -84,12 +96,7 @@ function SimulationPage() {
           return;
         }
         setSandbox({ id: data.id, code: data.code, name: data.name });
-        return fetch(`http://localhost:3000/locations`, { headers: authHeaders() })
-          .then((r) => (r.status === 401 ? [] : r.json()))
-          .then((locs) => {
-            setLocations(Array.isArray(locs) ? locs.filter((l: Location) => l.warehouseId === data.id) : []);
-            setLoading(false);
-          });
+        return refreshLocations(data.id).then(() => setLoading(false));
       });
   };
 
@@ -112,11 +119,21 @@ function SimulationPage() {
       }),
     });
     const data = await res.json();
-    setRunning(false);
     if (!res.ok) {
+      setRunning(false);
       setError(errorText(data, 'Could not run the simulation.'));
       return;
     }
+    // A Run can rebuild the sandbox's layout server-side (a different
+    // Storage Type/Levels/Depth than what's currently there — see
+    // SimulationService.ensureSandbox()) — refresh `locations` so the Plan
+    // View reflects whatever the backend actually has now, not whatever was
+    // loaded on page mount. A real bug caught live: without this, changing
+    // Levels/Depth and running again silently kept rendering the OLD
+    // layout, even though the backend had genuinely rebuilt it (visible
+    // only in the step text's rackName, never in the Plan View itself).
+    await refreshLocations(data.warehouseId);
+    setRunning(false);
     setSteps(data.steps);
     setRevealedCount(0);
     setPlaying(true);
