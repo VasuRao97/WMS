@@ -490,9 +490,11 @@ model WarehouseStorageType {
   // slow-moving C-class SKUs can be co-located to use space efficiently.
   // Null means "no limit" for that class. Enforced by
   // PutawayTasksService.suggestBin() since 2026-08-28 (see CLAUDE.md).
-  // Completely unwired to any UI/API as of 2026-08-29 — every warehouse is
-  // silently stuck at these DB defaults; flagged, deferred (see
-  // ROADMAP.md's deferred list).
+  // Was completely unwired to any UI/API from 2026-08-29 until 2026-09-06,
+  // when a real Company Settings mini-editor finally shipped for BOTH
+  // storage-type families at once (Rack's own long-dead version, and
+  // Ground/Floor's brand-new one — see the Ground design conversation in
+  // the wms-putaway-design memory).
   maxSkusClassA Int? @default(1)
   // 2026-08-29 — temporarily dropped from 2 to 1 (same exclusivity as
   // Class A), a deliberate interim workaround for a real self-exclusion
@@ -505,9 +507,35 @@ model WarehouseStorageType {
   // share at all. Only changes the default for a NEWLY-created
   // WarehouseStorageType row — no backfill of existing ones (same "no
   // real client tenant, nothing to backfill" situation as prior default
-  // changes in this project). See ROADMAP.md's deferred list.
+  // changes in this project).
   maxSkusClassB Int? @default(1)
   maxSkusClassC Int?
+
+  // 2026-09-06 — Ground/Floor Putaway design (see wms-putaway-design
+  // memory). Ground/Floor's own physical shape introduces a second, real
+  // grouping unit Rack never needed: a bin (this row's Location.block)
+  // subdivides into COLUMNS (Location.rack, reused — see Location's own
+  // comment), each a single-file LIFO line `depth` positions deep, same
+  // physical shape as a Rack lane. maxSkusClass* above still governs how
+  // many distinct SKUs may share one BIN across its columns; these four
+  // booleans are a SEPARATE, independent question — whether a single
+  // COLUMN must stay internally single-SKU ("respects column boundaries")
+  // or can mix different SKUs at different depths within the same column.
+  // Meaningless for non-Ground storage types (Rack has no "column" concept
+  // — a lane's depth positions ARE individually addressable rows already,
+  // there's nothing further to subdivide) — read only when storageType is
+  // GROUND_FLOOR. Deliberately one toggle per class, not a single global
+  // flag: "give the flexibility to A/B/C/D" was the client's own explicit
+  // ask, even though A's toggle is moot in practice (a 1-SKU-whole-bin
+  // class has no column boundary to cross in the first place) and D
+  // defaults to false (free per-pallet mixing is the whole point of a
+  // dead-stock tier) — C is the real, expected use of this: a client can
+  // opt a C-class bin into D's free-mixing behavior without needing D's
+  // own (unbounded) SKU-count semantics.
+  respectsColumnBoundariesClassA Boolean @default(true)
+  respectsColumnBoundariesClassB Boolean @default(true)
+  respectsColumnBoundariesClassC Boolean @default(true)
+  respectsColumnBoundariesClassD Boolean @default(false)
 
   @@unique([warehouseId, storageType, categoryId])
 }
@@ -653,10 +681,22 @@ model Location {
   section String?
 
   aisle String?
-  rack  String? // bay/column within the rack row
+  // Rack (SPR/DRIVE_IN/ASRS): bay/column within the rack row. Ground/Floor
+  // (2026-09-06 — see the Ground design conversation in the
+  // wms-putaway-design memory): REUSED as the column NUMBER within one
+  // bin (`block` below) — a bin is a physical footprint that subdivides
+  // into `width`-many columns, each a single-file LIFO line `depth`
+  // positions deep (same physical shape as a Rack lane, just laid flat on
+  // the floor instead of racked). Deliberately reused rather than adding a
+  // new field, same "meaning depends on storageType" convention this
+  // model already uses for depth/width/height below.
+  rack  String?
   level String? // vertical tier within the rack (1 = ground)
   bin   String? // shelf-slot within a level, for shelving/small-parts bins
-  block String? // ground-floor block id (e.g. block-stacked tyre pallets)
+  // The whole physical bin id (e.g. block-stacked tyre pallets) — one bin
+  // subdivides into `rack`-numbered columns above; this field alone never
+  // changes meaning, still identifies the bin as a whole.
+  block String?
   stack String? // stillage column id (cages stacked one on another)
 
   // Global, warehouse-wide flank number — "R1", "R2", "R3"... one per whole
@@ -677,10 +717,21 @@ model Location {
 
   // Dimensional fields — shared concept, meaning depends on storageType.
   // Rack: depth = position in a multi-deep drive-in lane (1=front..N=back).
-  // Ground: depth/width = the block's footprint (e.g. 4 deep x 4 wide);
-  // height = stacked layers, normally 1 (pallets rarely stack on pallets).
-  // Stillage: width/depth = how many stillage columns sit side by side /
-  // front-to-back; height = how many cages stacked vertically in one column.
+  // Ground (2026-09-06 redesign, see wms-putaway-design memory): ONE ROW
+  // PER PALLET POSITION now, same "one real row per real position, not
+  // text in one box" convention Rack's own multi-deep lanes already use —
+  // `depth` = this pallet's position within its column (1=front/aisle-
+  // facing..N=back), the EXACT SAME field and meaning as Rack's own depth,
+  // reused directly rather than duplicated. `width` describes the bin as a
+  // whole (how many columns it has, i.e. `rack`'s max value for that bin)
+  // — set identically on every row of the same bin, not a per-row capacity
+  // multiplier the way it was before this redesign. `height` stays fixed
+  // at 1 for Ground going forward (no vertical pallet-on-pallet stacking —
+  // confirmed explicitly, "all are on ground") — kept rather than removed,
+  // now purely descriptive/vestigial for this storage type.
+  // Stillage (unchanged): width/depth = how many stillage columns sit side
+  // by side/front-to-back; height = how many cages stacked vertically in
+  // one column.
   depth  Int?
   width  Int?
   height Int?
