@@ -3,9 +3,12 @@
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
 what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **Ground/
-Floor Putaway — schema built, logic next.** Picked ahead of Inventory and the FMS×ABC study on a
+Floor Putaway — real logic built and verified**, kept deliberately separate from Rack's own
+(`suggestRackBin()`/`suggestGroundBin()` are two independent methods, not one shared function with
+storageType branches — your own explicit ask mid-build: "keep all logic for different storage type
+separate, like ground is sep, rack is sep"). Picked ahead of Inventory and the FMS×ABC study on a
 real argument (Inventory's gap is a missing convenience since on-hand data is already derivable
-elsewhere; Ground/Floor's is a missing *capability* — `suggestBin()` returns `NEEDS_BIN`
+elsewhere; Ground/Floor's is a missing *capability* — `suggestBin()` returned `NEEDS_BIN`
 unconditionally for that storage type, no workaround, and the gap had been independently re-flagged
 three separate times before finally getting tackled). A full design conversation settled the
 physical model (a bin subdivides into single-file LIFO "columns," mechanically identical to a Rack
@@ -13,11 +16,13 @@ lane just laid flat), a genuinely new column-lifecycle rule (closed to new putaw
 starts on it, until fully empty — feeding the still-unbuilt reslotting engine), and per-class
 `respectsColumnBoundariesA/B/C/D` toggles (the client's own explicit ask — "give the flexibility to
 A B C D"). Also closed a real, unrelated gap discovered along the way: `WarehouseStorageType.
-maxSkusClassA/B/C` has been completely dead (no UI ever set it) since 2026-08-24 — the upcoming
-Company Settings editor will fix this for Rack too, not just Ground. Schema committed (`dd05b81a`);
-still to build: the Location generator (one row per pallet position, not per whole block),
-`suggestBin()`'s own Ground logic, and the Settings UI. Full design trail in the
-`wms-putaway-design` memory. **Immediately after this: the FMS×ABC combined-classification study**
+maxSkusClassA/B/C` had been completely dead (no UI ever set it) since 2026-08-24 — the logic now
+honors it correctly for Ground too, though the actual Settings screen for either is still the one
+remaining piece not built. Design+schema committed `dd05b81a`, logic `68c1edbd` — verified via a
+throwaway-company script (21/21), catching and fixing one real bug along the way (free-mixing mode
+was checking "no stock of this SKU" instead of "no occupant at all," which would have let two SKUs
+collide on the same position). Full design and verification trail in the `wms-putaway-design`
+memory. **Immediately after this: the FMS×ABC combined-classification study**
 (candidate #2 below) — the client's own stated next topic, and Ground's own bin-selection logic is
 deliberately shipping with a placeholder pending that exact study. Before this, same day: a
 deliberate **hardening pass** (line-by-line correctness/performance review, not a new module) —
