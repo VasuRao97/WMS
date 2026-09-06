@@ -4449,7 +4449,7 @@ the same day, not yet designed — combining ABC classification with a new FMS (
 moving, movement-frequency) axis for a more precise Putaway placement rule than either axis gives
 alone. Needs its own align-before-coding pass before any schema, same as Topics 1/2 did.
 
-### Locations/Bins: a real flankNumber collision bug, plus Ground box size parity (2026-09-06, next session)
+### Locations/Bins: a real flankNumber collision bug, Ground box size parity, and a hard guard rail (2026-09-06, next session)
 A live client bug report, not a design conversation: "i generated ground storage locations in tnr8
 warehouse, but in both 2d and 3d view i cannot find them" — plus a second, related observation from
 the same message: "pallet sizes are same, but in your diagram, 16 pallets of 1 bin of ground looks
@@ -4499,6 +4499,51 @@ real rendered UI that SPR and Ground now split into two cleanly separate, correc
 (`R1`/`R2`) with zero overlap in both 2D and 3D, and confirmed the Ground box renders visibly ~4×
 wider than the SPR box in 2D, matching the real, dramatically-larger footprint 3D already showed.
 `tsc --noEmit`(backend)/`tsc -b`(frontend) both clean. Throwaway company cleaned up afterward.
+
+**The `TNR8` warehouse's own real, corrupted data was backfilled** (client's explicit go-ahead,
+not assumed) — the ~480 Ground/Floor rows on Aisle "1" that had silently inherited SPR's own
+flankNumbers (1 and 2) were reassigned fresh, non-colliding numbers (5 and 6 — the warehouse's own
+next-available values, computed the same way `nextFlankNumber()` would). Nothing else about the
+data changed (same codes, same categories) — only the flank identity each row belongs to. Verified
+via a direct DB read afterward: a full collision scan across the whole warehouse confirmed no
+storage type shares a flank number with a different family anywhere in it.
+
+**Then a real guard rail, the client's own direct follow-up**: "should we put a fix that if someone
+tries to superimpose 2 storage types we need to say NO to it?" New `LocationsService.
+assertNoConflictingFamily()`, called from `prepareRow()` (shared by `create()`/`generate()`/
+`bulkImport()`/`update()`) — refuses to write a Location into an Aisle some OTHER, conflicting flank
+family already occupies (the exact mistake that caused the bug above), rather than only fixing the
+allocator after the fact. Same family stays fully allowed (a real aisle can legitimately mix Rack
+sub-types — SPR next to Drive-in — on one physical row, matching how the Plan View already renders
+them together via one `RACK_STORAGE_TYPES.includes()` check); only a genuine cross-family clash
+(Rack vs. Ground/Floor, or either vs. Stillage) gets refused, with a clear error naming which
+storage type is already there and telling the operator to pick a different Aisle number. **A hard
+block, not a warning** — this is the same class of physical impossibility as Drive-in's single-SKU
+column rule (two unrelated structures genuinely cannot occupy one Aisle identity in a real
+warehouse), not a policy a client might reasonably want to override.
+
+**The real design nuance, worth remembering**: `update()` now threads the row's own PREVIOUS Aisle
+value through to `prepareRow()`, and the check only fires when the Aisle is actually CHANGING (a
+brand-new row, where there's no previous value, or an edit moving a row into a different Aisle) —
+never when an existing row is just being edited in place with its Aisle untouched. This matters
+because `TNR8`'s own real data, once backfilled above, now LEGITIMATELY has SPR and Ground/Floor
+coexisting side by side under Aisle "1" with correct, non-colliding flank numbers — a naive
+"does this Aisle have a conflicting family at all" check would have started blocking every ordinary
+edit to those already-settled rows the moment this shipped. Worth remembering for any future
+guard like this: a validation added AFTER real data already legitimately exists in a shape the
+validation would otherwise reject needs to grandfather that existing shape explicitly, not just
+check the aisle in isolation.
+
+Verified via two throwaway-company API scripts, 8/8: SPR on a fresh Aisle succeeds; Drive-in
+generated onto that SAME Aisle succeeds (same family, unaffected); Ground/Floor generated onto that
+same Aisle is fully blocked (0 of 4 rows created, the exact clear error message per row); Ground/
+Floor on a genuinely fresh Aisle succeeds; editing an existing SPR row with its Aisle unchanged is
+NOT blocked (the regression case that matters most, matching `TNR8`'s own post-backfill shape);
+editing that same row to MOVE it into a conflicting Aisle IS blocked; manual `create()` enforces the
+same guard, not just `generate()`. `tsc --noEmit` clean. Both throwaway companies cleaned up
+afterward. No frontend change was needed — the generator's per-row error table and the manual
+create/edit form's inline error both already render whatever message a validation error carries,
+same as every other Locations validation failure.
 
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components

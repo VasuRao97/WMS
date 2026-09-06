@@ -4,16 +4,21 @@ A forward-looking plan — what's shipped, what's next, and what's deliberately 
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
 what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **the
 FMS×ABC combined-classification study** (see "Immediate candidates" below) — the client's own
-stated next topic once Ground/Floor Putaway was fully aligned. **Open item before that, though**: a
-real client bug report needs a decision — the `TNR8` warehouse has SPR and Ground/Floor both
-generated under Aisle "1" by mistake, which corrupted their flankNumbers (a real generator bug, now
-fixed for new generations — see CLAUDE.md's "Locations/Bins: a real flankNumber collision bug"
-section) but the ~1200 EXISTING Ground rows in that warehouse are still on the old, colliding
-flankNumbers. Needs the client's own call: backfill those rows' flankNumbers, or just delete and
-regenerate that warehouse's Ground/Floor locations now that the underlying bug is fixed. Also fixed
-the same session, a related visual gap the client caught in the same message: 2D's Ground box is now
-sized proportionally to its real column count instead of always matching a single rack pallet's box
-size. Most recently, same day, before that: **the
+stated next topic once Ground/Floor Putaway was fully aligned. Most recently, same day: a real
+client bug report ("generated ground storage locations in tnr8, can't find them") traced to SPR and
+Ground/Floor both being generated under Aisle "1" by mistake, which corrupted their flankNumbers —
+fixed the generator bug, **backfilled `TNR8`'s ~480 already-corrupted Ground rows to fresh,
+non-colliding flank numbers (client's explicit go-ahead)**, and — the client's own direct follow-up
+question, "should we say NO if someone tries to superimpose 2 storage types?" — added a real hard
+guard rail: `create()`/`generate()`/`bulkImport()`/`update()` now all refuse to write a Location
+into an Aisle a conflicting storage-type family already occupies (same Rack sub-types still freely
+mix, only a genuine cross-family clash like Rack vs. Ground/Floor is blocked), with existing rows
+whose Aisle isn't changing correctly grandfathered so this can't break `TNR8`'s own now-legitimate
+coexistence. See CLAUDE.md's "Locations/Bins: a real flankNumber collision bug, Ground box size
+parity, and a hard guard rail" section for the full detail. Also fixed the same session, a related
+visual gap the client caught in the same message: 2D's Ground box is now sized proportionally to its
+real column count instead of always matching a single rack pallet's box size. Before that, same day:
+**the
 Putaway Simulation sandbox now supports Ground/Floor as a selectable storage type** — "can we have a
 simulator now for ground?" — closing the last gap in the sandbox's storage-type coverage
 (SPR/Drive-in/ASRS already worked). Investigating this surfaced and fixed two real, pre-existing
