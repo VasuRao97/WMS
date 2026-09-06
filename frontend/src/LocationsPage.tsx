@@ -1,6 +1,12 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import LocationsPlanView from './LocationsPlanView';
-import Locations3DView from './Locations3DView';
+// 2026-09-06 hardening-pass fix: Locations3DView pulls in the whole
+// three/@react-three/fiber/@react-three/drei stack — by far the single
+// biggest dependency in this app — but only ever renders once a viewer
+// actually toggles to 3D mode below (2D is the default). Lazy-loading it
+// means opening the Locations page in its default Table/2D-Plan view (the
+// common case) never downloads Three.js at all.
+const Locations3DView = lazy(() => import('./Locations3DView'));
 
 export type ProductCategory = { id: string; name: string };
 export type Warehouse = { id: string; code: string; name: string };
@@ -978,7 +984,9 @@ function LocationsPage() {
               occupancy={occupancy}
             />
           ) : (
-            <Locations3DView locations={locations.filter((l) => l.warehouseId === planWarehouseId)} colorMode={colorMode} occupancy={occupancy} />
+            <Suspense fallback={<p style={{ marginTop: 16, color: '#666' }}>Loading 3D view…</p>}>
+              <Locations3DView locations={locations.filter((l) => l.warehouseId === planWarehouseId)} colorMode={colorMode} occupancy={occupancy} />
+            </Suspense>
           )}
         </div>
       )}

@@ -874,6 +874,19 @@ model StockMovement {
   palletLoad   PalletLoad? @relation(fields: [palletLoadId], references: [id])
 
   @@index([skuId, locationId])
+  // 2026-09-06 hardening-pass fix: a plain locationId index, added
+  // alongside the existing [skuId, locationId] composite rather than
+  // replacing it (kept untouched in case anything relies on it) — three of
+  // the hottest queries in the whole app (suggestBin(), the Plan View's
+  // occupancy overlay, Insights' storage-utilization report) all filter
+  // StockMovement by locationId ALONE, which a composite index whose
+  // leading column is skuId can't serve efficiently (a composite index
+  // only helps a query that includes its leading column). Checked every
+  // StockMovement query in the codebase first — nothing anywhere actually
+  // filters by skuId on its own, so the existing composite was serving no
+  // real query pattern while the one everything actually uses had no
+  // matching index at all.
+  @@index([locationId])
   @@index([warehouseId])
   @@index([palletLoadId])
 }
@@ -1593,6 +1606,19 @@ model VehicleGateEntry {
   createdAt DateTime @default(now())
 
   @@index([warehouseId, gateInAt])
+  // 2026-09-06 hardening-pass fix — a PARTIAL index (WHERE "gateOutAt" IS
+  // NULL), hand-added in the migration SQL since Prisma's schema DSL can't
+  // express a conditional index directly (documented here so it isn't a
+  // surprise on a future `prisma db pull`/schema diff): {vehicleId,
+  // gateOutAt: null} is checked on every single Gate In (the duplicate-
+  // open-entry block), and {gateOutAt: null} alone is scanned by both
+  // DetentionAlertScheduler and DockAssignmentScheduler every few minutes.
+  // This table is a genuinely unbounded append-only log (one row per
+  // vehicle visit, forever) where "currently open" is always a tiny,
+  // roughly constant-sized fraction of it — the textbook case for a
+  // partial index over a plain composite one, since it stays small and
+  // fast regardless of how much closed history accumulates.
+  // See migration 20260906050000_vehicle_gate_entry_open_index.
 }
 
 enum DockNotificationStage {
@@ -1767,6 +1793,13 @@ model NotificationLog {
   createdAt         DateTime              @default(now())
 
   @@index([companyId, eventType, status])
+  // 2026-09-06 hardening-pass fix: both DetentionAlertScheduler (every 5
+  // min) and PutawayAssignmentScheduler (every 1 min) filter this
+  // unboundedly-growing audit log by referenceType+referenceId+eventType
+  // exactly (checking "has this specific entity already been alerted for
+  // this event") — the existing composite's leading column (companyId)
+  // doesn't help either lookup at all.
+  @@index([referenceType, referenceId, eventType])
 }
 
 enum SelfCheckInStatus {
@@ -1926,6 +1959,15 @@ model InboundReceiptLine {
   putawayTasks PutawayTask[]
   scans        InboundReceiptScan[]
   palletLoads  PalletLoad[]
+
+  // 2026-09-06 hardening-pass fix: no indexes existed beyond the PK.
+  // receiptId is filtered directly and constantly (every Match Order load,
+  // every scan, every receiving-modal open — see GateEntriesService/
+  // InboundReceiptsService); skuId is filtered directly inside
+  // suggestBin()'s own "still incoming" check, one of the hottest queries
+  // in the app.
+  @@index([receiptId])
+  @@index([skuId])
 }
 
 // The full lifecycle of one scanned code during receiving (2026-08-27
@@ -2066,6 +2108,21 @@ model PutawayTask {
 
   trips         PutawayTrip[]
   reassignments PutawayReassignment[]
+
+  // 2026-09-06 hardening-pass fix: this table had NO indexes at all beyond
+  // its primary key, despite being an append-only, unboundedly-growing log
+  // (one row per putaway operation, forever) queried constantly by exactly
+  // these shapes — checked every real query against this model in the
+  // codebase before adding these, not speculative: receiptLineId alone (the
+  // "does this line already have a task" duplicate guard, hit on every
+  // batch/IMMEDIATE task creation), toLocationId+status together
+  // (suggestBin()'s own open-task-reservation lookup, the hottest path in
+  // the app), and status+openForAccumulation together (both the operator-
+  // fairness scheduler's and the priority-recommendation lookup's exact
+  // filter shape).
+  @@index([receiptLineId])
+  @@index([toLocationId, status])
+  @@index([status, openForAccumulation])
 }
 
 // One row per physical trip — the scan-driven execution unit (2026-08-28,
@@ -2139,6 +2196,17 @@ model PutawayTrip {
   discrepancyReviewedAt   DateTime?
   discrepancyReviewedById String?
   discrepancyReviewedBy   User?     @relation("PutawayTripDiscrepancyReviewedBy", fields: [discrepancyReviewedById], references: [id])
+
+  // 2026-09-06 hardening-pass fix — same "append-only, unboundedly-growing,
+  // zero indexes beyond the PK" gap as PutawayTask above, checked against
+  // every real query on this model: taskId alone (loading a task's own
+  // trips, hit constantly), claimedById+status together (the operator-
+  // fairness scheduler's busy/free and idle-time lookups), and
+  // status+claimedAt together (PutawayClaimExpiryScheduler's own
+  // EVERY_5_MINUTES cutoff query, exactly this shape).
+  @@index([taskId])
+  @@index([claimedById, status])
+  @@index([status, claimedAt])
 }
 
 // Audit trail of "request a different bin" (2026-08-28) — a task can

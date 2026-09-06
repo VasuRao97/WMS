@@ -177,10 +177,27 @@ export class PutawayTasksService {
     // balance + last receivedDate per (location, sku)
     const balanceByLocSku = new Map<string, number>();
     const lastReceivedDateByLocSku = new Map<string, Date | null>();
+    // 2026-09-06 hardening-pass perf fix: an index of the SAME balances,
+    // keyed by location first (locationId -> skuId -> balance) — several
+    // spots below used to re-scan the ENTIRE balanceByLocSku map with a
+    // string startsWith() check for every single candidate location, which
+    // made suggestBin() cost grow with the warehouse's WHOLE movement
+    // history, not just the handful of SKUs a given location has ever
+    // held. Built once here, alongside the flat map (same source data, one
+    // pass), so every later per-location lookup below is O(distinct SKUs
+    // at that location) instead of O(every balance entry in the warehouse).
+    const skuBalancesByLocation = new Map<string, Map<string, number>>();
     for (const m of movements) {
       const key = `${m.locationId}|${m.skuId}`;
-      balanceByLocSku.set(key, (balanceByLocSku.get(key) || 0) + Number(m.quantity));
+      const newBalance = (balanceByLocSku.get(key) || 0) + Number(m.quantity);
+      balanceByLocSku.set(key, newBalance);
       if (Number(m.quantity) > 0 && m.receivedDate) lastReceivedDateByLocSku.set(key, m.receivedDate);
+      let perLocation = skuBalancesByLocation.get(m.locationId);
+      if (!perLocation) {
+        perLocation = new Map<string, number>();
+        skuBalancesByLocation.set(m.locationId, perLocation);
+      }
+      perLocation.set(m.skuId, newBalance);
     }
     const targetedLocationIds = new Set(openTaskTargets.map((t: any) => t.toLocationId).filter(Boolean));
     // 2026-08-29 fix: a bin already the destination of another still-open
@@ -215,14 +232,28 @@ export class PutawayTasksService {
     for (const [key, qty] of balanceByLocSku) if (qty > 0) allOccupantSkuIds.add(key.split('|')[1]);
     for (const sid of pendingSkuByLocation.values()) allOccupantSkuIds.add(sid);
     const stillIncomingSkuIds = new Set<string>();
+    // 2026-09-06 hardening-pass perf fix: every occupant SKU's abcClass used
+    // to be fetched with its own tx.sku.findUnique() call PER LANE (inside
+    // the lanes loop below) — one DB round trip per (lane, occupant SKU)
+    // pair instead of one query total. Batched here alongside the existing
+    // "still incoming" lookup, which already has the exact same
+    // allOccupantSkuIds set in hand.
+    const abcClassBySkuId = new Map<string, string>();
     if (!exceptionActive && allOccupantSkuIds.size > 0) {
-      const occupantLines = await tx.inboundReceiptLine.findMany({
-        where: { skuId: { in: [...allOccupantSkuIds] } },
-        select: { skuId: true, expectedQty: true, receivedQty: true },
-      });
+      const [occupantLines, occupantSkus] = await Promise.all([
+        tx.inboundReceiptLine.findMany({
+          where: { skuId: { in: [...allOccupantSkuIds] } },
+          select: { skuId: true, expectedQty: true, receivedQty: true },
+        }),
+        tx.sku.findMany({
+          where: { id: { in: [...allOccupantSkuIds] } },
+          select: { id: true, abcClass: true },
+        }),
+      ]);
       for (const l of occupantLines) {
         if (Number(l.receivedQty) < Number(l.expectedQty)) stillIncomingSkuIds.add(l.skuId);
       }
+      for (const s of occupantSkus) abcClassBySkuId.set(s.id, (s.abcClass || 'C').toUpperCase());
     }
 
     // group into lanes
@@ -246,9 +277,8 @@ export class PutawayTasksService {
       // per-position" resolution).
       const occupantSkuIds = new Set<string>();
       for (const loc of laneLocations) {
-        for (const [key, qty] of balanceByLocSku) {
-          if (qty > 0 && key.startsWith(`${loc.id}|`)) occupantSkuIds.add(key.split('|')[1]);
-        }
+        const perLocation = skuBalancesByLocation.get(loc.id);
+        if (perLocation) for (const [sid, qty] of perLocation) if (qty > 0) occupantSkuIds.add(sid);
         const pendingSku = pendingSkuByLocation.get(loc.id);
         if (pendingSku) occupantSkuIds.add(pendingSku);
       }
@@ -297,12 +327,7 @@ export class PutawayTasksService {
           if (anyOccupantStillIncoming) {
             laneEligible = false;
           } else {
-            const occupantClasses = await Promise.all(
-              [...occupantSkuIds].map(async (id) => {
-                const s = await tx.sku.findUnique({ where: { id }, select: { abcClass: true } });
-                return (s?.abcClass || 'C').toUpperCase();
-              }),
-            );
+            const occupantClasses = [...occupantSkuIds].map((id) => abcClassBySkuId.get(id) || 'C');
             const caps = [abcClass, ...occupantClasses].map((cls) => this.maxSkusForClass(row, cls));
             // null = unbounded; the most restrictive (lowest, non-null) cap wins.
             const finiteCaps = caps.filter((c): c is number => c !== null);
@@ -331,7 +356,11 @@ export class PutawayTasksService {
       // whose lanes only ever contain one level's positions to begin with.
       const sorted = [...laneLocations].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0) || ((Number(a.level) || 0) - (Number(b.level) || 0)));
       const target = sorted.find(
-        (loc) => (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 && !targetedLocationIds.has(loc.id) && !excludeLocationIds.includes(loc.id) && [...balanceByLocSku.keys()].every((k) => !(k.startsWith(`${loc.id}|`) && (balanceByLocSku.get(k) || 0) > 0)),
+        (loc) =>
+          (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 &&
+          !targetedLocationIds.has(loc.id) &&
+          !excludeLocationIds.includes(loc.id) &&
+          ![...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some((qty) => qty > 0),
       );
       if (!target) continue; // lane has no genuinely free position right now (sealed if full, or all free ones excluded/targeted)
 
@@ -345,7 +374,7 @@ export class PutawayTasksService {
       // lane at 2/3 full should win over a lane at 1/3 full for ANY
       // eligible incoming SKU, not just that lane's own original tenant.
       const occupancyCount = laneLocations.filter(
-        (loc: any) => [...balanceByLocSku.keys()].some((k) => k.startsWith(`${loc.id}|`) && (balanceByLocSku.get(k) || 0) > 0) || pendingSkuByLocation.has(loc.id),
+        (loc: any) => [...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some((qty) => qty > 0) || pendingSkuByLocation.has(loc.id),
       ).length;
 
       candidates.push({ locationId: target.id, occupancyCount, flankNumber: target.flankNumber ?? null, aisle: target.aisle ?? null, level: target.level ?? null, storageType: target.storageType });

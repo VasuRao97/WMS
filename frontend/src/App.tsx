@@ -1,22 +1,33 @@
-import { useEffect, useRef, useState } from 'react';
-import WarehousesPage from './WarehousesPage';
-import SkusPage from './SkusPage';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import LoginPage from './LoginPage';
-import CustomersPage from './CustomersPage';
-import UsersPage from './UsersPage';
-import LocationsPage from './LocationsPage';
-import GateYardPage from './GateYardPage';
-import VehicleDriverPage from './VehicleDriverPage';
-import CompanySettingsPage from './CompanySettingsPage';
-import InboundOrdersPage from './InboundOrdersPage';
-import DockDoorsPage from './DockDoorsPage';
-import EquipmentPage from './EquipmentPage';
-import PutawayPage from './PutawayPage';
-import InsightsPage from './InsightsPage';
-import PalletsPage from './PalletsPage';
-import AnalyticsPage from './AnalyticsPage';
-import SimulationPage from './SimulationPage';
-import AbcClassificationPage from './AbcClassificationPage';
+
+// 2026-09-06 hardening-pass fix: every one of these 17 pages used to be a
+// plain eager import, meaning a single visit to ANY page (even just to log
+// in and look at Warehouses) downloaded and parsed the code for all of
+// them in one ~1.4MB bundle — including Locations3DView's Three.js/React
+// Three Fiber stack and the Simulation sandbox, neither of which most
+// visits ever touch. React.lazy() + one shared <Suspense> below means each
+// page's code loads only the first time its own tab is actually opened.
+// Only LoginPage stays eager — it's small, and it's the one thing every
+// unauthenticated visit needs immediately, with nothing to suspend around
+// yet (no <Suspense> boundary exists before a user is logged in).
+const WarehousesPage = lazy(() => import('./WarehousesPage'));
+const SkusPage = lazy(() => import('./SkusPage'));
+const CustomersPage = lazy(() => import('./CustomersPage'));
+const UsersPage = lazy(() => import('./UsersPage'));
+const LocationsPage = lazy(() => import('./LocationsPage'));
+const GateYardPage = lazy(() => import('./GateYardPage'));
+const VehicleDriverPage = lazy(() => import('./VehicleDriverPage'));
+const CompanySettingsPage = lazy(() => import('./CompanySettingsPage'));
+const InboundOrdersPage = lazy(() => import('./InboundOrdersPage'));
+const DockDoorsPage = lazy(() => import('./DockDoorsPage'));
+const EquipmentPage = lazy(() => import('./EquipmentPage'));
+const PutawayPage = lazy(() => import('./PutawayPage'));
+const InsightsPage = lazy(() => import('./InsightsPage'));
+const PalletsPage = lazy(() => import('./PalletsPage'));
+const AnalyticsPage = lazy(() => import('./AnalyticsPage'));
+const SimulationPage = lazy(() => import('./SimulationPage'));
+const AbcClassificationPage = lazy(() => import('./AbcClassificationPage'));
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -171,41 +182,43 @@ function App() {
         </span>
         <button onClick={handleLogout}>Log Out</button>
       </nav>
-      {tab === 'warehouses' ? (
-        <WarehousesPage />
-      ) : tab === 'skus' ? (
-        <SkusPage />
-      ) : tab === 'customers' ? (
-        <CustomersPage />
-      ) : tab === 'locations' ? (
-        <LocationsPage />
-      ) : tab === 'gateyard' ? (
-        <GateYardPage />
-      ) : tab === 'vehicledriver' ? (
-        <VehicleDriverPage />
-      ) : tab === 'dockdoors' ? (
-        <DockDoorsPage />
-      ) : tab === 'equipment' ? (
-        <EquipmentPage />
-      ) : tab === 'pallets' ? (
-        <PalletsPage />
-      ) : tab === 'putaway' ? (
-        <PutawayPage />
-      ) : tab === 'insights' ? (
-        <InsightsPage />
-      ) : tab === 'analytics' ? (
-        <AnalyticsPage />
-      ) : tab === 'abcclassification' ? (
-        <AbcClassificationPage />
-      ) : tab === 'simulation' ? (
-        <SimulationPage />
-      ) : tab === 'companysettings' ? (
-        <CompanySettingsPage />
-      ) : tab === 'inboundorders' ? (
-        <InboundOrdersPage />
-      ) : (
-        <UsersPage />
-      )}
+      <Suspense fallback={<div style={{ padding: 24 }}>Loading…</div>}>
+        {tab === 'warehouses' ? (
+          <WarehousesPage />
+        ) : tab === 'skus' ? (
+          <SkusPage />
+        ) : tab === 'customers' ? (
+          <CustomersPage />
+        ) : tab === 'locations' ? (
+          <LocationsPage />
+        ) : tab === 'gateyard' ? (
+          <GateYardPage />
+        ) : tab === 'vehicledriver' ? (
+          <VehicleDriverPage />
+        ) : tab === 'dockdoors' ? (
+          <DockDoorsPage />
+        ) : tab === 'equipment' ? (
+          <EquipmentPage />
+        ) : tab === 'pallets' ? (
+          <PalletsPage />
+        ) : tab === 'putaway' ? (
+          <PutawayPage />
+        ) : tab === 'insights' ? (
+          <InsightsPage />
+        ) : tab === 'analytics' ? (
+          <AnalyticsPage />
+        ) : tab === 'abcclassification' ? (
+          <AbcClassificationPage />
+        ) : tab === 'simulation' ? (
+          <SimulationPage />
+        ) : tab === 'companysettings' ? (
+          <CompanySettingsPage />
+        ) : tab === 'inboundorders' ? (
+          <InboundOrdersPage />
+        ) : (
+          <UsersPage />
+        )}
+      </Suspense>
     </div>
   );
 }

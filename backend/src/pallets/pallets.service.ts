@@ -219,6 +219,28 @@ export class PalletsService {
   // for this pallet, enforcing single-SKU-per-pallet.
   async resolveLoadForScan(tx: any, params: { warehouseId: string; skuId: string; palletId: string; receiptLineId: string }): Promise<string> {
     const { warehouseId, skuId, palletId, receiptLineId } = params;
+
+    // 2026-09-06 hardening-pass fix — a real race here, not just a
+    // theoretical one: this whole function used to be a plain check-then-
+    // act (find the OPEN load, create one if none exists) with nothing
+    // stopping two near-simultaneous scans of the SAME physical pallet
+    // (a double-submit, a flaky-network client retry, or genuinely two
+    // staff scanning the same barcode a moment apart) from both seeing "no
+    // open load yet" and both creating one — silently violating "at most
+    // one open load per pallet." Unlike the sandbox's own lazy-create race
+    // (see simulation.service.ts's ensureSandbox/ensureSkuPool), this one
+    // can't be closed with a plain upsert() — "at most one OPEN load" is a
+    // CONDITIONAL uniqueness rule (only while status='OPEN'), not a plain
+    // column-level unique constraint Prisma's schema can express. A row
+    // lock on the Pallet itself is the correct fix instead: this call is
+    // always inside the caller's own scan()/approveScan() transaction, so
+    // a concurrent second call simply blocks here until the first commits,
+    // then re-reads the now-current, accurate state below — no reliance on
+    // catching a unique-constraint violation mid-transaction (which would
+    // otherwise risk poisoning the surrounding Postgres transaction, since
+    // Prisma doesn't auto-savepoint each query inside an interactive one).
+    await tx.$queryRaw`SELECT id FROM "Pallet" WHERE id = ${palletId} FOR UPDATE`;
+
     const pallet = await tx.pallet.findUnique({ where: { id: palletId } });
     if (!pallet || pallet.warehouseId !== warehouseId) throw new BadRequestException('Pallet not found in this warehouse.');
     if (!pallet.isActive) throw new BadRequestException(`Pallet "${pallet.code}" is inactive.`);

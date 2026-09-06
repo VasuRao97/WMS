@@ -278,10 +278,20 @@ export class SimulationService {
     for (let i = 0; i < toCreate; i++) {
       const n = existing.length + i + 1;
       const cls = classes[n % 3];
-      const sku = await this.prisma.sku.create({
-        data: {
+      const code = `${SIM_SKU_PREFIX}${cls}${n}`;
+      // 2026-09-06 hardening-pass fix: same lazy-create race already found
+      // and fixed once for the sandbox Warehouse/ProductCategory rows (see
+      // ensureSandbox above) — two concurrent Run calls (a double-click, two
+      // tabs, or React StrictMode's double-invoke in dev) could both see the
+      // pool short by the same count and both try to create the same SIM-
+      // code, the loser hitting a raw unique-constraint 500 instead of a
+      // graceful no-op. upsert() (keyed on Sku's own companyId+code unique
+      // constraint) makes "already exists" the normal outcome either way.
+      const sku = await this.prisma.sku.upsert({
+        where: { companyId_code: { companyId: user.companyId, code } },
+        create: {
           companyId: user.companyId,
-          code: `${SIM_SKU_PREFIX}${cls}${n}`,
+          code,
           description: `Simulated SKU ${cls}${n}`,
           categoryId,
           abcClass: cls,
@@ -289,6 +299,7 @@ export class SimulationService {
           hsnCode: '0000',
           storageUnits: { create: [{ unitType: 'EACH', qtyInBaseUom: 1, isPreferred: true }] },
         },
+        update: {},
       });
       existing.push({ id: sku.id, code: sku.code, abcClass: sku.abcClass });
     }

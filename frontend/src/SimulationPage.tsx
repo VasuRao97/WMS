@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import LocationsPlanView from './LocationsPlanView';
-import Locations3DView from './Locations3DView';
 import type { Location } from './LocationsPage';
 import type { ColorMode, Occupancy } from './occupancyColors';
+
+// 2026-09-06 hardening-pass fix: same reasoning as LocationsPage's own
+// identical change — Locations3DView pulls in the whole three/@react-
+// three/fiber/@react-three/drei stack, only needed once a viewer toggles
+// to 3D mode below. Lazy-loading it here too (not just in LocationsPage)
+// lets Vite split it into one shared chunk both pages defer equally,
+// rather than only one of the two real consumers actually deferring it.
+const Locations3DView = lazy(() => import('./Locations3DView'));
 
 // Putaway simulation (2026-09-06 — see [[wms-putaway-design]] in memory) —
 // "can we have a simulation for me to check our visuals? which uses our
@@ -275,7 +282,9 @@ function SimulationPage() {
           {planMode === '2d' ? (
             <LocationsPlanView locations={locations} warehouseLabel="Simulation Sandbox" colorMode={colorMode} occupancy={occupancy} />
           ) : (
-            <Locations3DView locations={locations} colorMode={colorMode} occupancy={occupancy} />
+            <Suspense fallback={<p style={{ marginTop: 16, color: '#666' }}>Loading 3D view…</p>}>
+              <Locations3DView locations={locations} colorMode={colorMode} occupancy={occupancy} />
+            </Suspense>
           )}
         </>
       )}
