@@ -3770,6 +3770,43 @@ comparable to the aisle's own walkway), rendering instantly with no wait — als
 reconfirming the camera-target fix from the section above still holds. `tsc --noEmit`/`tsc -b` both
 clean. Throwaway company cleaned up afterward.
 
+**Click-to-inspect gained SKU details (2026-09-06, same day, immediate follow-up)**: "when i click the
+bin it gives more info right? i need SKU details in it also" — the shared `DetailPanel`
+(`LocationDetailPanel.tsx`, used by both 2D/3D and by extension Simulation) only ever showed a
+location's STRUCTURAL fields (code, zone/storage type, level/depth, status) — every caller already
+had the occupancy overlay's `Occupancy[]` in hand for coloring purposes, but never passed the
+specific row for the SELECTED location into the panel itself.
+
+**Backend**: `LocationsService.occupancyByWarehouse()` already computed each occupied location's
+exact positive on-hand balance (`balanceByLocSku`) to pick the occupant SKU — it just discarded the
+number afterward. Now carries it through as a new `quantity` field on each returned row, no new
+query needed. **Frontend**: `Occupancy` (`occupancyColors.ts`) gained an optional `quantity` field;
+`DetailPanel` gained an optional `occupancy` prop and a new section below the structural fields —
+Occupant SKU, Class (color-swatched to match `ABC_CLASS_COLORS`), Category, and On-hand Qty when
+occupied, or a plain "Empty — no current occupant" line otherwise (confirmed showing this
+explicitly rather than omitting the section, so it reads as "genuinely nothing here," not an
+oversight). Both `LocationsPlanView.tsx` and `Locations3DView.tsx` needed only a one-line change
+each — both already built an `occupancyByLocationId` map for coloring, so passing
+`occupancy={occupancyByLocationId.get(selected.id)}` into `<DetailPanel>` was a pure passthrough of
+data already in scope, not a new fetch.
+
+**Simulation's own client-derived occupancy needed one more fix**: `SimulationPage.tsx` builds its
+`Occupancy[]` locally from revealed steps (no backend occupancy call, per the feature's own
+architecture) — its existing logic already let a LATER step overwrite an EARLIER one's SKU/Category/
+Class on a same-SKU top-up (correct — the last step's identity is the current truth), but a plain
+overwrite would have been wrong for `quantity`: a top-up ADDS to what's already on that pallet
+position rather than replacing it. Fixed by summing `quantity` across every revealed step landing on
+that location, keyed the same way the existing Map already dedupes by `locationId`.
+
+Verified live end-to-end (throwaway company `SIMDET1`): ran a real 10-unit simulation, clicked an
+occupied box via direct SVG dispatch (targeting a specific fill color to guarantee hitting an
+occupied one, not a random pixel) and confirmed the panel showed `Occupant SKU: SIM-A21`, `Class: A`,
+`Category: Simulation`, `On-hand Qty: 3`; clicked a neutral (`#f3f4f6`) box and confirmed it showed
+`Empty — no current occupant.` instead. Also confirmed directly via the real `GET /locations/
+occupancy` endpoint (not just Simulation's own derived version) that `quantity` comes through
+correctly there too — this fix applies to the real Locations Plan View exactly the same way, not
+just Simulation. `tsc --noEmit`/`tsc -b` both clean. Throwaway company cleaned up afterward.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full

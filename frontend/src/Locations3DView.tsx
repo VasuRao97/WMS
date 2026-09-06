@@ -443,7 +443,7 @@ function Locations3DView({ locations, colorMode, occupancy }: { locations: Locat
         <p style={{ position: 'absolute', bottom: 8, left: 12, fontSize: 11, color: '#888', margin: 0 }}>
           Drag to orbit, scroll to zoom, right-drag to pan. Click an aisle block (or check it above) to see its bins; click a bin for details.
         </p>
-        {selected && <DetailPanel location={selected} onClose={() => setSelected(null)} />}
+        {selected && <DetailPanel location={selected} occupancy={occupancyByLocationId.get(selected.id)} onClose={() => setSelected(null)} />}
       </div>
     </div>
   );

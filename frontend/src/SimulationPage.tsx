@@ -179,14 +179,19 @@ function SimulationPage() {
     };
   }, [playing, speed, steps.length, revealedCount >= steps.length]);
 
-  // Later steps win when a lane refills after suggestBin() sends a second
-  // unit to the same location (same-SKU top-up) — a plain Map keyed by
-  // locationId naturally keeps only the most recent occupant per box,
-  // matching what a real occupancy read would show either way.
+  // Later steps win on SKU/Category/Class when a lane refills after
+  // suggestBin() sends a second unit to the same location (same-SKU
+  // top-up) — a plain Map keyed by locationId naturally keeps only the
+  // most recent occupant identity per box, matching what a real occupancy
+  // read would show either way. `quantity` is different: a top-up ADDS to
+  // what's already there rather than replacing it, so it's summed across
+  // every step landing on that location (2026-09-06 — click-to-inspect
+  // gained an On-hand Qty line, "I need SKU details in it also").
   const occupancyMap = new Map<string, Occupancy>();
   for (const s of steps.slice(0, revealedCount)) {
     if (!s.locationId || s.needsBin) continue;
-    occupancyMap.set(s.locationId, { locationId: s.locationId, skuId: s.skuId, skuCode: s.skuCode, categoryId: s.categoryId, categoryName: s.categoryName, abcClass: s.abcClass as any });
+    const priorQty = occupancyMap.get(s.locationId)?.quantity ?? 0;
+    occupancyMap.set(s.locationId, { locationId: s.locationId, skuId: s.skuId, skuCode: s.skuCode, categoryId: s.categoryId, categoryName: s.categoryName, abcClass: s.abcClass as any, quantity: priorQty + s.quantity });
   }
   const occupancy: Occupancy[] = [...occupancyMap.values()];
 

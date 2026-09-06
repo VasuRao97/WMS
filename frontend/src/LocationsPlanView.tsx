@@ -372,7 +372,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
 
   return (
     <div style={{ position: 'relative' }}>
-      {selected && <DetailPanel location={selected} onClose={() => setSelected(null)} />}
+      {selected && <DetailPanel location={selected} occupancy={occupancyByLocationId.get(selected.id)} onClose={() => setSelected(null)} />}
       <p style={{ fontSize: 12, color: '#666', marginTop: 4, marginBottom: 12 }}>
         <strong>{warehouseLabel}</strong> — {aisles.length} aisle(s).{' '}
         {colorMode === 'structural'

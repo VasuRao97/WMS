@@ -601,6 +601,11 @@ export class LocationsService {
         categoryId: sku?.category?.id ?? null,
         categoryName: sku?.category?.name ?? null,
         abcClass: (sku?.abcClass || 'C').toUpperCase(),
+        // On-hand quantity at this location, for the click-to-inspect panel
+        // (2026-09-06 — "I need SKU details in it also") — the exact same
+        // positive balance already computed above, just carried through
+        // instead of discarded once it picked the occupant SKU.
+        quantity: balanceByLocSku.get(`${locationId}|${skuId}`) ?? 0,
       };
     });
   }

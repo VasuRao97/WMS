@@ -17,6 +17,11 @@ export type Occupancy = {
   categoryId: string | null;
   categoryName: string | null;
   abcClass: 'A' | 'B' | 'C';
+  // On-hand quantity at this location (2026-09-06 — click-to-inspect gained
+  // SKU details, "I need SKU details in it also") — optional so this type
+  // still fits data that predates the field (none currently does, but no
+  // caller is forced to supply it either).
+  quantity?: number;
 };
 
 export type ColorMode = 'structural' | 'category' | 'class';
