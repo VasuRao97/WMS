@@ -120,9 +120,29 @@ export class LocationsService {
       const block = data.block ? String(data.block).trim() : '';
       if (!block) errors.push('Block is required for Ground/Floor storage.');
       fields.block = block || undefined;
-      numField('depth', 'Depth (pallets deep)', true);
-      numField('width', 'Width (stacks wide)', true);
-      numField('height', 'Height (layers stacked)', false, 1);
+      // 2026-09-06 Ground/Floor redesign (see wms-putaway-design memory) —
+      // one row per pallet POSITION now, not one row per whole block. A
+      // bin (`block`) subdivides into `width`-many COLUMNS, each a
+      // single-file LIFO line `depth` positions deep — mechanically
+      // identical to a Rack lane, just laid flat on the floor. `rack` is
+      // REUSED as the column number within this bin (1..width) — same
+      // "meaning depends on storageType" convention this model already
+      // uses for depth/width/height; `depth` is reused with the EXACT SAME
+      // meaning Rack's own multi-deep lanes already give it (this pallet's
+      // position within its single-file line, 1=front/aisle-facing..N=
+      // back). `width` describes the WHOLE bin (its total column count) —
+      // required, but every row generated for the same block must carry
+      // the same value (not enforced at the DB level, same "known
+      // limitation, not a hard constraint" tier as several other cross-row
+      // invariants in this model). `height` stays fixed at 1 — no vertical
+      // pallet-on-pallet stacking on the ground, confirmed explicitly
+      // ("all are on ground") — no longer accepted as an input at all.
+      const column = data.rack ? String(data.rack).trim() : '';
+      if (!column) errors.push('Column number is required for Ground/Floor storage (which column, 1..width, within the bin).');
+      fields.rack = column || undefined;
+      numField('depth', 'Depth (this pallet\'s position within its column)', true);
+      numField('width', 'Width (how many columns the whole bin has)', true);
+      fields.height = 1;
     } else if (storageType === 'STILLAGE') {
       const stack = data.stack ? String(data.stack).trim() : '';
       if (!stack) errors.push('Stack is required for Stillage storage.');
@@ -151,7 +171,12 @@ export class LocationsService {
         .join('-');
     }
     if (storageType === 'GROUND_FLOOR') {
-      return ['GF', f.aisle, f.block ? `BLK${f.block}${suffix}` : null].filter(Boolean).join('-');
+      // 2026-09-06 — one row per pallet position now (see buildLocationFields'
+      // comment on this storageType), so the code needs to carry column
+      // (`rack`, reused) and position-within-column (`depth`) to stay
+      // unique per row, same reasoning Rack's own `-D{n}` suffix already
+      // has for a multi-deep lane.
+      return ['GF', f.aisle, f.block ? `BLK${f.block}${suffix}` : null, f.rack ? `C${f.rack}` : null, f.depth ? `D${f.depth}` : null].filter(Boolean).join('-');
     }
     if (storageType === 'STILLAGE') {
       return ['ST', f.aisle, f.stack].filter(Boolean).join('-');
@@ -177,11 +202,12 @@ export class LocationsService {
   }
 
   // Derived, not stored — "how many positions this bin holds" only means
-  // something for ground/stillage storage (rack bins are individually
-  // addressable, capacity is implicitly 1). Same "always derived, never
-  // stored" philosophy as on-hand stock.
+  // something for stillage storage now (rack bins, and Ground/Floor since
+  // its 2026-09-06 redesign, are both individually addressable — one row
+  // per real pallet position — capacity is implicitly 1). Same "always
+  // derived, never stored" philosophy as on-hand stock.
   private attachCapacity(loc: any) {
-    const capacity = loc.storageType === 'GROUND_FLOOR' || loc.storageType === 'STILLAGE' ? (loc.depth || 1) * (loc.width || 1) * (loc.height || 1) : undefined;
+    const capacity = loc.storageType === 'STILLAGE' ? (loc.depth || 1) * (loc.width || 1) * (loc.height || 1) : undefined;
     return { ...loc, capacity };
   }
 
@@ -375,14 +401,38 @@ export class LocationsService {
         for (const rack of expandRange(undefined)) for (const level of levels) for (const bin of bins) for (const depth of depths) rows.push({ rack, level, bin, depth });
       }
     } else if (storageType === 'GROUND_FLOOR') {
+      // 2026-09-06 redesign (see wms-putaway-design memory) — a bin (one
+      // Block) now expands into `width × depth` real rows, one per pallet
+      // position, instead of the single aggregate-capacity row this used
+      // to produce. The generator's own INPUT shape is unchanged (staff
+      // still just type Width/Depth once per batch) — only the OUTPUT row
+      // count changes. `rack` (reused as column number, 1..width) and
+      // `depth` (position within that column, 1..depth) are now generated
+      // per position, same nested-loop shape Rack's own generator already
+      // uses for rack x level x bin x depth.
+      const widthNum = Number(data.width);
+      const depthNum = Number(data.depth);
+      if (!Number.isInteger(widthNum) || widthNum <= 0) {
+        throw new BadRequestException(['Width (how many columns the bin has) must be a positive whole number.']);
+      }
+      if (!Number.isInteger(depthNum) || depthNum <= 0) {
+        throw new BadRequestException(['Depth (positions per column) must be a positive whole number.']);
+      }
       const blockRanges = [data.blockRange, data.blockRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
       rows = [];
+      const pushBinRows = (block: string | undefined, isSecondary?: boolean) => {
+        for (let column = 1; column <= widthNum; column++) {
+          for (let depth = 1; depth <= depthNum; depth++) {
+            rows.push({ block, rack: String(column), depth, width: widthNum, isSecondary });
+          }
+        }
+      };
       blockRanges.forEach((blockRangeStr, rangeIndex) => {
         const isSecondary = rangeIndex === 1;
-        for (const block of expandRange(blockRangeStr)) rows.push({ block, depth: data.depth, width: data.width, height: data.height, isSecondary });
+        for (const block of expandRange(blockRangeStr)) pushBinRows(block, isSecondary);
       });
       if (blockRanges.length === 0) {
-        for (const block of expandRange(undefined)) rows.push({ block, depth: data.depth, width: data.width, height: data.height });
+        for (const block of expandRange(undefined)) pushBinRows(block);
       }
     } else {
       // STILLAGE — no "second side" concept; a stillage stack isn't a

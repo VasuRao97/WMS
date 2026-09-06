@@ -1,12 +1,10 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
-import { buildRackName, displayCode, laneKeyOf } from '../common/rack-name.util';
+import { buildRackName, displayCode, laneKeyOf, RACK_STORAGE_TYPES } from '../common/rack-name.util';
 import { buildOutboundProximityRanker } from '../common/dock-zone.util';
 
-// Rack storage types (RACK_STORAGE_TYPES in rack-name.util.ts, used here only
-// indirectly through laneKeyOf()/buildRackName() — this file no longer needs
-// it directly, see the 2026-09-06 hardening-pass cleanup) share the LIFO
+// Rack storage types share the LIFO
 // depth constraint (see
 // schema.prisma's comment on Location.depth and [[wms-putaway-design]] in
 // memory) — SPR, Drive-in, and ASRS all use `depth`; the constraint is
@@ -256,6 +254,72 @@ export class PutawayTasksService {
       for (const s of occupantSkus) abcClassBySkuId.set(s.id, (s.abcClass || 'C').toUpperCase());
     }
 
+    // 2026-09-06 — Ground/Floor Putaway (see wms-putaway-design memory for
+    // the full design conversation). Deliberately dispatches to two fully
+    // SEPARATE methods below rather than threading a storageType branch
+    // through one shared candidate loop — the client's own explicit ask
+    // ("keep all logic for different storage type separate, like ground is
+    // sep, rack is sep"), same discipline Drive-in already got split out
+    // from SPR/ASRS with. Both methods are pure, synchronous, in-memory
+    // logic — no further DB queries needed, everything they read was
+    // already fetched above in this shared setup.
+    const rackLocations = locations.filter((l: any) => RACK_STORAGE_TYPES.includes(l.storageType));
+    const groundLocations = locations.filter((l: any) => l.storageType === 'GROUND_FLOOR');
+    const ctx = {
+      skuId,
+      abcClass,
+      storageTypeRowByType,
+      balanceByLocSku,
+      skuBalancesByLocation,
+      lastReceivedDateByLocSku,
+      pendingSkuByLocation,
+      targetedLocationIds,
+      stillIncomingSkuIds,
+      abcClassBySkuId,
+      exceptionActive,
+      agingGranularity,
+      newStockDate,
+      excludeLocationIds,
+      outboundRanker,
+      movements,
+    };
+
+    // Rack tried first, Ground as fallback — a simple, explicitly-flagged
+    // placeholder ordering for the (probably rare) case where one Category
+    // is eligible for BOTH storage types in the same warehouse; not a
+    // decision that's actually been discussed, and one more thing the
+    // future FMS×ABC study (see wms-abc-velocity-design memory) may
+    // eventually want to revisit rather than a fixed priority.
+    const rackResult = this.suggestRackBin(rackLocations, ctx);
+    if (rackResult) return rackResult;
+    return this.suggestGroundBin(groundLocations, ctx);
+  }
+
+  // ------------------------------------------------------------
+  // RACK bin suggestion (SPR/Drive-in/ASRS) — moved out of suggestBin()
+  // verbatim, 2026-09-06, purely to give it the same clean separation from
+  // Ground/Floor's own logic below. No behavior change from before this
+  // split; every comment/rule here predates the split.
+  // ------------------------------------------------------------
+  private suggestRackBin(locations: any[], ctx: any): string | null {
+    const {
+      skuId,
+      abcClass,
+      storageTypeRowByType,
+      balanceByLocSku,
+      skuBalancesByLocation,
+      lastReceivedDateByLocSku,
+      pendingSkuByLocation,
+      targetedLocationIds,
+      stillIncomingSkuIds,
+      abcClassBySkuId,
+      exceptionActive,
+      agingGranularity,
+      newStockDate,
+      excludeLocationIds,
+      outboundRanker,
+    } = ctx;
+
     // group into lanes
     const lanes = new Map<string, any[]>();
     for (const loc of locations) {
@@ -429,6 +493,318 @@ export class PutawayTasksService {
         if (la !== lb) return preferFar ? lb - la : la - lb;
       }
 
+      const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
+      const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
+      return preferFar ? fb - fa : fa - fb;
+    });
+
+    return candidates[0].locationId;
+  }
+
+  // Restrictiveness order among the four classes, most restrictive first —
+  // used to pick which class's rules govern a bin holding more than one
+  // class's worth of SKU (the incoming one plus every current occupant),
+  // same "most-restrictive-wins" principle suggestRackBin() already uses,
+  // just needing a real ordering here since Ground's D class didn't exist
+  // as a concept in Rack's own cap math.
+  private static readonly GROUND_CLASS_RESTRICTIVENESS = ['A', 'B', 'C', 'D'];
+  private mostRestrictiveGroundClass(classes: string[]): string {
+    let best = 'D';
+    let bestRank = PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.length;
+    for (const cls of classes) {
+      const rank = PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.indexOf(cls);
+      const effectiveRank = rank === -1 ? PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.indexOf('C') : rank;
+      if (effectiveRank < bestRank) {
+        bestRank = effectiveRank;
+        best = PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS[effectiveRank];
+      }
+    }
+    return best;
+  }
+
+  // Whether a column must stay internally single-SKU for this class, per
+  // WarehouseStorageType.respectsColumnBoundariesClassA/B/C/D — see
+  // schema.prisma's comment and the Ground design conversation in
+  // wms-putaway-design. Defaults true (the safe, expected behavior) for any
+  // unrecognized class rather than silently allowing free mixing.
+  private respectsColumnBoundaries(row: any, cls: string): boolean {
+    const field = `respectsColumnBoundariesClass${cls}`;
+    return row && field in row ? !!row[field] : true;
+  }
+
+  // A column position is CLOSED to new putaway once it's had a real
+  // pick/dispatch-type decrease since it last returned to exactly zero,
+  // until it returns to fully empty again — the column-lifecycle rule from
+  // the Ground design conversation (wms-putaway-design memory), the
+  // client's own explicit call once asked whether to relax it for a
+  // same-SKU top-up: "yes we cannot use it, we will do a consolidation
+  // strategy for these" (i.e. the reslotting engine's job, not Putaway's).
+  // Walks each Ground location's own movement history (already fetched,
+  // ordered by createdAt ascending, for this whole suggestBin() call) once;
+  // dormant until Picking exists — no negative movement is ever written to
+  // a Location yet — but correct and ready the moment it does, rather than
+  // needing a second pass through this code later.
+  private computeClosedGroundLocationIds(movements: any[], groundLocationIds: Set<string>): Set<string> {
+    const closed = new Set<string>();
+    const byLocation = new Map<string, any[]>();
+    for (const m of movements) {
+      if (!groundLocationIds.has(m.locationId)) continue;
+      if (!byLocation.has(m.locationId)) byLocation.set(m.locationId, []);
+      byLocation.get(m.locationId)!.push(m);
+    }
+    for (const [locId, locMovements] of byLocation) {
+      let running = 0;
+      let depletedSinceZero = false;
+      for (const m of locMovements) {
+        const qty = Number(m.quantity);
+        if (qty < 0 && running > 0) depletedSinceZero = true;
+        running += qty;
+        if (running <= 0) {
+          running = 0;
+          depletedSinceZero = false;
+        }
+      }
+      if (depletedSinceZero) closed.add(locId);
+    }
+    return closed;
+  }
+
+  // ------------------------------------------------------------
+  // GROUND/FLOOR bin suggestion — 2026-09-06, see the full design
+  // conversation in the wms-putaway-design memory. DELIBERATELY a fully
+  // separate method from suggestRackBin() above, not a shared function
+  // with storageType branches threaded through it — the client's own
+  // explicit ask, same discipline Drive-in already got split out from
+  // SPR/ASRS with. Ground's physical shape genuinely needs TWO levels of
+  // grouping where Rack only ever needed one: a BIN (one physical
+  // footprint, `aisle+block+flankNumber`) subdivides into COLUMNS (single-
+  // file LIFO lines, `aisle+block+flankNumber+rack` where `rack` is reused
+  // as the column number) — mechanically identical to a Rack lane, just
+  // laid flat on the floor instead of racked.
+  // ------------------------------------------------------------
+  private suggestGroundBin(groundLocations: any[], ctx: any): string | null {
+    if (groundLocations.length === 0) return null;
+    const {
+      skuId,
+      abcClass,
+      storageTypeRowByType,
+      balanceByLocSku,
+      skuBalancesByLocation,
+      lastReceivedDateByLocSku,
+      pendingSkuByLocation,
+      targetedLocationIds,
+      stillIncomingSkuIds,
+      abcClassBySkuId,
+      exceptionActive,
+      agingGranularity,
+      newStockDate,
+      excludeLocationIds,
+      outboundRanker,
+      movements,
+    } = ctx;
+
+    const row: any = storageTypeRowByType.get('GROUND_FLOOR');
+    if (!row) return null;
+
+    const groundLocationIds = new Set(groundLocations.map((l: any) => l.id));
+    const closedLocationIds = this.computeClosedGroundLocationIds(movements, groundLocationIds);
+
+    const binKeyOf = (loc: any) => `${loc.aisle}|${loc.block}|${loc.flankNumber}`;
+    const columnKeyOf = (loc: any) => `${binKeyOf(loc)}|${loc.rack}`;
+
+    const bins = new Map<string, any[]>();
+    for (const loc of groundLocations) {
+      const key = binKeyOf(loc);
+      if (!bins.has(key)) bins.set(key, []);
+      bins.get(key)!.push(loc);
+    }
+
+    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null; aisle: string | null; storageType: string };
+    const candidates: Candidate[] = [];
+
+    for (const binLocations of bins.values()) {
+      // Distinct occupant SKUs across the WHOLE BIN (every column pooled
+      // together) — same "whole shared unit, not per-position" resolution
+      // as Rack's own lane, just one grouping level up (bin instead of
+      // lane, since a Ground bin's columns are the SKU-sharing eligibility
+      // unit here).
+      const occupantSkuIds = new Set<string>();
+      for (const loc of binLocations) {
+        const perLocation = skuBalancesByLocation.get(loc.id);
+        if (perLocation) for (const [sid, qty] of perLocation) if (qty > 0) occupantSkuIds.add(sid);
+        const pendingSku = pendingSkuByLocation.get(loc.id);
+        if (pendingSku) occupantSkuIds.add(pendingSku);
+      }
+
+      const occupantClasses = [...occupantSkuIds].map((id) => abcClassBySkuId.get(id) || 'C');
+      const classesInPlay = [abcClass, ...occupantClasses];
+      const mostRestrictiveClass = this.mostRestrictiveGroundClass(classesInPlay);
+      const boundaryRespected = this.respectsColumnBoundaries(row, mostRestrictiveClass);
+
+      let binEligible = true;
+
+      if (occupantSkuIds.size === 0) {
+        binEligible = true;
+      } else if (occupantSkuIds.size === 1 && occupantSkuIds.has(skuId)) {
+        // Same-SKU top-up — handled at column level below (aging-gated);
+        // bin-level eligibility is fine regardless of the boundary toggle.
+        binEligible = true;
+      } else if (boundaryRespected) {
+        // Column-respecting sharing (A/B/C's default) — same
+        // most-restrictive-wins cap math as Rack, counting distinct SKUs
+        // across this bin's COLUMNS instead of a lane's depth positions.
+        // "Still incoming" applies here too, same reasoning as Rack: B/C
+        // only (redundant once boundaries are respected AND the class is
+        // A, since A's cap of 1 is already exclusive; meaningless once
+        // boundaries aren't respected at all).
+        if (!exceptionActive) {
+          const anyOccupantStillIncoming = [...occupantSkuIds].some((id) => stillIncomingSkuIds.has(id));
+          if (anyOccupantStillIncoming) {
+            binEligible = false;
+          } else {
+            const caps = classesInPlay.map((cls) => this.maxSkusForClass(row, cls));
+            const finiteCaps = caps.filter((c): c is number => c !== null);
+            const effectiveCap = finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
+            const columnsOccupied = new Set(
+              binLocations
+                .filter((l: any) => (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(l.id))
+                .map((l: any) => l.rack),
+            ).size;
+            if (effectiveCap !== null && columnsOccupied >= effectiveCap) binEligible = false;
+          }
+        }
+      } else {
+        // Boundary NOT respected for this class (D's default, or C opted
+        // in) — free per-pallet mixing, no SKU-count cap at all; the only
+        // remaining question is whether there's any genuinely free
+        // position left, checked below.
+        binEligible = true;
+      }
+
+      if (!binEligible) continue;
+
+      // Column/position selection within this eligible bin.
+      const columns = new Map<string, any[]>();
+      for (const loc of binLocations) {
+        const key = columnKeyOf(loc);
+        if (!columns.has(key)) columns.set(key, []);
+        columns.get(key)!.push(loc);
+      }
+
+      let target: any = null;
+
+      if (boundaryRespected) {
+        // Prefer topping up an existing same-SKU column whose age matches
+        // and isn't closed (confirmed this will be the RARE case — the
+        // ordinary case is opening the next unused column, lowest column
+        // number first).
+        const sortedColumns = [...columns.values()].sort((a, b) => (Number(a[0].rack) || 0) - (Number(b[0].rack) || 0));
+        let bestColumn: any[] | null = null;
+        for (const columnLocations of sortedColumns) {
+          if (columnLocations.some((l: any) => closedLocationIds.has(l.id))) continue;
+          const colOccupants = new Set<string>();
+          for (const loc of columnLocations) {
+            const perLocation = skuBalancesByLocation.get(loc.id);
+            if (perLocation) for (const [sid, qty] of perLocation) if (qty > 0) colOccupants.add(sid);
+          }
+          if (colOccupants.size !== 1 || !colOccupants.has(skuId)) continue;
+          const hasRoom = columnLocations.some(
+            (l: any) => (balanceByLocSku.get(`${l.id}|${skuId}`) || 0) <= 0 && !targetedLocationIds.has(l.id) && !excludeLocationIds.includes(l.id),
+          );
+          if (!hasRoom) continue;
+          let existingDate: Date | null = null;
+          for (const loc of columnLocations) {
+            const d = lastReceivedDateByLocSku.get(`${loc.id}|${skuId}`);
+            if (d) existingDate = d;
+          }
+          if (existingDate && newStockDate && !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)) continue;
+          bestColumn = columnLocations;
+          break;
+        }
+        if (!bestColumn) {
+          bestColumn =
+            sortedColumns.find((columnLocations) => {
+              if (columnLocations.some((l: any) => closedLocationIds.has(l.id))) return false;
+              const hasAnyOccupant = columnLocations.some(
+                (l: any) => (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(l.id),
+              );
+              return !hasAnyOccupant;
+            }) ?? null;
+        }
+        if (bestColumn) {
+          // Deepest-first fill within the chosen column — same convention
+          // Rack/Drive-in already use (an MHE pushes each new pallet all
+          // the way to the back first).
+          const sortedPositions = [...bestColumn].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0));
+          target =
+            sortedPositions.find(
+              (loc: any) =>
+                (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 && !targetedLocationIds.has(loc.id) && !excludeLocationIds.includes(loc.id),
+            ) ?? null;
+        }
+      } else {
+        // Free-mixing mode — no column purity required; prefer completing
+        // the fullest column first (same "prefer the fullest" principle as
+        // everywhere else in this codebase), deepest empty position within
+        // it, skipping closed columns exactly as the boundary-respecting
+        // path does.
+        const ranked = [...columns.values()]
+          .filter((columnLocations) => !columnLocations.some((l: any) => closedLocationIds.has(l.id)))
+          .map((columnLocations) => ({
+            columnLocations,
+            occupied: columnLocations.filter(
+              (l: any) => (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(l.id),
+            ).length,
+          }))
+          .sort((a, b) => b.occupied - a.occupied);
+        for (const { columnLocations } of ranked) {
+          const sortedPositions = [...columnLocations].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0));
+          // Free-mixing means a column can hold several different SKUs at
+          // once, so "is this position free" must check for NO occupant AT
+          // ALL, not just "no stock of THIS SKU" — the same real distinction
+          // Rack's own target-finding already has to make, but one that
+          // never came up in suggestRackBin()/the boundary-respecting path
+          // above, since both of those only ever pick a column that's
+          // either wholly this-SKU or wholly empty to begin with.
+          const found = sortedPositions.find(
+            (loc: any) =>
+              !targetedLocationIds.has(loc.id) &&
+              !excludeLocationIds.includes(loc.id) &&
+              ![...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some((qty: number) => qty > 0),
+          );
+          if (found) {
+            target = found;
+            break;
+          }
+        }
+      }
+
+      if (!target) continue;
+
+      const occupancyCount = binLocations.filter(
+        (loc: any) => (skuBalancesByLocation.get(loc.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(loc.id),
+      ).length;
+
+      candidates.push({ locationId: target.id, occupancyCount, flankNumber: target.flankNumber ?? null, aisle: target.aisle ?? null, storageType: target.storageType });
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Interim cross-bin preference, until the future FMS×ABC combined-
+    // classification study (wms-abc-velocity-design memory) replaces it —
+    // the client's own explicit call: "we will make a ABC/FMS study for
+    // all ground + rack etc to find best one for putaway." Ships now with
+    // the same kind of placeholder Topic 2 already used for an
+    // unconfigured warehouse's dock zones: prefer the fullest eligible
+    // bin, then dock-relative Outbound proximity, then flank number.
+    const preferFar = abcClass !== 'A' && abcClass !== 'B';
+    candidates.sort((a, b) => {
+      if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
+      if (outboundRanker) {
+        const ra = a.aisle != null ? outboundRanker(a.aisle) : Number.MAX_SAFE_INTEGER;
+        const rb = b.aisle != null ? outboundRanker(b.aisle) : Number.MAX_SAFE_INTEGER;
+        if (ra !== rb) return preferFar ? rb - ra : ra - rb;
+      }
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
       return preferFar ? fb - fa : fa - fb;

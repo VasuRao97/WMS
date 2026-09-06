@@ -674,9 +674,16 @@ function LocationsPage() {
                     <input type="checkbox" checked={genMirrorBlock} onChange={(e) => setGenMirrorBlock(e.target.checked)} />
                     Mirror same numbers on other side
                   </label>
-                  <input placeholder="Depth (pallets deep) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="Width (stacks wide) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="Height (layers, default 1)" value={genHeight} onChange={(e) => setGenHeight(e.target.value)} style={{ width: 190 }} />
+                  <input placeholder="Width (columns in this bin) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 190 }} />
+                  <input placeholder="Depth (pallets deep per column) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 220 }} />
+                  {/* 2026-09-06 Ground/Floor redesign — no Height input here
+                      any more: this now generates one real row per pallet
+                      position (Width columns x Depth deep each), and
+                      Ground never stacks vertically ("all are on ground",
+                      confirmed explicitly) — Height is always fixed to 1
+                      server-side regardless of any input, so showing a
+                      field for it would just mislead staff into thinking
+                      it does something. See wms-putaway-design memory. */}
                 </>
               )}
 
@@ -796,10 +803,17 @@ function LocationsPage() {
 
               {isGround && (
                 <>
+                  {/* 2026-09-06 Ground/Floor redesign (see wms-putaway-design
+                      memory) — one row per pallet position now: `rack` is
+                      reused as the column number within the bin (same
+                      field/meaning Rack's own edit form already exposes),
+                      `depth` is this pallet's position within that column.
+                      No Height input any more — Ground never stacks
+                      vertically, it's always forced to 1 server-side. */}
                   <input placeholder="Block *" value={block} onChange={(e) => setBlock(e.target.value)} required style={{ width: 100 }} />
-                  <input placeholder="Depth (pallets deep) *" value={depth} onChange={(e) => setDepth(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="Width (stacks wide) *" value={width} onChange={(e) => setWidth(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="Height (layers, default 1)" value={height} onChange={(e) => setHeight(e.target.value)} style={{ width: 190 }} />
+                  <input placeholder="Column *" value={rack} onChange={(e) => setRack(e.target.value)} required style={{ width: 100 }} />
+                  <input placeholder="Width (columns in this bin) *" value={width} onChange={(e) => setWidth(e.target.value)} required style={{ width: 190 }} />
+                  <input placeholder="Depth (this pallet's position within its column) *" value={depth} onChange={(e) => setDepth(e.target.value)} required style={{ width: 260 }} />
                 </>
               )}
 
