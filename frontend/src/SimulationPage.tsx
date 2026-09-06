@@ -62,20 +62,27 @@ function SimulationPage() {
   // Sandbox layout config (2026-09-06 — "add option to tell which level and
   // depth" / "which kind of storage", then a same-day follow-up: "add
   // feature of length also, just 3 is too less") — Aisles alone stays
-  // fixed; Storage Type is restricted to the three rack types Putaway's
-  // suggestBin() actually has real logic for (SPR/Drive-in/ASRS — Ground/
-  // Floor and Stillage would just always come back "needs bin" today).
+  // fixed; Storage Type is restricted to the storage types Putaway's
+  // suggestBin() actually has real logic for (SPR/Drive-in/ASRS/Ground-
+  // Floor — Stillage would still always come back "needs bin" today).
   // Sent along with every Run — the backend only rebuilds the sandbox's
   // layout if this doesn't already match what's there, so running again
   // with the same settings never wipes anything. "Length" is the UI label
-  // for what the backend calls `racks` (how many rack positions run down
-  // one flank of an aisle) — matching real warehouse terminology would call
-  // this "Racks," but the client's own word for it was "length," so that's
-  // what the label says.
+  // for what the backend calls `racks` — how many rack positions run down
+  // one flank of an aisle for SPR/Drive-in/ASRS, but for Ground/Floor
+  // (added 2026-09-06, see [[wms-putaway-design]]) the SAME field means how
+  // many physical BINS run down one flank instead — reused rather than
+  // adding a second field, same "meaning depends on storage type"
+  // convention this codebase already uses everywhere (Location.rack/depth/
+  // width themselves). "Levels" is relabeled "Width" for Ground/Floor,
+  // since the backend reuses that same field as "columns per bin" there
+  // (Ground never stacks vertically, so "Levels" itself is meaningless for
+  // it) — see isGround below.
   const [storageType, setStorageType] = useState('SPR');
   const [levels, setLevels] = useState('3');
   const [depth, setDepth] = useState('1');
   const [racks, setRacks] = useState('3');
+  const isGround = storageType === 'GROUND_FLOOR';
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<SimStep[]>([]);
   const [revealedCount, setRevealedCount] = useState(0);
@@ -232,10 +239,18 @@ function SimulationPage() {
               <option value="SPR">SPR</option>
               <option value="DRIVE_IN">Drive-in</option>
               <option value="ASRS">ASRS</option>
+              <option value="GROUND_FLOOR">Ground/Floor</option>
             </select>
-            <label style={{ fontSize: 13 }}>Length:</label>
+            {/* 2026-09-06 — Ground/Floor added (see [[wms-putaway-design]]).
+                Same three inputs, relabeled for Ground since the backend
+                reuses these exact fields with different meanings there:
+                "Length" -> bins per flank (was rack positions per flank),
+                "Levels" -> "Width" -> columns per bin (Ground never stacks
+                vertically, so real Levels has no meaning for it), "Depth"
+                keeps its identical meaning either way. */}
+            <label style={{ fontSize: 13 }}>{isGround ? 'Bins (Length):' : 'Length:'}</label>
             <input type="number" min={1} max={30} value={racks} onChange={(e) => setRacks(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
-            <label style={{ fontSize: 13 }}>Levels:</label>
+            <label style={{ fontSize: 13 }}>{isGround ? 'Width (columns):' : 'Levels:'}</label>
             <input type="number" min={1} max={10} value={levels} onChange={(e) => setLevels(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
             <label style={{ fontSize: 13 }}>Depth:</label>
             <input type="number" min={1} max={6} value={depth} onChange={(e) => setDepth(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />

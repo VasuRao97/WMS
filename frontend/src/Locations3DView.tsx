@@ -34,8 +34,11 @@ import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 // position into one box per real position) — same real, persisted fields,
 // same "position pairs by index not by raw number" rule. What's different
 // in 3D: Level becomes a genuine Y (vertical) position instead of collapsed
-// text, Ground/Floor and Stillage's depth×width×height render as real box
-// dimensions instead of text in one fixed-size box, and — new this pass —
+// text, Stillage's depth×width×height render as real box dimensions
+// instead of text in one fixed-size box (Ground/Floor did too, until its
+// own 2026-09-06 rewrite to one row per real column×depth position — see
+// buildBoxesForAisle's GROUND_FLOOR branch, which spreads real per-position
+// boxes within each block instead), and — new this pass —
 // aisles themselves are laid out side by side along a global X axis, same
 // "aisle 1 first, each next one further along" ordering 2D's own
 // right-to-left placement already established (simplified here to a plain
@@ -102,11 +105,44 @@ function buildBoxesForAisle(rows: Location[]): BoxSpec[] {
             boxes.push({ key: row.id, location: row, x, y, z, w: RACK_BOX_SIZE, h: LEVEL_HEIGHT * 0.85, d: RACK_BOX_SIZE });
           });
         });
+      } else if (storageType === 'GROUND_FLOOR') {
+        // Ground/Floor: one real row per column×depth position since the
+        // 2026-09-06 Ground rewrite (previously one row per whole block).
+        // The old "one box per row" logic below (still correct for
+        // Stillage, which is unaffected) would now stack every column/depth
+        // position of one block exactly on top of itself at the same
+        // x/y/z — a real overlapping-boxes bug, not a design choice, caught
+        // while investigating this same rewrite's 2D label text. Spread
+        // real positions within the block's own footprint instead: columns
+        // side by side along z (same direction separate blocks already
+        // spread), depths along x away from the aisle (same "deepest
+        // position furthest from the aisle" rule Rack's own depth-splitting
+        // already uses) — matching the physical model agreed in the Ground
+        // design conversation ("one bin (4x4) means 4 wide and 4 deep").
+        const columnKey = (r: Location) => (r.rack != null ? String(r.rack) : '1');
+        const columns = uniqSorted(atPos.map(columnKey));
+        const depthKey = (r: Location) => (r.depth != null ? String(r.depth) : '1');
+        columns.forEach((colVal, colIndex) => {
+          const atColumn = atPos.filter((r) => columnKey(r) === colVal);
+          const colZ = z + (colIndex - (columns.length - 1) / 2) * GROUND_UNIT;
+          const depths = uniqSorted(atColumn.map(depthKey));
+          depths.forEach((dVal, depthIndex) => {
+            const atDepth = atColumn.filter((r) => depthKey(r) === dVal);
+            const x = sign * (WALKWAY_HALF_WIDTH + GROUND_UNIT / 2 + depthIndex * GROUND_UNIT);
+            atDepth.forEach((row) => {
+              const h = (row.height ?? 1) * GROUND_UNIT;
+              const y = h / 2;
+              boxes.push({ key: row.id, location: row, x, y, z: colZ, w: GROUND_UNIT, h, d: GROUND_UNIT });
+            });
+          });
+        });
       } else {
-        // Ground/Floor or Stillage — one box per row, sized by its own
-        // depth×width×height counts (same "text, not sub-boxes" universe
-        // 2D stays in for these two types — here it's real dimensions
-        // instead of text, but still one box per row, no further splitting).
+        // Stillage — one row per stack, one box per row, sized by its own
+        // depth×width×height counts (same "text, not sub-boxes" universe 2D
+        // stays in for this type — here it's real dimensions instead of
+        // text, but still one box per row, no further splitting). Ground/
+        // Floor used to share this exact branch too, before its 2026-09-06
+        // rewrite split it out above.
         atPos.forEach((row) => {
           const w = (row.width ?? 1) * GROUND_UNIT;
           const h = (row.height ?? 1) * GROUND_UNIT;

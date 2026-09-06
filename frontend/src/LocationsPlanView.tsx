@@ -53,10 +53,16 @@ import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 //   position genuinely is a separate Location row (2026-08-25: an earlier
 //   version showed one fixed-size box with "Depth 1-3" as text, which read
 //   as a single pallet even for a 3-deep lane — corrected to show the real
-//   count). Ground/Floor and Stillage still show depth/width/height as text
-//   in one box for now — their depth is a dimension on one single row, not
-//   multiple separate rows the way Rack's is, and whether they should also
-//   get real sub-boxes is a separate, still-open question.
+//   count). Stillage still shows depth/width/height as text in one box for
+//   now — its depth is a dimension on one single row, not multiple separate
+//   rows the way Rack's is, and whether it should also get real sub-boxes is
+//   a separate, still-open question. Ground/Floor moved off this same
+//   one-row-per-block shape on 2026-09-06 (real Putaway needed one row per
+//   column×depth position, not text) — it still draws as one box per block
+//   for now (no per-column/per-depth sub-boxes yet, same open question as
+//   Stillage), but its printed depth is now the real max across that
+//   block's rows, not one arbitrary row's own value, and its third line
+//   shows Category instead of a row count (see buildCell below).
 // - Zone Type coloring is deliberately not built yet (parked for later).
 
 const CELL_W = 110;
@@ -200,8 +206,30 @@ function buildCell(posVal: string, rows: Location[]): Cell {
     return { posVal, boxes, totalWidth: boxes.reduce((s, b) => s + b.width, 0) };
   }
 
-  // Ground/Floor and Stillage: still one box, dimensions as text — see the
-  // file-level comment above on why this stays deferred for now.
+  if (storageType === 'GROUND_FLOOR') {
+    // One row per real column×depth position since the 2026-09-06 Ground
+    // rewrite (previously one aggregate row per block) — `rows` here is
+    // every position in this one block, so `rows[0]`'s own `depth` is just
+    // ONE column's position number (often 1), not the whole bin's real
+    // depth. Take the max across every row instead so the printed `d` is
+    // the true footprint, matching what Rack already does for its own
+    // multi-position lanes. `width` (total columns) and `height` (fixed 1)
+    // are the same on every row in the block, so rows[0] is fine for those.
+    const d = rows.reduce((max, r) => Math.max(max, r.depth ?? 1), 1);
+    const w = rows[0].width ?? 1;
+    const h = 1;
+    // Category, not a position/row count — same reasoning already applied
+    // to Rack above: "N positions" would just restate d×w, and read as
+    // confusingly close to the actual per-row Column/Depth fields.
+    const lines = [typeLabel, `${d}×${w}×${h}`];
+    const category = rows[0].category?.name;
+    if (category) lines.push(category);
+    const box: Box = { key: rows[0].id, lines, hasInactive: rows.some((r) => !r.isActive), width: CELL_W, storageType };
+    return { posVal, boxes: [box], totalWidth: CELL_W };
+  }
+
+  // Stillage: still one box, dimensions as text, one real row per stack —
+  // see the file-level comment above on why this stays deferred for now.
   const d = rows[0].depth ?? 1;
   const w = rows[0].width ?? 1;
   const h = rows[0].height ?? 1;

@@ -34,13 +34,13 @@ const DEFAULT_STORAGE_TYPE = 'SPR';
 // storage", then a same-day follow-up: "add feature of length also, just 3
 // is too less") — Aisles alone stays fixed, since nothing was asked about
 // it and 3 aisles is already plenty to exercise the slicer/multi-aisle
-// pieces of the Plan View. Storage Type is restricted to the three rack
-// types RACK_STORAGE_TYPES already names (SPR/Drive-in/ASRS) — the only ones
-// suggestBin() has real logic for; Ground/Floor and Stillage would just
-// always come back "needs bin" today (see [[wms-putaway-design]]'s open
-// list), so offering them here would be actively misleading. Capped well
-// under anything that would make the layout slow to render or awkward to
-// look at in the Plan View.
+// pieces of the Plan View. Storage Type is restricted to SIM_STORAGE_TYPES
+// (SPR/Drive-in/ASRS/Ground-Floor) -- the only ones suggestBin() has real
+// placement logic for; Stillage would still always come back "needs bin"
+// today (see [[wms-putaway-design]]'s open list), so it's deliberately not
+// offered here -- would be actively misleading. Capped well under anything
+// that would make the layout slow to render or awkward to look at in the
+// Plan View.
 const MAX_LEVELS = 10;
 const MAX_DEPTH = 6;
 const MAX_RACKS = 30;
@@ -49,11 +49,22 @@ const MAX_UNIT_COUNT = 200;
 
 // `racks` is the internal/schema name (matches `Location.rack`) for what the
 // UI calls "Length" — how many rack positions run down one flank of an
-// aisle, i.e. how long the aisle actually is.
+// aisle, i.e. how long the aisle actually is. 2026-09-06 — Ground/Floor
+// added as a 4th selectable storage type (see [[wms-putaway-design]] for
+// the full Ground design), reusing these SAME three fields with different
+// meanings rather than adding new ones — same "meaning depends on
+// storageType" convention this codebase already uses everywhere else
+// (Location.rack/depth/width themselves): for GROUND_FLOOR, `racks`
+// ("Length" in the UI) becomes how many BINS run down one flank, `levels`
+// becomes how many COLUMNS each bin has (relabeled "Width" in the UI), and
+// `depth` keeps its exact same meaning — positions per column, same LIFO
+// depth concept Rack already uses it for.
 export type SandboxLayoutConfig = { storageType: string; levels: number; depth: number; racks: number };
 
+const SIM_STORAGE_TYPES = [...RACK_STORAGE_TYPES, 'GROUND_FLOOR'];
+
 function normalizeLayoutConfig(raw: Partial<SandboxLayoutConfig> | undefined): SandboxLayoutConfig {
-  const storageType = raw?.storageType && RACK_STORAGE_TYPES.includes(raw.storageType) ? raw.storageType : DEFAULT_STORAGE_TYPE;
+  const storageType = raw?.storageType && SIM_STORAGE_TYPES.includes(raw.storageType) ? raw.storageType : DEFAULT_STORAGE_TYPE;
   const levels = Math.max(1, Math.min(MAX_LEVELS, Math.floor(Number(raw?.levels)) || DEFAULT_LEVELS));
   const depth = Math.max(1, Math.min(MAX_DEPTH, Math.floor(Number(raw?.depth)) || DEFAULT_DEPTH));
   const racks = Math.max(1, Math.min(MAX_RACKS, Math.floor(Number(raw?.racks)) || DEFAULT_RACKS));
@@ -124,7 +135,7 @@ export class SimulationService {
 
     const existingLocations = await this.prisma.location.findMany({
       where: { warehouseId: warehouse.id },
-      select: { storageType: true, level: true, depth: true, flankNumber: true, rack: true },
+      select: { storageType: true, level: true, depth: true, flankNumber: true, rack: true, block: true },
     });
 
     if (existingLocations.length === 0) {
@@ -145,14 +156,38 @@ export class SimulationService {
   // correctly rebuilds itself the next time Run is clicked, the same
   // auto-rebuild-on-mismatch path every other config change already goes
   // through, no separate migration.
-  private layoutMatches(locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null; rack: string | null }[], config: SandboxLayoutConfig): boolean {
+  private layoutMatches(
+    locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null; rack: string | null; block: string | null }[],
+    config: SandboxLayoutConfig,
+  ): boolean {
     if (locations.length === 0) return false;
     if (locations.some((l) => l.storageType !== config.storageType)) return false;
+    const flankCount = new Set(locations.map((l) => l.flankNumber)).size;
+    if (flankCount !== DEFAULT_AISLES * 2) return false;
+    // Deliberately separate branches, not one shared shape-check — Ground's
+    // three dimensions (bins/columns/depth) don't map onto Rack's
+    // (racks/levels/depth) the same way, even though both REUSE the exact
+    // same three config fields underneath (see SandboxLayoutConfig's
+    // comment).
+    if (config.storageType === 'GROUND_FLOOR') return this.groundLayoutMatches(locations, config);
+    return this.rackLayoutMatches(locations, config);
+  }
+
+  private rackLayoutMatches(locations: { level: string | null; depth: number | null; rack: string | null }[], config: SandboxLayoutConfig): boolean {
     const maxLevel = Math.max(...locations.map((l) => Number(l.level) || 1));
     const maxDepth = Math.max(...locations.map((l) => l.depth ?? 1));
     const maxRack = Math.max(...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1));
-    const flankCount = new Set(locations.map((l) => l.flankNumber)).size;
-    return maxLevel === config.levels && maxDepth === config.depth && maxRack === config.racks && flankCount === DEFAULT_AISLES * 2;
+    return maxLevel === config.levels && maxDepth === config.depth && maxRack === config.racks;
+  }
+
+  private groundLayoutMatches(locations: { depth: number | null; rack: string | null; block: string | null }[], config: SandboxLayoutConfig): boolean {
+    const maxColumn = Math.max(...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1));
+    const maxDepth = Math.max(...locations.map((l) => l.depth ?? 1));
+    const maxBin = Math.max(...locations.map((l) => parseInt(l.block ?? '1', 10) || 1));
+    // config.racks ("Length" in the UI) = bins per flank, config.levels
+    // (relabeled "Width" in the UI for Ground) = columns per bin — see
+    // SandboxLayoutConfig's comment for the full field-reuse mapping.
+    return maxBin === config.racks && maxColumn === config.levels && maxDepth === config.depth;
   }
 
   // Builds the sandbox's Rack layout fresh — Aisles fixed at DEFAULT_AISLES,
@@ -195,6 +230,19 @@ export class SimulationService {
       }
     }
 
+    // Deliberately separate methods, not one shared row-building loop with
+    // a storageType branch threaded through it — same discipline
+    // suggestBin() itself now follows (suggestRackBin()/suggestGroundBin(),
+    // see [[wms-putaway-design]]), applied here too since the sandbox's own
+    // layout needs to be just as physically honest as the real generator.
+    if (config.storageType === 'GROUND_FLOOR') {
+      await this.buildGroundLayout(warehouseId, categoryId, config);
+    } else {
+      await this.buildRackLayout(warehouseId, categoryId, config);
+    }
+  }
+
+  private async buildRackLayout(warehouseId: string, categoryId: string, config: SandboxLayoutConfig) {
     const rows: any[] = [];
     let nextFlankNumber = 0;
     for (let aisle = 1; aisle <= DEFAULT_AISLES; aisle++) {
@@ -221,6 +269,55 @@ export class SimulationService {
                 level: String(level),
                 bin: '1',
                 depth: config.depth > 1 ? depth : undefined,
+                flankNumber,
+              });
+            }
+          }
+        }
+      }
+    }
+    await this.prisma.location.createMany({ data: rows, skipDuplicates: true });
+  }
+
+  // Ground/Floor sandbox layout (2026-09-06 — see [[wms-putaway-design]]
+  // for the full design) — one real row per pallet position, exactly the
+  // same "one row per position" model LocationsService.generate() itself
+  // uses for real Ground bins now, not the old aggregate-capacity shape.
+  // config.racks ("Length" in the UI) = how many BINS run down one flank;
+  // config.levels (relabeled "Width" in the UI for this storage type) =
+  // how many COLUMNS each bin has; config.depth keeps its exact same
+  // meaning as Rack — positions per column, front-to-back LIFO. Both
+  // flanks per aisle, same mirrored convention buildRackLayout() already
+  // uses (and the real generator itself uses for Ground bins).
+  private async buildGroundLayout(warehouseId: string, categoryId: string, config: SandboxLayoutConfig) {
+    const binsPerFlank = config.racks;
+    const columnsPerBin = config.levels;
+    const rows: any[] = [];
+    let nextFlankNumber = 0;
+    for (let aisle = 1; aisle <= DEFAULT_AISLES; aisle++) {
+      const aisleStr = String(aisle);
+      const flanks: { flankNumber: number; isSecondary: boolean }[] = [
+        { flankNumber: ++nextFlankNumber, isSecondary: false },
+        { flankNumber: ++nextFlankNumber, isSecondary: true },
+      ];
+      for (const { flankNumber, isSecondary } of flanks) {
+        const codeSuffix = isSecondary ? 'B' : '';
+        for (let bin = 1; bin <= binsPerFlank; bin++) {
+          const blockStr = String(bin).padStart(2, '0');
+          for (let column = 1; column <= columnsPerBin; column++) {
+            for (let depth = 1; depth <= config.depth; depth++) {
+              rows.push({
+                warehouseId,
+                code: `GF-${aisleStr}-BLK${blockStr}${codeSuffix}-C${column}-D${depth}`,
+                zoneType: 'ACTUAL_STORAGE',
+                storageType: 'GROUND_FLOOR',
+                categoryId,
+                aisle: aisleStr,
+                block: blockStr,
+                rack: String(column), // reused as column number, same as the real generator
+                depth,
+                width: columnsPerBin, // descriptive, same value on every row of this bin
+                height: 1,
                 flankNumber,
               });
             }
