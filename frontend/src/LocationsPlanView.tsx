@@ -56,36 +56,29 @@ import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 //   count). Stillage still shows depth/width/height as text in one box for
 //   now — its depth is a dimension on one single row, not multiple separate
 //   rows the way Rack's is, and whether it should also get real sub-boxes is
-//   a separate, still-open question. Ground/Floor moved off this same
-//   one-row-per-block shape on 2026-09-06 (real Putaway needed one row per
-//   column×depth position, not text) — it still draws as one box per block
-//   for now (no per-column/per-depth sub-boxes yet, same open question as
-//   Stillage), but its printed depth is now the real max across that
-//   block's rows, not one arbitrary row's own value, and its third line
-//   shows Category instead of a row count (see buildCell below).
+//   a separate, still-open question.
+// - Ground/Floor renders one ROW PER COLUMN, exactly like Rack renders one
+//   row per bay — not a Rack-ism forced onto Ground, but the same physical
+//   equivalence its own schema was built around: `Location.rack` is
+//   deliberately reused as Ground's column number, sharing the exact same
+//   single-file-LIFO-lane meaning `depth` already has with Rack (see
+//   schema.prisma). `posOf()` (locationBoxUtils.ts) returns a block+column
+//   compound key for Ground so each column gets its own row (a block just
+//   groups several columns the way an Aisle groups several bays), and each
+//   row's own Depth positions draw side by side exactly like Rack's own
+//   multi-deep lanes do. This replaced an aggregate "one box per whole
+//   block, dimensions as text" treatment (2026-08-25 original, adjusted
+//   2026-09-06 to fix a stale label after the per-position schema rewrite,
+//   then a box-width scaling attempt the same day) — none of those actually
+//   looked like a real grid, which is what a real client correction finally
+//   caught: "how is this 4x4? looks like 1x4... dont keep your rack as
+//   ideal, we need to align separately." Unifying with Rack's own per-bay
+//   row grouping is what actually produces a real grid (many rows × several
+//   depth-boxes each), not another attempt at stretching one box.
 // - Zone Type coloring is deliberately not built yet (parked for later).
 
 const CELL_W = 110;
 const CELL_H = 60;
-// A Ground/Floor bin's box now scales with its real column count instead of
-// always being exactly CELL_W (one Rack box's own width) — a real client
-// complaint (2026-09-06): "16 pallets of 1 bin of ground looks equal to
-// your rack's one pallet." A bin with `width` columns holds that many real
-// side-by-side pallet positions per depth tier, so its box should read as
-// visibly bigger, not the same size as a single rack slot. Widening only
-// (not also taller) is deliberate — height staying fixed CELL_H keeps every
-// row's vertical spacing/pairing between flanks completely untouched (the
-// existing "cells can be different widths within one flank, anchored near
-// edge, ragged far edge" mechanism Rack's own multi-depth boxes already use
-// — see the file-level comment above — handles this safely with no other
-// change needed); Depth still shows as text in the box, same as before, not
-// also turned into a size cue, so this stays a bounded, low-risk fix rather
-// than the fuller "one real sub-box per column×depth position" treatment
-// 3D already got (still a separate, larger follow-up if more visual fidelity
-// is wanted — see buildCell's GROUND_FLOOR branch below). Capped so one
-// unusually wide bin (a real warehouse could have a 20-column block) can't
-// blow out the whole aisle's layout.
-const GROUND_WIDTH_CAP_MULTIPLIER = 6;
 const ROW_GAP = 6;
 const WALKWAY_W = 34;
 // The gap BETWEEN two separate aisles' outer flanks, not within one aisle's
@@ -226,28 +219,34 @@ function buildCell(posVal: string, rows: Location[]): Cell {
   }
 
   if (storageType === 'GROUND_FLOOR') {
-    // One row per real column×depth position since the 2026-09-06 Ground
-    // rewrite (previously one aggregate row per block) — `rows` here is
-    // every position in this one block, so `rows[0]`'s own `depth` is just
-    // ONE column's position number (often 1), not the whole bin's real
-    // depth. Take the max across every row instead so the printed `d` is
-    // the true footprint, matching what Rack already does for its own
-    // multi-position lanes. `width` (total columns) and `height` (fixed 1)
-    // are the same on every row in the block, so rows[0] is fine for those.
-    const d = rows.reduce((max, r) => Math.max(max, r.depth ?? 1), 1);
-    const w = rows[0].width ?? 1;
-    const h = 1;
-    // Category, not a position/row count — same reasoning already applied
-    // to Rack above: "N positions" would just restate d×w, and read as
-    // confusingly close to the actual per-row Column/Depth fields.
-    const lines = [typeLabel, `${d}×${w}×${h}`];
-    const category = rows[0].category?.name;
-    if (category) lines.push(category);
-    // Box width scales with real column count — see GROUND_WIDTH_CAP_MULTIPLIER
-    // above for why (a client-reported size-parity gap, not cosmetic polish).
-    const boxWidth = CELL_W * Math.max(1, Math.min(w, GROUND_WIDTH_CAP_MULTIPLIER));
-    const box: Box = { key: rows[0].id, lines, hasInactive: rows.some((r) => !r.isActive), width: boxWidth, storageType };
-    return { posVal, boxes: [box], totalWidth: boxWidth };
+    // `rows` here is one COLUMN's worth of positions (posOf() now groups by
+    // block+column, see locationBoxUtils.ts) — structurally the exact same
+    // shape as one Rack bay's own depth-series, so this mirrors the Rack
+    // branch above almost verbatim: group by depth, one box per real
+    // position, side by side. This is what actually produces a real grid —
+    // `width`-many rows (one per column, via buildLayout's own posOf-driven
+    // grouping) × `depth`-many boxes each — instead of a single box trying
+    // to represent every position at once (2026-09-06: "how is this 4x4?
+    // looks like 1x4" — neither a stretched box nor text-only dimensions
+    // ever actually looked like two real spatial axes, only genuinely
+    // separate boxes on both axes do).
+    const depthKey = (r: Location) => (r.depth != null ? String(r.depth) : '1');
+    const depths = uniqSorted(rows.map(depthKey));
+    const block = rows[0].block;
+    const column = rows[0].rack;
+    const boxes: Box[] = depths.map((d) => {
+      const atDepth = rows.filter((r) => depthKey(r) === d);
+      // Short label — "B01-C3" — since there's no established "Rack Name"
+      // equivalent for Ground (buildRackName() deliberately falls back to
+      // the raw `code` for non-Rack types); block+column is the identity
+      // that matters at a glance here, matching the code's own shorthand.
+      const lines = [`B${block}-C${column}`];
+      if (depths.length > 1) lines.push(`D${d}`);
+      const category = atDepth[0].category?.name;
+      if (category) lines.push(category);
+      return { key: atDepth[0].id, lines, hasInactive: atDepth.some((r) => !r.isActive), width: CELL_W, storageType };
+    });
+    return { posVal, boxes, totalWidth: boxes.reduce((s, b) => s + b.width, 0) };
   }
 
   // Stillage: still one box, dimensions as text, one real row per stack —

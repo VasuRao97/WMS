@@ -30,15 +30,15 @@ import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 //
 // Reuses the EXACT same grouping rules LocationsPlanView.tsx's buildLayout/
 // buildCell already established (flankNumber decides left/right, posOf()
-// picks rack/block/stack depending on storageType, depth splits a Rack
-// position into one box per real position) — same real, persisted fields,
-// same "position pairs by index not by raw number" rule. What's different
-// in 3D: Level becomes a genuine Y (vertical) position instead of collapsed
-// text, Stillage's depth×width×height render as real box dimensions
-// instead of text in one fixed-size box (Ground/Floor did too, until its
-// own 2026-09-06 rewrite to one row per real column×depth position — see
-// buildBoxesForAisle's GROUND_FLOOR branch, which spreads real per-position
-// boxes within each block instead), and — new this pass —
+// picks rack/column/stack depending on storageType — Ground's own `rack`
+// field IS its column number, sharing the exact same LIFO-lane meaning
+// `depth` already has with Rack, so a Ground column renders as its own row
+// exactly like a Rack bay does — depth splits either into one box per real
+// position) — same real, persisted fields, same "position pairs by index
+// not by raw number" rule. What's different in 3D: Level becomes a genuine
+// Y (vertical) position instead of collapsed text, Stillage's depth×width×
+// height render as real box dimensions instead of text in one fixed-size
+// box, and — new this pass —
 // aisles themselves are laid out side by side along a global X axis, same
 // "aisle 1 first, each next one further along" ordering 2D's own
 // right-to-left placement already established (simplified here to a plain
@@ -56,7 +56,11 @@ const RACK_BOX_SIZE = 1.1;
 const POSITION_SPACING = 2.2;
 const DEPTH_SPACING = 1.4;
 const WALKWAY_HALF_WIDTH = 1.2;
-const GROUND_UNIT = 0.9; // scales Ground/Stillage's depth/width/height COUNTS (not real meters — same "not physically accurate" treatment 2D already gives these) into scene units
+// Stillage: scales its depth/width/height COUNTS (not real meters — same
+// "not physically accurate" treatment 2D already gives these) into scene
+// units. Ground/Floor: the fixed size of one real column×depth position's
+// own box (each is genuinely one pallet position now, not an aggregate).
+const GROUND_UNIT = 0.9;
 // World-space gap between one aisle's footprint and the next — this is
 // where two adjacent aisles' OUTER flanks sit back-to-back (their backs
 // facing each other, not their accessible fronts), so it only needs to be a
@@ -106,34 +110,28 @@ function buildBoxesForAisle(rows: Location[]): BoxSpec[] {
           });
         });
       } else if (storageType === 'GROUND_FLOOR') {
-        // Ground/Floor: one real row per column×depth position since the
-        // 2026-09-06 Ground rewrite (previously one row per whole block).
-        // The old "one box per row" logic below (still correct for
-        // Stillage, which is unaffected) would now stack every column/depth
-        // position of one block exactly on top of itself at the same
-        // x/y/z — a real overlapping-boxes bug, not a design choice, caught
-        // while investigating this same rewrite's 2D label text. Spread
-        // real positions within the block's own footprint instead: columns
-        // side by side along z (same direction separate blocks already
-        // spread), depths along x away from the aisle (same "deepest
-        // position furthest from the aisle" rule Rack's own depth-splitting
-        // already uses) — matching the physical model agreed in the Ground
-        // design conversation ("one bin (4x4) means 4 wide and 4 deep").
-        const columnKey = (r: Location) => (r.rack != null ? String(r.rack) : '1');
-        const columns = uniqSorted(atPos.map(columnKey));
+        // `atPos` is one COLUMN's own depth-series now (posOf() groups by
+        // block+column, see locationBoxUtils.ts) — structurally identical to
+        // one Rack bay's depth-series, so this mirrors the RACK branch
+        // above almost exactly: fixed floor-level Y (no `level` concept for
+        // Ground) instead of level-driven Y, GROUND_UNIT-sized boxes instead
+        // of RACK_BOX_SIZE, otherwise the same depth-splits-along-x
+        // treatment. A real client correction landed this shape (2026-09-06,
+        // same day as an earlier attempt that manually spread columns+
+        // depths inside one whole-BLOCK atPos — "how is this 4x4? looks
+        // like 1x4... dont keep your rack as ideal, we need to align
+        // separately"): unifying Ground's column with Rack's own per-bay row
+        // grouping (both already reuse the exact same `rack`/`depth`
+        // fields, see schema.prisma) is what actually produces a real grid
+        // across many rows, not a forced Rack-ism.
         const depthKey = (r: Location) => (r.depth != null ? String(r.depth) : '1');
-        columns.forEach((colVal, colIndex) => {
-          const atColumn = atPos.filter((r) => columnKey(r) === colVal);
-          const colZ = z + (colIndex - (columns.length - 1) / 2) * GROUND_UNIT;
-          const depths = uniqSorted(atColumn.map(depthKey));
-          depths.forEach((dVal, depthIndex) => {
-            const atDepth = atColumn.filter((r) => depthKey(r) === dVal);
-            const x = sign * (WALKWAY_HALF_WIDTH + GROUND_UNIT / 2 + depthIndex * GROUND_UNIT);
-            atDepth.forEach((row) => {
-              const h = (row.height ?? 1) * GROUND_UNIT;
-              const y = h / 2;
-              boxes.push({ key: row.id, location: row, x, y, z: colZ, w: GROUND_UNIT, h, d: GROUND_UNIT });
-            });
+        const depths = uniqSorted(atPos.map(depthKey));
+        depths.forEach((d, depthIndex) => {
+          const atDepth = atPos.filter((r) => depthKey(r) === d);
+          const x = sign * (WALKWAY_HALF_WIDTH + GROUND_UNIT / 2 + depthIndex * GROUND_UNIT);
+          const y = GROUND_UNIT / 2;
+          atDepth.forEach((row) => {
+            boxes.push({ key: row.id, location: row, x, y, z, w: GROUND_UNIT, h: GROUND_UNIT, d: GROUND_UNIT });
           });
         });
       } else {
