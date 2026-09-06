@@ -34,8 +34,9 @@ export class SimulationController {
     @Body('storageType') storageType: string,
     @Body('levels') levels: number,
     @Body('depth') depth: number,
+    @Body('racks') racks: number,
     @CurrentUser() user: any,
   ) {
-    return this.simulationService.runPutawaySimulation(user, unitCount, { storageType, levels, depth });
+    return this.simulationService.runPutawaySimulation(user, unitCount, { storageType, levels, depth, racks });
   }
 }

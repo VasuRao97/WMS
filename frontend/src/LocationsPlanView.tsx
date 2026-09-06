@@ -63,7 +63,14 @@ const CELL_W = 110;
 const CELL_H = 60;
 const ROW_GAP = 6;
 const WALKWAY_W = 34;
-const AISLE_GAP = 36;
+// The gap BETWEEN two separate aisles' outer flanks, not within one aisle's
+// own pair — those two flanks' backs sit directly against each other in a
+// real warehouse (nobody accesses a rack from behind), so this only needs
+// to be a thin visual seam, not another walkway-sized gap. Was 36 (nearly
+// identical to WALKWAY_W itself) until the client caught it live: "there
+// doesn't need to be a huge gap between 2 flanks, its back to back then
+// aisle" — WALKWAY_W is the one real gap, this is not (2026-09-06).
+const AISLE_GAP = 6;
 const PAD_TOP = 46;
 // Tall enough to mirror the top header (Section/Aisle + flank callouts) at
 // the bottom of each column too — on a tall aisle (many rows), scrolling to

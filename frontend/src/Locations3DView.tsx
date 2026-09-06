@@ -54,7 +54,15 @@ const POSITION_SPACING = 2.2;
 const DEPTH_SPACING = 1.4;
 const WALKWAY_HALF_WIDTH = 1.2;
 const GROUND_UNIT = 0.9; // scales Ground/Stillage's depth/width/height COUNTS (not real meters — same "not physically accurate" treatment 2D already gives these) into scene units
-const AISLE_GAP = 3; // world-space gap between one aisle's footprint and the next
+// World-space gap between one aisle's footprint and the next — this is
+// where two adjacent aisles' OUTER flanks sit back-to-back (their backs
+// facing each other, not their accessible fronts), so it only needs to be a
+// thin seam, not another walkway-sized gap; WALKWAY_HALF_WIDTH above is the
+// one real gap. Was 3 (comparable to the walkway's own 2.4 total width)
+// until the client caught it live: "there doesn't need to be a huge gap
+// between 2 flanks, its back to back then aisle" (2026-09-06). Matches the
+// same fix in LocationsPlanView.tsx's own AISLE_GAP.
+const AISLE_GAP = 0.4;
 
 type BoxSpec = { key: string; location: Location; x: number; y: number; z: number; w: number; h: number; d: number };
 

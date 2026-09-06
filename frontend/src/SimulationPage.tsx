@@ -53,16 +53,22 @@ function SimulationPage() {
 
   const [unitCount, setUnitCount] = useState('20');
   // Sandbox layout config (2026-09-06 — "add option to tell which level and
-  // depth" / "which kind of storage") — Aisles/Racks stay fixed at the
-  // sandbox's own 3x3 default; Storage Type is restricted to the three rack
-  // types Putaway's suggestBin() actually has real logic for (SPR/Drive-in/
-  // ASRS — Ground/Floor and Stillage would just always come back "needs
-  // bin" today). Sent along with every Run — the backend only rebuilds the
-  // sandbox's layout if this doesn't already match what's there, so running
-  // again with the same settings never wipes anything.
+  // depth" / "which kind of storage", then a same-day follow-up: "add
+  // feature of length also, just 3 is too less") — Aisles alone stays
+  // fixed; Storage Type is restricted to the three rack types Putaway's
+  // suggestBin() actually has real logic for (SPR/Drive-in/ASRS — Ground/
+  // Floor and Stillage would just always come back "needs bin" today).
+  // Sent along with every Run — the backend only rebuilds the sandbox's
+  // layout if this doesn't already match what's there, so running again
+  // with the same settings never wipes anything. "Length" is the UI label
+  // for what the backend calls `racks` (how many rack positions run down
+  // one flank of an aisle) — matching real warehouse terminology would call
+  // this "Racks," but the client's own word for it was "length," so that's
+  // what the label says.
   const [storageType, setStorageType] = useState('SPR');
   const [levels, setLevels] = useState('3');
   const [depth, setDepth] = useState('1');
+  const [racks, setRacks] = useState('3');
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<SimStep[]>([]);
   const [revealedCount, setRevealedCount] = useState(0);
@@ -116,6 +122,7 @@ function SimulationPage() {
         storageType,
         levels: Number(levels) || 3,
         depth: Number(depth) || 1,
+        racks: Number(racks) || 3,
       }),
     });
     const data = await res.json();
@@ -125,7 +132,7 @@ function SimulationPage() {
       return;
     }
     // A Run can rebuild the sandbox's layout server-side (a different
-    // Storage Type/Levels/Depth than what's currently there — see
+    // Storage Type/Length/Levels/Depth than what's currently there — see
     // SimulationService.ensureSandbox()) — refresh `locations` so the Plan
     // View reflects whatever the backend actually has now, not whatever was
     // loaded on page mount. A real bug caught live: without this, changing
@@ -204,7 +211,7 @@ function SimulationPage() {
             </p>
           )}
           <p style={{ textAlign: 'center', fontSize: 12, color: '#888', marginTop: 0, marginBottom: 12 }}>
-            Changing Storage Type/Levels/Depth and running again rebuilds the sandbox's layout to match — this clears
+            Changing Storage Type/Length/Levels/Depth and running again rebuilds the sandbox's layout to match — this clears
             its current stock (same as Reset), so switch settings BEFORE a run you want to keep watching, not mid-way.
           </p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 12, padding: 12, border: '1px solid #ccc', borderRadius: 8 }}>
@@ -214,6 +221,8 @@ function SimulationPage() {
               <option value="DRIVE_IN">Drive-in</option>
               <option value="ASRS">ASRS</option>
             </select>
+            <label style={{ fontSize: 13 }}>Length:</label>
+            <input type="number" min={1} max={30} value={racks} onChange={(e) => setRacks(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
             <label style={{ fontSize: 13 }}>Levels:</label>
             <input type="number" min={1} max={10} value={levels} onChange={(e) => setLevels(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
             <label style={{ fontSize: 13 }}>Depth:</label>

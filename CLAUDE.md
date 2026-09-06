@@ -3739,6 +3739,37 @@ Warehouse Master's Storage Type Mapping table: `Mapped` count exactly doubled to
 racks × 5 levels × 3 depth × 2 flanks), confirming the fix precisely. `tsc --noEmit`/`tsc -b` both
 clean. Throwaway company cleaned up afterward.
 
+**Two more real asks, same day, immediate follow-up**: (1) "add feature of length also, just 3 is
+too less" — Racks (how many positions run down one flank of an aisle) was the one dimension still
+hardcoded at `DEFAULT_RACKS = 3`, alongside the now-configurable Levels/Depth. Added a fourth config
+field, `racks` — labeled "Length" in the UI (the client's own word for it, kept even though "Racks"
+is the more precise warehouse term) — capped at `MAX_RACKS = 30`. `buildLayout()`'s rack loop now
+runs to `config.racks` instead of the fixed constant; `layoutMatches()` gained a max-rack-number
+check alongside its existing Level/Depth/flank-count ones, so an existing sandbox built with the old
+fixed Length correctly rebuilds itself the next time Run is clicked with a different value — same
+auto-rebuild-on-mismatch path as every other config dimension.
+
+(2) "there doesn't need to be a huge gap between 2 flanks, its back to back then aisle" — a real,
+confirmed gap in the SHARED Plan View rendering (`LocationsPlanView.tsx`/`Locations3DView.tsx`, used
+by the real Locations page too, not just Simulation), not a Simulation-only issue. `AISLE_GAP` (the
+gap between one aisle's OUTER flank and the next aisle's outer flank — i.e., where two racks' backs
+sit against each other, since nobody accesses a rack from behind) was sized almost identically to
+`WALKWAY_W` (the real access aisle, between one aisle's own TWO flanks) — 36 vs 34 in 2D, 3 vs 2.4
+world units in 3D — reading as two big gaps everywhere instead of one real aisle plus a tight
+back-to-back seam. Fixed by shrinking `AISLE_GAP` to 6 (2D) / 0.4 (3D) — `WALKWAY_W`/
+`WALKWAY_HALF_WIDTH` (the genuine aisle) are completely untouched. Applies immediately to the real
+Locations Plan View too, not just Simulation, since both consume the exact same constants — a
+correctness fix to a shared visual, not a Simulation-specific tweak.
+
+Verified live end-to-end (throwaway company `SIMLEN1`): ran Length=8/Levels=2/Depth=1/SPR through the
+real UI — confirmed via direct SVG inspection (not just a screenshot) that 2D rendered exactly 48
+boxes (3 aisles × 2 flanks × Length 8) with the inter-aisle gap now exactly 6px (down from 36px)
+while the real walkway stayed 34px; confirmed 3D's whole-warehouse overview now shows all three
+aisle footprints sitting genuinely back-to-back with only a thin seam between them (previously a gap
+comparable to the aisle's own walkway), rendering instantly with no wait — also incidentally
+reconfirming the camera-target fix from the section above still holds. `tsc --noEmit`/`tsc -b` both
+clean. Throwaway company cleaned up afterward.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full

@@ -29,12 +29,12 @@ const DEFAULT_RACKS = 3;
 const DEFAULT_LEVELS = 3;
 const DEFAULT_DEPTH = 1;
 const DEFAULT_STORAGE_TYPE = 'SPR';
-// Levels/Depth are user-configurable (2026-09-06 — "add option to tell which
-// level and depth" / "which kind of storage"), Aisles/Racks stay fixed —
-// confirmed directly rather than making the whole layout configurable, since
-// Level/Depth are what actually drive the interesting bin-suggestion
-// behavior (lane depth, multi-level fill order) and a simple 3x3 grid is
-// plenty to watch it work. Storage Type is restricted to the three rack
+// Levels/Depth/Racks ("Length" in the UI) are all user-configurable
+// (2026-09-06 — "add option to tell which level and depth" / "which kind of
+// storage", then a same-day follow-up: "add feature of length also, just 3
+// is too less") — Aisles alone stays fixed, since nothing was asked about
+// it and 3 aisles is already plenty to exercise the slicer/multi-aisle
+// pieces of the Plan View. Storage Type is restricted to the three rack
 // types RACK_STORAGE_TYPES already names (SPR/Drive-in/ASRS) — the only ones
 // suggestBin() has real logic for; Ground/Floor and Stillage would just
 // always come back "needs bin" today (see [[wms-putaway-design]]'s open
@@ -43,16 +43,21 @@ const DEFAULT_STORAGE_TYPE = 'SPR';
 // look at in the Plan View.
 const MAX_LEVELS = 10;
 const MAX_DEPTH = 6;
+const MAX_RACKS = 30;
 const SKU_POOL_SIZE = 12;
 const MAX_UNIT_COUNT = 200;
 
-export type SandboxLayoutConfig = { storageType: string; levels: number; depth: number };
+// `racks` is the internal/schema name (matches `Location.rack`) for what the
+// UI calls "Length" — how many rack positions run down one flank of an
+// aisle, i.e. how long the aisle actually is.
+export type SandboxLayoutConfig = { storageType: string; levels: number; depth: number; racks: number };
 
 function normalizeLayoutConfig(raw: Partial<SandboxLayoutConfig> | undefined): SandboxLayoutConfig {
   const storageType = raw?.storageType && RACK_STORAGE_TYPES.includes(raw.storageType) ? raw.storageType : DEFAULT_STORAGE_TYPE;
   const levels = Math.max(1, Math.min(MAX_LEVELS, Math.floor(Number(raw?.levels)) || DEFAULT_LEVELS));
   const depth = Math.max(1, Math.min(MAX_DEPTH, Math.floor(Number(raw?.depth)) || DEFAULT_DEPTH));
-  return { storageType, levels, depth };
+  const racks = Math.max(1, Math.min(MAX_RACKS, Math.floor(Number(raw?.racks)) || DEFAULT_RACKS));
+  return { storageType, levels, depth, racks };
 }
 
 export type SimStep = {
@@ -119,7 +124,7 @@ export class SimulationService {
 
     const existingLocations = await this.prisma.location.findMany({
       where: { warehouseId: warehouse.id },
-      select: { storageType: true, level: true, depth: true, flankNumber: true },
+      select: { storageType: true, level: true, depth: true, flankNumber: true, rack: true },
     });
 
     if (existingLocations.length === 0) {
@@ -132,25 +137,27 @@ export class SimulationService {
   }
 
   // Whether the sandbox's CURRENT locations already match a requested
-  // config — every row the same Storage Type, the highest Level/Depth
-  // number present equal to what's requested, and BOTH flanks present per
-  // aisle (DEFAULT_AISLES * 2 distinct flankNumbers — see buildLayout()'s
-  // comment) rather than the old single-flank shape (2026-09-06 fix, see
-  // below) — so a sandbox built before that fix correctly rebuilds itself
-  // the next time Run is clicked, the same auto-rebuild-on-mismatch path
-  // every other config change already goes through, no separate migration.
-  private layoutMatches(locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null }[], config: SandboxLayoutConfig): boolean {
+  // config — every row the same Storage Type, the highest Level/Depth/Rack
+  // ("Length") number present equal to what's requested, and BOTH flanks
+  // present per aisle (DEFAULT_AISLES * 2 distinct flankNumbers — see
+  // buildLayout()'s comment) rather than the old single-flank shape
+  // (2026-09-06 fix, see below) — so a sandbox built before that fix
+  // correctly rebuilds itself the next time Run is clicked, the same
+  // auto-rebuild-on-mismatch path every other config change already goes
+  // through, no separate migration.
+  private layoutMatches(locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null; rack: string | null }[], config: SandboxLayoutConfig): boolean {
     if (locations.length === 0) return false;
     if (locations.some((l) => l.storageType !== config.storageType)) return false;
     const maxLevel = Math.max(...locations.map((l) => Number(l.level) || 1));
     const maxDepth = Math.max(...locations.map((l) => l.depth ?? 1));
+    const maxRack = Math.max(...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1));
     const flankCount = new Set(locations.map((l) => l.flankNumber)).size;
-    return maxLevel === config.levels && maxDepth === config.depth && flankCount === DEFAULT_AISLES * 2;
+    return maxLevel === config.levels && maxDepth === config.depth && maxRack === config.racks && flankCount === DEFAULT_AISLES * 2;
   }
 
-  // Builds the sandbox's Rack layout fresh — Aisles/Racks fixed at
-  // DEFAULT_AISLES x DEFAULT_RACKS, Levels/Depth from `config`. A Depth > 1
-  // generates one row per depth position per (aisle, rack, level), same
+  // Builds the sandbox's Rack layout fresh — Aisles fixed at DEFAULT_AISLES,
+  // Racks ("Length")/Levels/Depth all from `config`. A Depth > 1 generates
+  // one row per depth position per (aisle, rack, level), same
   // "one real row per real position, not text-in-one-box" convention
   // LocationsService.generate() itself uses for a multi-deep lane — this is
   // what actually lets a Drive-in configuration exercise its own
@@ -198,7 +205,7 @@ export class SimulationService {
       ];
       for (const { flankNumber, isSecondary } of flanks) {
         const codeSuffix = isSecondary ? 'B' : '';
-        for (let rack = 1; rack <= DEFAULT_RACKS; rack++) {
+        for (let rack = 1; rack <= config.racks; rack++) {
           const rackStr = String(rack).padStart(2, '0');
           for (let level = 1; level <= config.levels; level++) {
             for (let depth = 1; depth <= config.depth; depth++) {
