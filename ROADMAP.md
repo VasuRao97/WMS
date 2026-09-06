@@ -2,8 +2,20 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **Ground/
-Floor Putaway — real logic built and verified**, kept deliberately separate from Rack's own
+what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **the
+FMS×ABC combined-classification study** (see "Immediate candidates" below) — the client's own
+stated next topic once Ground/Floor Putaway was fully aligned. Most recently, same day: **the
+Putaway Simulation sandbox now supports Ground/Floor as a selectable storage type** — "can we have a
+simulator now for ground?" — closing the last gap in the sandbox's storage-type coverage
+(SPR/Drive-in/ASRS already worked). Investigating this surfaced and fixed two real, pre-existing
+Plan View bugs left over from the 2026-08-24 Ground rewrite (one row per real column×depth position,
+not one aggregate row per block) — a stale 2D box label reading one arbitrary row's own depth
+instead of the whole block's, and a genuine 3D overlapping-boxes bug (every position in one Ground
+block used to render stacked exactly on top of each other). Both fixes live in the shared Plan View
+components, so the real Locations page benefits too, not just Simulation. See CLAUDE.md's "Putaway
+Simulation" section (the Ground/Floor follow-up subsection) for the full build/verification detail.
+This closes out the Ground/Floor Putaway build entirely, simulator included. Earlier the same day:
+**Ground/Floor Putaway — real logic built and verified**, kept deliberately separate from Rack's own
 (`suggestRackBin()`/`suggestGroundBin()` are two independent methods, not one shared function with
 storageType branches — your own explicit ask mid-build: "keep all logic for different storage type
 separate, like ground is sep, rack is sep"). Picked ahead of Inventory and the FMS×ABC study on a
@@ -206,6 +218,16 @@ schema. Reuses the existing 2D/3D Plan View components and occupancy-overlay col
 unchanged. A real race condition in the sandbox's lazy first-time setup was caught and fixed
 (`upsert`/`skipDuplicates` instead of `findFirst`+`create`) — see CLAUDE.md's "Putaway Simulation"
 section for the full technical detail and verification trail.
+
+**Follow-up, same session — Ground/Floor added**: "can we have a simulator now for ground?" —
+`GROUND_FLOOR` joined the selectable Storage Types (SPR/Drive-in/ASRS already worked), with the
+sandbox's layout generator mirroring the real `LocationsService.generate()`'s own column×depth
+expansion. No changes needed to the actual simulation-running logic — it already worked unmodified
+through `suggestBin()`. Investigating this caught and fixed two real, pre-existing bugs in the
+shared Plan View components themselves (left over from the 2026-08-24 Ground rewrite, not new to
+Simulation) — a stale 2D box label and a genuine 3D overlapping-boxes bug — both now fixed for the
+real Locations page too. See CLAUDE.md's "Putaway Simulation" section (Ground/Floor follow-up
+subsection) for the full detail.
 
 **Next for this feature specifically**: Pick Face re-slotting simulation, the deferred phase 2.
 

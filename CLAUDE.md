@@ -3955,6 +3955,53 @@ occupancy` endpoint (not just Simulation's own derived version) that `quantity` 
 correctly there too — this fix applies to the real Locations Plan View exactly the same way, not
 just Simulation. `tsc --noEmit`/`tsc -b` both clean. Throwaway company cleaned up afterward.
 
+**Ground/Floor added as a selectable Simulation storage type (2026-09-06, same day, follow-up)** —
+"can we have a simulator now for ground?" Closes the last gap in the sandbox's storage-type
+coverage (SPR/Drive-in/ASRS already worked): `SIM_STORAGE_TYPES` gained `GROUND_FLOOR`,
+`buildLayout()`/`layoutMatches()` split into `buildRackLayout()`/`buildGroundLayout()` (the latter
+mirrors `LocationsService.generate()`'s own column×depth expansion exactly, one real row per
+position — same convention the real generator already established), and `SimulationPage.tsx` gained
+the dropdown option plus relabeled Length→"Bins (Length)"/Levels→"Width (columns)" for Ground. No
+changes needed to `runPutawaySimulation()` itself — it already worked unmodified through the real,
+unmodified `suggestBin()`, and `buildRackName()` already correctly falls back to raw `code` for
+Ground. The step log's `rackName` also got a small pre-existing gap fixed along the way: it was a
+hand-rolled inline formula missing the `-D{n}` depth suffix (harmless while every sandbox was
+single-deep, would've silently collided the moment Ground's real per-position depth became visible)
+— replaced with a call to the real shared `buildRackName()` instead of re-deriving it a second time.
+
+**Investigating this surfaced two real, pre-existing Plan View bugs from the Ground rewrite itself**
+(2026-08-24's schema/generator change to one row per real column×depth position, not this
+Simulation work) — both fixed, and since both live in the SAME shared components the real Locations
+page uses, both fixes apply there too, not just Simulation:
+- **2D (`LocationsPlanView.tsx`)**: a Ground box's label read `d×w×h` off `rows[0]` alone and showed
+  a "N bins" count — correct back when Ground was one aggregate row per block, wrong since the
+  rewrite (`rows[0].depth` is now just one column's own position number, e.g. 1, not the whole
+  bin's real depth; the "N bins" count was really "how many column×depth rows exist," confusingly
+  close to the real Column/Depth fields). Fixed to take the max depth across the whole block's rows,
+  and swapped the count for Category — the exact same fix already applied to Rack's own label back
+  on 2026-08-25, for the identical reason. Stillage (unaffected by the Ground rewrite, still one row
+  per stack) is untouched.
+- **3D (`Locations3DView.tsx`)**: a real overlapping-boxes bug, not a label issue — the old "one box
+  per row, sized by its own depth/width/height" logic (still correct for Stillage) now stacked
+  every column×depth position of one Ground block exactly on top of each other at the same x/y/z,
+  since they all share the same block/`posVal` and nothing in the box's size or position ever
+  accounted for column or depth. Fixed by spreading real positions within each block's own
+  footprint — columns side by side along z, depths along x away from the aisle — matching the
+  physical model agreed in the original Ground design conversation ("one bin (4x4) means 4 wide and
+  4 deep").
+
+Verified two ways: `tsc --noEmit`(backend)/`tsc -b`(frontend) clean, then live end-to-end (a fresh
+throwaway company, registered and logged in for real, against the real running dev servers) — ran a
+real Ground/Floor simulation (2 bins × 3 columns × 3 deep) and confirmed via direct page/DOM
+inspection: the step log showed real per-position codes (`GF-1-BLK02-C3-D3`); 2D's box label now
+reads the correct `3×3×1`/`Simulation` (Category) instead of the stale depth-1/bins-count text; 3D
+renders a genuine 3-wide grid of distinct, non-overlapping boxes per occupied bin instead of a
+single stacked blob (screenshot-confirmed), while an empty bin correctly still renders its full grid
+of individually-clickable empty boxes; clicking an individual 3D box resolves to its own real
+Location row (`GF-1-BLK01-C3-D1`, honest per-row `Dimensions (D×W×H): 1×3×1`), confirming
+click-to-inspect targets the actual position clicked, not an aggregate. Throwaway company cleaned up
+afterward.
+
 ### Putaway location override + discrepancy highlighting (2026-09-06, backlog items 2/3)
 
 Closes the two remaining "Plan View upgrade mode" backlog items raised back on 2026-09-05: a
@@ -4673,9 +4720,15 @@ Docks/Staging visual remains confirmed-to-build, not yet started (see ROADMAP.md
 **A Putaway Simulation sandbox now exists** (2026-09-06, see "Putaway Simulation" above) — a separate
 tangent off that same backlog, not one of its numbered items: a dedicated sandbox warehouse running
 the real, unmodified `suggestBin()` algorithm against auto-generated synthetic SKUs, replayed as a
-speed-adjustable step-by-step animation through the same 2D/3D Plan View components. Pick Face
-re-slotting simulation (the same sandbox idea applied to the OTHER algorithm) is the explicitly
-deferred next phase for this feature specifically.
+speed-adjustable step-by-step animation through the same 2D/3D Plan View components, with fully
+configurable Storage Type (SPR/Drive-in/ASRS/**Ground/Floor**)/Length/Levels-or-Columns/Depth. Also
+closed two real, pre-existing Plan View bugs surfaced while wiring up Ground support — a stale 2D
+box label (Ground's dimensions/count text was reading one arbitrary row instead of the whole
+block) and a real 3D overlapping-boxes bug (every column×depth position of one Ground block used to
+render stacked exactly on top of each other) — both fixed in the shared components, so the real
+Locations page benefits too, not just Simulation. Pick Face re-slotting simulation (the same
+sandbox idea applied to the OTHER algorithm) is the explicitly deferred next phase for this feature
+specifically.
 
 **ABC velocity reassessment now exists** (2026-09-06, see "ABC velocity reassessment" above) — a
 genuinely new topic, sequenced deliberately ("lets finish topic 1 first then go into topic 2"): a real
