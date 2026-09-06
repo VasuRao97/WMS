@@ -25,6 +25,13 @@ type PutawayTask = {
   // same client-side-filter-over-already-fetched-list pattern
   // LocationsPage.tsx already uses for its own search row.
   receiptLine?: { receipt?: { referenceNo?: string | null; vehicle?: { vehicleNumber?: string | null } | null } | null };
+  // Location override discrepancy (2026-09-06) — true the moment any
+  // completed trip on this task landed somewhere other than the original
+  // assignment (only possible once Company Settings' own
+  // "Allow Putaway location override" toggle is on). A plain at-a-glance
+  // flag here; the fuller Discrepancies section below (Supervisor+) is
+  // where it actually gets reviewed.
+  hasDiscrepancy?: boolean;
 };
 
 // Rack storage types (mirrors backend RACK_STORAGE_TYPES) — only these get
@@ -66,6 +73,21 @@ type Exception = {
   reviewedBy?: { name: string } | null;
   reviewNote?: string | null;
 };
+// Location override discrepancy (2026-09-06) — a completed trip whose
+// scannedLocationId ended up different from its own task's toLocationId,
+// only possible once "Allow Putaway location override" is on in Company
+// Settings. Frictionless on the floor (no reason required at scan time) —
+// this list, and the Mark Reviewed action on it, IS the audit trail.
+type Discrepancy = {
+  tripId: string;
+  skuCode: string;
+  assignedRackName: string;
+  actualRackName: string;
+  operatorName: string;
+  completedAt: string;
+  reviewedAt: string | null;
+  reviewedByName: string | null;
+};
 
 function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem('token')}` };
@@ -105,6 +127,9 @@ function PutawayPage() {
   const [exceptionReason, setExceptionReason] = useState('');
   const [exceptionMsg, setExceptionMsg] = useState('');
 
+  const [discrepancies, setDiscrepancies] = useState<Discrepancy[]>([]);
+  const [discrepancyMsg, setDiscrepancyMsg] = useState('');
+
   const loadTasks = () => {
     const qs = filterWarehouseId ? `?warehouseId=${filterWarehouseId}` : '';
     fetch(`http://localhost:3000/putaway-tasks${qs}`, { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setTasks(Array.isArray(d) ? d : []));
@@ -122,14 +147,24 @@ function PutawayPage() {
   const loadExceptions = () => {
     fetch('http://localhost:3000/multi-sku-lane-exceptions', { headers: authHeaders() }).then((r) => (r.status === 401 || r.status === 403 ? [] : r.json())).then((d) => setExceptions(Array.isArray(d) ? d : []));
   };
+  // Supervisor+ only — an Operator never sees this fetch attempted at all,
+  // matching the backend's own PUTAWAY_DISCREPANCY_REVIEW_ROLES gate.
+  const loadDiscrepancies = () => {
+    if (!canReviewDiscrepancies) return;
+    const qs = filterWarehouseId ? `?warehouseId=${filterWarehouseId}` : '';
+    fetch(`http://localhost:3000/putaway-tasks/discrepancies${qs}`, { headers: authHeaders() })
+      .then((r) => (r.status === 401 || r.status === 403 ? [] : r.json()))
+      .then((d) => setDiscrepancies(Array.isArray(d) ? d : []));
+  };
   useEffect(() => {
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() }).then((r) => (r.status === 401 ? [] : r.json())).then((d) => setWarehouses(Array.isArray(d) ? d : []));
     loadExceptions();
   }, []);
-  useEffect(() => { loadTasks(); loadRecommendation(); }, [filterWarehouseId]);
+  useEffect(() => { loadTasks(); loadRecommendation(); loadDiscrepancies(); }, [filterWarehouseId]);
 
   const canRequestException = user?.role === 'WAREHOUSE_MANAGER';
   const canDecideException = user?.role === 'COMPANY_ADMIN';
+  const canReviewDiscrepancies = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'].includes(user?.role);
 
   const filteredTasks = tasks.filter((t) => {
     const q = filterSearch.trim().toLowerCase();
@@ -194,6 +229,17 @@ function PutawayPage() {
     setExceptionMsg('Request submitted — awaiting Company Admin approval.');
     setExceptionReason('');
     loadExceptions();
+  };
+
+  const handleReviewDiscrepancy = async (tripId: string) => {
+    setDiscrepancyMsg('');
+    const res = await fetch(`http://localhost:3000/putaway-tasks/discrepancies/${tripId}/review`, { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({}) });
+    const data = await res.json();
+    if (!res.ok) {
+      setDiscrepancyMsg(errorText(data, 'Could not mark this discrepancy reviewed.'));
+      return;
+    }
+    loadDiscrepancies();
   };
 
   const handleDecideException = async (id: string, action: 'approve' | 'reject' | 'revoke') => {
@@ -313,7 +359,12 @@ function PutawayPage() {
               <td style={{ padding: 8 }}>{t.toLocation ? displayCode(t.toLocation) : <span style={{ color: 'crimson' }}>Needs Bin</span>}</td>
               <td style={{ padding: 8 }}>{Number(t.quantity)}</td>
               <td style={{ padding: 8 }}>{Number(t.movedQuantity)}</td>
-              <td style={{ padding: 8 }}>{STATUS_LABELS[t.status]}</td>
+              <td style={{ padding: 8 }}>
+                {STATUS_LABELS[t.status]}
+                {t.hasDiscrepancy && (
+                  <span title="Placed at a different bin than assigned — see Discrepancies below" style={{ marginLeft: 4, color: '#b45309' }}>⚠</span>
+                )}
+              </td>
               <td style={{ padding: 8, whiteSpace: 'nowrap' }}>
                 {t.status !== 'COMPLETED' && !t.inProgressTrip && (
                   <>
@@ -393,6 +444,49 @@ function PutawayPage() {
             </tbody>
           </table>
           {exceptions.length === 0 && <p style={{ textAlign: 'center' }}>No exception requests.</p>}
+        </div>
+      )}
+
+      {canReviewDiscrepancies && (
+        <div style={{ marginTop: 32, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+          <h3 style={{ marginTop: 0 }}>Discrepancies</h3>
+          <p style={{ fontSize: 13, color: '#666', marginTop: -8 }}>
+            Every completed trip where the operator scanned a real bin OTHER than the one assigned (only possible
+            while "Allow Putaway location override" is on in Company Settings). Frictionless on the floor — this list
+            is the audit trail. Mark Reviewed once you've looked into it and handled it physically.
+          </p>
+          {discrepancyMsg && <p style={{ color: 'crimson' }}>{discrepancyMsg}</p>}
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'center', borderBottom: '2px solid #ccc' }}>
+                <th style={{ padding: 8 }}>SKU</th>
+                <th style={{ padding: 8 }}>Assigned Bin</th>
+                <th style={{ padding: 8 }}>Actual Bin</th>
+                <th style={{ padding: 8 }}>Operator</th>
+                <th style={{ padding: 8 }}>Completed At</th>
+                <th style={{ padding: 8 }}>Reviewed</th>
+                <th style={{ padding: 8 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {discrepancies.map((d) => (
+                <tr key={d.tripId} style={{ textAlign: 'center', borderBottom: '1px solid #eee' }}>
+                  <td style={{ padding: 8 }}>{d.skuCode}</td>
+                  <td style={{ padding: 8 }}>{d.assignedRackName}</td>
+                  <td style={{ padding: 8, color: '#b45309', fontWeight: 'bold' }}>{d.actualRackName}</td>
+                  <td style={{ padding: 8 }}>{d.operatorName}</td>
+                  <td style={{ padding: 8 }}>{new Date(d.completedAt).toLocaleString()}</td>
+                  <td style={{ padding: 8 }}>
+                    {d.reviewedAt ? `${d.reviewedByName} — ${new Date(d.reviewedAt).toLocaleString()}` : <span style={{ color: '#b45309' }}>Not yet</span>}
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    {!d.reviewedAt && <button onClick={() => handleReviewDiscrepancy(d.tripId)}>Mark Reviewed</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {discrepancies.length === 0 && <p style={{ textAlign: 'center' }}>No discrepancies.</p>}
         </div>
       )}
     </div>

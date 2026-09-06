@@ -3807,6 +3807,83 @@ occupancy` endpoint (not just Simulation's own derived version) that `quantity` 
 correctly there too — this fix applies to the real Locations Plan View exactly the same way, not
 just Simulation. `tsc --noEmit`/`tsc -b` both clean. Throwaway company cleaned up afterward.
 
+### Putaway location override + discrepancy highlighting (2026-09-06, backlog items 2/3)
+
+Closes the two remaining "Plan View upgrade mode" backlog items raised back on 2026-09-05: a
+Putaway location-override toggle on Company Settings (for clients who want operators able to
+complete a trip at a location other than the one assigned, instead of today's hard block), and
+discrepancy highlighting once that override exists (flag any location where a completed trip's real
+scanned location differs from the task's originally assigned one). A real align-before-coding pass
+first settled two open design questions, confirmed directly rather than assumed: an overridden scan
+does NOT need to pass `suggestBin()`'s own eligibility rules (any real, active location in the
+warehouse is accepted — the whole point is trusting the operator's own physical judgment, not
+second-guessing it) and completing at a different bin is frictionless (no reason/note required at
+scan time — the discrepancy record itself, assigned bin/actual bin/operator/when, is the audit
+trail). Discrepancies surface two ways: a `⚠` flag on the task queue's own row (visible to whoever
+already sees the task list) plus a dedicated "Discrepancies" section (Supervisor+ only) with a Mark
+Reviewed action.
+
+**The schema was already halfway ready.** `PutawayTrip.scannedLocationId` has existed since the
+original 2026-08-28 Putaway build — its own comment even named this exact future possibility: "Only
+a scan matching the task's own toLocationId is ever accepted... a mismatched scan is rejected
+outright, not recorded here at all." No new field was needed to record what actually happened, only
+the logic to let it happen and a place to track review: `Company.allowPutawayLocationOverride`
+(default `false`, preserving today's behavior for every company that doesn't opt in) and
+`PutawayTrip.discrepancyReviewedAt`/`discrepancyReviewedById` (same "a status fact isn't the same as
+a human sign-off" reasoning as `VehicleGateEntry.inwardCompletedAt`). Migration
+`20260906000000_putaway_location_override_and_discrepancy`.
+
+**`completeTrip()`'s real rework.** A genuinely new resolution step,
+`resolveLocationInWarehouse()`: tries the raw `code` first (a single indexed lookup, the common case
+since it's also what's printed on a real Location Label), falling back to computing `buildRackName()`
+over every active location in the warehouse only if that fails, since Rack Name isn't itself a
+stored/indexable column. Called only when the scan doesn't match the assignment AND the company's
+toggle is on — an unmatched scan with the toggle off still hard-blocks exactly as before, byte-for-
+byte the same error message. **A real correctness fix rode along with this**: the `PUTAWAY_IN`
+`StockMovement`'s `locationId` used to be hardcoded to `task.toLocationId` — harmless while a mismatch
+could never happen, but would have quietly lied about where stock physically sits the moment an
+override landed anywhere else. Now uses the resolved `targetLocation.id` instead, so on-hand stock
+always reflects reality regardless of whether this specific trip was overridden.
+
+**Discrepancy surfacing**: `findAll()` gained a computed `hasDiscrepancy` per task (true the moment
+ANY of its completed trips has `scannedLocationId !== toLocationId`) — cheap, since `trips` was
+already being fetched for `movedQuantity`/`inProgressTrip`. `getDiscrepancies()`
+(`GET /putaway-tasks/discrepancies`) and `reviewDiscrepancy()`
+(`PATCH /putaway-tasks/discrepancies/:tripId/review`) are gated by a new
+`PUTAWAY_DISCREPANCY_REVIEW_ROLES` (Supervisor+, same tier as `INBOUND_APPROVE_ROLES` — a separate
+named constant on purpose even though the values are identical today, same "distinct destinations
+that could diverge later" reasoning as `CAN_VIEW_INSIGHTS`/`CAN_VIEW_ANALYTICS`) — an Operator can
+complete an overridden trip and see the plain flag on their own row, but reviewing/dismissing one
+(their own or anyone else's) sits a tier above that, matching Inbound's own "the scanning operator
+can never resolve their own blocked scan" principle. Prisma can't compare two columns in a `where`
+clause, so `getDiscrepancies()` filters in JS after a normally-scoped fetch, same pattern this
+codebase already uses for reservation/eligibility checks elsewhere in `putaway-tasks.service.ts`.
+
+**Frontend**: Company Settings' existing Putaway section gained the checkbox; `PutawayPage.tsx`
+gained the `⚠` badge on the task table's Status column and a new "Discrepancies" section (Supervisor+
+only, client-side gated to match the backend) styled like the existing Multi-SKU Lane Exception
+section — SKU/Assigned Bin/Actual Bin/Operator/Completed At/Reviewed/Mark Reviewed.
+
+Verified two ways. A comprehensive backend diagnostic script directly against the real dev DB
+(company `OVRCHK1`, calling the real, unmodified `PutawayTasksService` methods, no HTTP layer): the
+hard block stays byte-for-byte identical with the toggle off; with it on, a scan resolving to a
+different real location by raw CODE succeeds, with the `StockMovement`'s `locationId` correctly
+landing at the override target, not the stale assignment; a second case resolving by RACK NAME
+(not raw code) also succeeds, proving the fallback path works; a garbage string and an INACTIVE
+location's own code are both correctly rejected as unrecognized (must be real and active, not free
+text); `getDiscrepancies()` correctly lists exactly the 2 genuine overrides and excludes the 3
+blocked/never-completed attempts; `reviewDiscrepancy()` correctly stamps one while leaving the
+other unreviewed; `findAll()`'s `hasDiscrepancy` flag is correctly `true`/`false` on the right
+tasks. Then re-verified live through the actual rendered UI (throwaway company `OVRUI1`): checked
+the real checkbox, submitted the real Save Settings form, confirmed `allowPutawayLocationOverride`
+persisted via a direct API check, then confirmed via a full page reload that the checkbox reads back
+correctly checked from the database, not just in-memory state; seeded one real discrepancy directly
+against this same company and confirmed the Putaway page's real rendered task row showed
+"Completed⚠" and the Discrepancies section showed the correct assigned/actual bins, operator, and
+timestamp; clicked the real "Mark Reviewed" button and confirmed the row updated to show the
+reviewer's name and timestamp, with the button correctly disappearing. `tsc --noEmit`/`tsc -b` both
+clean. Both throwaway companies cleaned up afterward.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full
@@ -4105,8 +4182,12 @@ footprint blocks with a checkbox "slicer" to swap one or more aisles into full p
 Several upgrades landed the same day off a confirmed backlog — see the "Plan View upgrade mode"
 ROADMAP session note — occupancy overlay (By Category / By A/B/C Class, both views), click-to-inspect
 on 2D, a Level toggle on 2D, and smooth camera auto-focus in 3D. Zone Type coloring and Ground/
-Stillage sub-boxes stay declined/parked; a Putaway location-override toggle, discrepancy
-highlighting, and a Docks/Staging visual are confirmed-to-build, not yet started (see ROADMAP.md).
+Stillage sub-boxes stay declined/parked. **The remaining two backlog items — a Putaway location-
+override toggle and discrepancy highlighting — are now built too** (2026-09-06, see "Putaway location
+override + discrepancy highlighting" above): a per-company opt-in lets an operator complete a trip at
+a different real, active bin instead of today's hard block, and any such mismatch is flagged both
+inline on the task queue and in a dedicated Supervisor+ "Discrepancies" review list. Only a
+Docks/Staging visual remains confirmed-to-build, not yet started (see ROADMAP.md).
 
 **A Putaway Simulation sandbox now exists** (2026-09-06, see "Putaway Simulation" above) — a separate
 tangent off that same backlog, not one of its numbered items: a dedicated sandbox warehouse running

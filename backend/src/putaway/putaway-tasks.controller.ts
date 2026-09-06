@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { PUTAWAY_EXECUTE_ROLES } from '../common/tenant.util';
+import { PUTAWAY_EXECUTE_ROLES, PUTAWAY_DISCREPANCY_REVIEW_ROLES } from '../common/tenant.util';
 
 // Putaway task queue + scan-driven execution (2026-08-28, skeleton logic —
 // see [[wms-putaway-design]] in memory for the full design conversation).
@@ -50,5 +50,20 @@ export class PutawayTasksController {
   @Roles(...PUTAWAY_EXECUTE_ROLES)
   requestDifferentBin(@Param('id') id: string, @Body('reason') reason: string, @CurrentUser() user: any) {
     return this.putawayTasksService.requestDifferentBin(id, reason, user);
+  }
+
+  // Location-override discrepancies (2026-09-06) — Supervisor+ only, see
+  // PUTAWAY_DISCREPANCY_REVIEW_ROLES's own comment for why this is a
+  // separate tier from the rest of this controller.
+  @Get('discrepancies')
+  @Roles(...PUTAWAY_DISCREPANCY_REVIEW_ROLES)
+  getDiscrepancies(@CurrentUser() user: any, @Query('warehouseId') warehouseId?: string) {
+    return this.putawayTasksService.getDiscrepancies(user, warehouseId);
+  }
+
+  @Patch('discrepancies/:tripId/review')
+  @Roles(...PUTAWAY_DISCREPANCY_REVIEW_ROLES)
+  reviewDiscrepancy(@Param('tripId') tripId: string, @CurrentUser() user: any) {
+    return this.putawayTasksService.reviewDiscrepancy(tripId, user);
   }
 }

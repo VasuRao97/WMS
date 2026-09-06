@@ -2,8 +2,14 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06: **a Putaway Simulation
-sandbox is now built and verified** — a dedicated sandbox warehouse running the real, unmodified
+what to pick up next. Updated as priorities shift — last updated 2026-09-06: **Plan View backlog
+items 2 and 3 are done** — a per-company "Allow Putaway location override" toggle (Company Settings)
+lets an operator complete a trip at a different real, active bin instead of today's hard block, and
+any such mismatch now surfaces as a discrepancy — a `⚠` flag on the task queue row, plus a dedicated
+Supervisor+ "Discrepancies" list with a Mark Reviewed action. Only backlog items 1 (Yard spatial
+schema) and 4 (Docks/Staging visual) remain. See CLAUDE.md's "Putaway location override +
+discrepancy highlighting" section for the full build/verification detail. Earlier the same day: **a
+Putaway Simulation sandbox is now built and verified** — a dedicated sandbox warehouse running the real, unmodified
 `suggestBin()` algorithm against auto-generated synthetic SKUs, replayed as a speed-adjustable
 step-by-step animation through the existing 2D/3D Plan View. A tangent off the Plan View backlog
 below, not one of its numbered items. Caught and fixed a real race condition in the sandbox's lazy
@@ -74,13 +80,14 @@ stale-closure bug during verification (fixed via a ref updated on every render i
 effect). See CLAUDE.md's matching sections for full build/verification detail on each.
 
 **Confirmed to build, not yet started** (in the order raised): Yard spatial schema only for now (no visual yet — groundwork for a future Yard
-Plan View); a Putaway location-override toggle on Company Settings (for clients who want operators
-able to complete a trip at a location other than the one assigned, instead of today's hard block);
-discrepancy highlighting on the Plan View once that override toggle exists — flag any location
-where a completed trip's real scanned location differs from the task's originally assigned one, so
-it can be corrected fast (this only becomes possible once the override toggle exists, since today's
-hard block means the two can never differ in the ledger); and a Docks/Staging area visual (shape
-still to be worked out, its own conversation when picked up).
+Plan View); and a Docks/Staging area visual (shape still to be worked out, its own conversation
+when picked up).
+
+**Built 2026-09-06** (see CLAUDE.md's "Putaway location override + discrepancy highlighting"): a
+Putaway location-override toggle on Company Settings (any real, active bin is accepted, no
+eligibility re-check, no reason required — frictionless, since the discrepancy record itself is the
+audit trail) and discrepancy highlighting — a `⚠` flag on the task queue plus a dedicated
+Supervisor+ "Discrepancies" list with a Mark Reviewed action, exactly the shape raised here.
 
 **Already built, nothing more needed**: inactive-bin coloring (2D: grey/dashed; 3D: grey/
 transparent) — raised as a new ask, turned out to already exist in both views.

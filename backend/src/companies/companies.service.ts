@@ -38,6 +38,7 @@ export class CompaniesService {
         putawayDefaultBatchQty: true,
         defaultMaxCasesPerPallet: true,
         putawayAssignmentGraceMinutes: true,
+        allowPutawayLocationOverride: true,
       },
     });
   }
@@ -112,6 +113,9 @@ export class CompaniesService {
         // omitted leaves it unchanged, a blank/null value is simply
         // ignored rather than attempted as a clear, same as putawayTriggerMode.
         putawayAssignmentGraceMinutes: data.putawayAssignmentGraceMinutes !== undefined && data.putawayAssignmentGraceMinutes !== null && data.putawayAssignmentGraceMinutes !== '' ? Number(data.putawayAssignmentGraceMinutes) : undefined,
+        // Putaway location override (2026-09-06) — a plain boolean toggle,
+        // same "omitted means unchanged" convention as allowErpInboundPush.
+        allowPutawayLocationOverride: data.allowPutawayLocationOverride === undefined ? undefined : !!data.allowPutawayLocationOverride,
       },
       select: {
         id: true,
@@ -126,6 +130,7 @@ export class CompaniesService {
         putawayDefaultBatchQty: true,
         defaultMaxCasesPerPallet: true,
         putawayAssignmentGraceMinutes: true,
+        allowPutawayLocationOverride: true,
       },
     });
   }

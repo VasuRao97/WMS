@@ -546,8 +546,84 @@ export class PutawayTasksService {
       .map((t: any) => {
         const movedQuantity = t.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((sum: number, tr: any) => sum + Number(tr.quantity), 0);
         const inProgressTrip = t.trips.find((tr: any) => tr.status === 'IN_PROGRESS');
-        return { ...t, movedQuantity, inProgressTrip };
+        // At-a-glance discrepancy flag (2026-09-06) — true the moment ANY
+        // of this task's completed trips landed somewhere other than the
+        // original assignment (only possible at all once
+        // Company.allowPutawayLocationOverride is on). Visible to whoever
+        // can already see the task list — this is just a signal on data
+        // they already have; the fuller "Discrepancies" list below is
+        // Supervisor+ only.
+        const hasDiscrepancy = t.trips.some((tr: any) => tr.status === 'COMPLETED' && tr.scannedLocationId && tr.scannedLocationId !== t.toLocationId);
+        return { ...t, movedQuantity, inProgressTrip, hasDiscrepancy };
       });
+  }
+
+  // Discrepancy review list (2026-09-06, Plan View backlog items 2/3) —
+  // every COMPLETED trip whose scannedLocationId ended up different from
+  // its own task's toLocationId (only possible once the company's own
+  // allowPutawayLocationOverride toggle let it happen at all). Prisma can't
+  // compare two columns in a `where` clause directly, so this filters in
+  // JS after a normal scoped fetch — same pattern this codebase already
+  // uses for reservation/eligibility checks elsewhere in this file.
+  // Supervisor+ only (PUTAWAY_DISCREPANCY_REVIEW_ROLES) — an Operator sees
+  // the plain flag on their own row via findAll() above, not this fuller
+  // audit view.
+  async getDiscrepancies(user: any, warehouseId?: string) {
+    const where: any = { status: 'COMPLETED', scannedLocationId: { not: null }, task: { receiptLine: { receipt: { warehouse: { ...companyFilter(user) } } } } };
+    if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      where.task.receiptLine.receipt.warehouse.id = { in: ids };
+    }
+    if (warehouseId) where.task.receiptLine.receipt.warehouseId = warehouseId;
+
+    const locationSelect = { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true };
+    const trips = await this.prisma.putawayTrip.findMany({
+      where,
+      include: {
+        task: { select: { toLocationId: true, sku: { select: { code: true } }, toLocation: { select: locationSelect } } },
+        scannedLocation: { select: locationSelect },
+        claimedBy: { select: { name: true } },
+        discrepancyReviewedBy: { select: { name: true } },
+      },
+      orderBy: { completedAt: 'desc' },
+    });
+
+    return trips
+      .filter((tr: any) => tr.scannedLocationId !== tr.task.toLocationId)
+      .map((tr: any) => ({
+        tripId: tr.id,
+        skuCode: tr.task.sku.code,
+        assignedRackName: displayCode(tr.task.toLocation),
+        actualRackName: displayCode(tr.scannedLocation),
+        operatorName: tr.claimedBy.name,
+        completedAt: tr.completedAt,
+        reviewedAt: tr.discrepancyReviewedAt,
+        reviewedByName: tr.discrepancyReviewedBy?.name ?? null,
+      }));
+  }
+
+  // Marks one discrepancy reviewed — a Supervisor/Manager/Admin's
+  // acknowledgment that they've seen it and handled it physically (same
+  // "a status fact isn't the same as a human sign-off" reasoning as
+  // VehicleGateEntry.inwardCompletedAt). Idempotent on a second call, same
+  // convention as NotificationsService.acknowledge() — re-reviewing just
+  // re-stamps who/when rather than erroring.
+  async reviewDiscrepancy(tripId: string, user: any) {
+    const trip = await this.prisma.putawayTrip.findUnique({
+      where: { id: tripId },
+      include: { task: { include: { receiptLine: { include: { receipt: { include: { warehouse: true } } } } } } },
+    });
+    if (!trip) throw new NotFoundException('Trip not found.');
+    const warehouse = (trip.task as any).receiptLine.receipt.warehouse;
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this trip.');
+    if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouse.id)) throw new ForbiddenException('You do not have access to this trip.');
+    }
+    return this.prisma.putawayTrip.update({
+      where: { id: tripId },
+      data: { discrepancyReviewedAt: new Date(), discrepancyReviewedById: user.userId },
+    });
   }
 
   private async assertTaskAccess(id: string, user: any) {
@@ -622,11 +698,37 @@ export class PutawayTasksService {
     });
   }
 
-  // The location scan — completes a trip. Only a scan matching the task's
-  // own toLocationId is ever accepted; a mismatch hard-blocks with no
-  // override, per the client's explicit "doesnt allow operator to
-  // override." Writes the real PUTAWAY_OUT/PUTAWAY_IN StockMovement pair
-  // for this trip's quantity, carrying receivedDate forward unchanged.
+  // Resolves a scanned/typed string to a real, active Location within one
+  // warehouse — used by completeTrip()'s override path (2026-09-06) to find
+  // whatever bin an operator ACTUALLY scanned, not just check it against
+  // the one bin that was expected. Tries the raw `code` first (a single
+  // indexed lookup, the common case since it's also what's printed on a
+  // real Location Label alongside the Rack Name) — falls back to computing
+  // buildRackName() over every active location in the warehouse only if
+  // that fails, since Rack Name isn't a stored/indexable column.
+  private async resolveLocationInWarehouse(warehouseId: string, trimmed: string) {
+    const byCode = await this.prisma.location.findFirst({ where: { warehouseId, isActive: true, code: { equals: trimmed, mode: 'insensitive' } } });
+    if (byCode) return byCode;
+    const candidates = await this.prisma.location.findMany({ where: { warehouseId, isActive: true } });
+    return candidates.find((l: any) => buildRackName(l)?.toUpperCase() === trimmed) ?? null;
+  }
+
+  // The location scan — completes a trip. By default, only a scan matching
+  // the task's own toLocationId is ever accepted; a mismatch hard-blocks
+  // with no override, per the client's original explicit "doesnt allow
+  // operator to override." Revisited 2026-09-06 (Plan View backlog items
+  // 2/3 — see [[wms-putaway-design]]): when the warehouse's own company has
+  // `allowPutawayLocationOverride` on, a scan resolving to any OTHER real,
+  // active Location in the same warehouse now completes the trip too —
+  // confirmed directly NOT to re-run suggestBin()'s own eligibility rules
+  // against it (the whole point is trusting the operator's own physical
+  // judgment, not second-guessing it), and frictionless — no reason/note
+  // required, the discrepancy record itself (assigned vs. actual bin, who,
+  // when) is the audit trail. Writes the real PUTAWAY_OUT/PUTAWAY_IN
+  // StockMovement pair for this trip's quantity, carrying receivedDate
+  // forward unchanged — the PUTAWAY_IN lands at wherever the stock
+  // PHYSICALLY is (the resolved target), never blindly at the original
+  // assignment, so the ledger stays honest even when overridden.
   async completeTrip(tripId: string, locationCode: any, user: any) {
     const trip = await this.prisma.putawayTrip.findUnique({ where: { id: tripId }, include: { task: true } });
     if (!trip) throw new NotFoundException('Trip not found.');
@@ -642,21 +744,29 @@ export class PutawayTasksService {
     // above), since 2026-08-29 the task screen shows Rack Name, not the
     // raw code, so whatever's displayed must be exactly what completes
     // the trip when typed/scanned back.
-    const scannedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
-    const rackName = buildRackName(scannedLocation as any);
-    const matches = !!scannedLocation && (scannedLocation.code.toUpperCase() === trimmed || (rackName != null && rackName.toUpperCase() === trimmed));
+    const assignedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
+    const assignedRackName = buildRackName(assignedLocation as any);
+    const matchesAssigned = !!assignedLocation && (assignedLocation.code.toUpperCase() === trimmed || (assignedRackName != null && assignedRackName.toUpperCase() === trimmed));
 
-    if (!matches) {
-      throw new BadRequestException(`Wrong location — this must be put away at the assigned bin, not "${trimmed}".`);
+    let targetLocation = assignedLocation;
+    if (!matchesAssigned) {
+      const warehouse = await this.prisma.warehouse.findUnique({ where: { id: assignedLocation!.warehouseId }, select: { company: { select: { allowPutawayLocationOverride: true } } } });
+      if (!warehouse?.company.allowPutawayLocationOverride) {
+        throw new BadRequestException(`Wrong location — this must be put away at the assigned bin, not "${trimmed}".`);
+      }
+      const resolved = await this.resolveLocationInWarehouse(assignedLocation!.warehouseId, trimmed);
+      if (!resolved) {
+        throw new BadRequestException(`"${trimmed}" isn't a recognized location in this warehouse — scan a real bin's label.`);
+      }
+      targetLocation = resolved;
     }
-    const targetLocation = scannedLocation!;
 
     const receivedDate = await this.resolveReceivedDate(this.prisma, (await this.prisma.inboundReceiptLine.findUnique({ where: { id: task.receiptLineId }, select: { receiptId: true } }))!.receiptId);
 
     return this.prisma.$transaction(async (tx) => {
       const updatedTrip = await tx.putawayTrip.update({
         where: { id: tripId },
-        data: { status: 'COMPLETED', scannedLocationId: targetLocation.id, completedAt: new Date() },
+        data: { status: 'COMPLETED', scannedLocationId: targetLocation!.id, completedAt: new Date() },
       });
 
       // palletLoadId carried forward unchanged, same as receivedDate above
@@ -666,7 +776,7 @@ export class PutawayTasksService {
       // pick from.
       await tx.stockMovement.create({
         data: {
-          warehouseId: targetLocation.warehouseId,
+          warehouseId: targetLocation!.warehouseId,
           skuId: task.skuId,
           locationId: task.fromLocationId,
           quantity: -Number(trip.quantity),
@@ -680,9 +790,13 @@ export class PutawayTasksService {
       });
       await tx.stockMovement.create({
         data: {
-          warehouseId: targetLocation.warehouseId,
+          warehouseId: targetLocation!.warehouseId,
           skuId: task.skuId,
-          locationId: task.toLocationId,
+          // The REAL destination — the original assignment (task.toLocationId)
+          // only when there's no override in play; a resolved override
+          // target otherwise, so on-hand stock always reflects where the
+          // item physically landed, never the stale assignment.
+          locationId: targetLocation!.id,
           quantity: Number(trip.quantity),
           movementType: 'PUTAWAY_IN',
           referenceType: 'PutawayTrip',

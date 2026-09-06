@@ -92,6 +92,17 @@ export const INBOUND_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'
 // distinction.
 export const PUTAWAY_EXECUTE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
 export const PUTAWAY_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+// Location-override discrepancy review (2026-09-06) — Supervisor-and-up,
+// same tier as INBOUND_APPROVE_ROLES (approving a blocked scan) — an
+// Operator can complete an overridden trip and see the plain flag on their
+// own row via PUTAWAY_EXECUTE_ROLES's own findAll(), but reviewing/
+// dismissing a discrepancy (their own or anyone else's) is a step above
+// that, same "the scanning operator can never resolve their own blocked
+// scan" principle Inbound already established. A separate named constant
+// from INBOUND_APPROVE_ROLES on purpose even though the values are
+// identical today — same "distinct destinations that could diverge later"
+// reasoning as CAN_VIEW_INSIGHTS/CAN_VIEW_ANALYTICS.
+export const PUTAWAY_DISCREPANCY_REVIEW_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
 export async function assertGateAccessAllowed(prisma: { company: { findUnique: Function } }, user: any): Promise<void> {
   if (GATE_YARD_ALWAYS_ALLOWED_ROLES.includes(user.role)) return;

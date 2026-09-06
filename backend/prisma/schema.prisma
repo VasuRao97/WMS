@@ -195,6 +195,21 @@ model Company {
   // on/off switch: "keep this toggle in the company tab for us to switch
   // things here and there."
   putawayAssignmentGraceMinutes Int @default(2)
+
+  // Putaway location override (2026-09-06, Plan View backlog items 2/3 —
+  // see [[wms-putaway-design]]) — the original hard-block ("only a correct
+  // scan would complete the process") stays the default for every company;
+  // this is an explicit per-company opt-in for clients who want operators
+  // able to complete a trip at a DIFFERENT real, active location than the
+  // one assigned, rather than being stuck. Confirmed directly: the
+  // override doesn't re-run suggestBin()'s own eligibility rules against
+  // the scanned location (defeats the point of trusting the operator to
+  // place it somewhere that physically works) — it just has to be a real
+  // location, not free text. Enabling this is what makes a discrepancy
+  // (assigned bin != actually-scanned bin) possible in the ledger at all;
+  // see PutawayTrip.scannedLocationId/discrepancyReviewedAt for how it's
+  // tracked once it happens.
+  allowPutawayLocationOverride Boolean @default(false)
 }
 
 enum AgingGranularity {
@@ -267,6 +282,7 @@ model User {
 
   receiptsCreated               InboundReceipt[]        @relation("ReceiptCreatedBy")
   putawayTripsClaimed           PutawayTrip[]           @relation("PutawayTripClaimedBy")
+  putawayDiscrepanciesReviewed  PutawayTrip[]           @relation("PutawayTripDiscrepancyReviewedBy")
   putawayReassignmentsRequested PutawayReassignment[]   @relation("PutawayReassignmentRequestedBy")
   palletLoadsClosed             PalletLoad[]            @relation("PalletLoadClosedBy")
   multiSkuLaneRequestsRequested MultiSkuLaneException[] @relation("MultiSkuLaneRequestedBy")
@@ -1996,13 +2012,34 @@ model PutawayTrip {
   claimedAt             DateTime @default(now())
   stagingBarcodeScanned String?
 
-  // The location scan — completes this trip. Only a scan matching the
-  // task's own toLocationId is ever accepted ("only a correct scan would
-  // complete the process... doesnt allow operator to override") — a
-  // mismatched scan is rejected outright, not recorded here at all.
+  // The location scan — completes this trip. Originally ("only a correct
+  // scan would complete the process... doesnt allow operator to override")
+  // this only ever recorded a scan matching the task's own toLocationId —
+  // a mismatch was rejected outright, never even stored here. Revisited
+  // 2026-09-06 (Plan View backlog items 2/3, see [[wms-putaway-design]]):
+  // when Company.allowPutawayLocationOverride is on, a scan resolving to
+  // ANY other real, active Location in the same warehouse now completes
+  // the trip too — `scannedLocationId` is the actual physical location the
+  // stock landed at (what the PUTAWAY_IN movement's own locationId uses),
+  // while the task's own `toLocationId` stays the original assignment
+  // untouched — a mismatch between the two IS the discrepancy signal, no
+  // separate flag needed. Toggle off preserves the original hard-block
+  // behavior exactly, so this stays optional/nullable either way.
   scannedLocationId String?
   scannedLocation   Location? @relation("PutawayTripScannedLocation", fields: [scannedLocationId], references: [id])
   completedAt       DateTime?
+
+  // Discrepancy review (2026-09-06) — a Supervisor/Manager/Admin's
+  // acknowledgment that they've seen and physically handled a mismatch
+  // between the assigned bin and where this trip's scannedLocationId
+  // actually landed. Deliberately NOT auto-set by anything — a human
+  // decision, same "a status fact isn't the same as a human sign-off"
+  // reasoning as VehicleGateEntry.inwardCompletedAt. Null on every trip
+  // that either has no discrepancy at all, or has one nobody has reviewed
+  // yet.
+  discrepancyReviewedAt   DateTime?
+  discrepancyReviewedById String?
+  discrepancyReviewedBy   User?     @relation("PutawayTripDiscrepancyReviewedBy", fields: [discrepancyReviewedById], references: [id])
 }
 
 // Audit trail of "request a different bin" (2026-08-28) — a task can

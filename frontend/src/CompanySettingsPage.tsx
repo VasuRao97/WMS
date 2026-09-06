@@ -33,6 +33,7 @@ type Settings = {
   putawayDefaultBatchQty?: number | string | null;
   defaultMaxCasesPerPallet?: number | string | null;
   putawayAssignmentGraceMinutes?: number | string;
+  allowPutawayLocationOverride?: boolean;
 };
 
 // Aging Methodology (2026-08-29) is warehouse-scoped, not company-scoped —
@@ -54,6 +55,7 @@ function CompanySettingsPage() {
   const [putawayDefaultBatchQty, setPutawayDefaultBatchQty] = useState('');
   const [defaultMaxCasesPerPallet, setDefaultMaxCasesPerPallet] = useState('');
   const [putawayAssignmentGraceMinutes, setPutawayAssignmentGraceMinutes] = useState('2');
+  const [allowPutawayLocationOverride, setAllowPutawayLocationOverride] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [keyError, setKeyError] = useState('');
@@ -84,6 +86,7 @@ function CompanySettingsPage() {
         setPutawayDefaultBatchQty(data.putawayDefaultBatchQty != null ? String(data.putawayDefaultBatchQty) : '');
         setDefaultMaxCasesPerPallet(data.defaultMaxCasesPerPallet != null ? String(data.defaultMaxCasesPerPallet) : '');
         setPutawayAssignmentGraceMinutes(data.putawayAssignmentGraceMinutes != null ? String(data.putawayAssignmentGraceMinutes) : '2');
+        setAllowPutawayLocationOverride(!!data.allowPutawayLocationOverride);
       });
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
       .then((res) => (res.status === 401 ? null : res.json()))
@@ -153,6 +156,7 @@ function CompanySettingsPage() {
         putawayDefaultBatchQty: putawayDefaultBatchQty === '' ? null : putawayDefaultBatchQty,
         defaultMaxCasesPerPallet: defaultMaxCasesPerPallet === '' ? null : defaultMaxCasesPerPallet,
         putawayAssignmentGraceMinutes: putawayAssignmentGraceMinutes === '' ? undefined : putawayAssignmentGraceMinutes,
+        allowPutawayLocationOverride,
       }),
     });
     const data = await res.json();
@@ -276,6 +280,20 @@ function CompanySettingsPage() {
               escalates to the Warehouse Manager. One dial, reused for both steps.
             </p>
             <input value={putawayAssignmentGraceMinutes} onChange={(e) => setPutawayAssignmentGraceMinutes(e.target.value)} placeholder="2" style={{ width: 100, padding: 6 }} />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={allowPutawayLocationOverride} onChange={(e) => setAllowPutawayLocationOverride(e.target.checked)} style={{ marginTop: 3 }} />
+              <span>
+                <strong>Allow Putaway location override</strong>
+                <br />
+                <span style={{ color: '#888', fontSize: 12 }}>
+                  Off by default: completing a trip only ever accepts a scan of the exact assigned bin. Turn this on to
+                  let operators complete at a different real, active bin instead when the assigned one doesn't work —
+                  any mismatch is flagged as a discrepancy for a Supervisor/Manager/Admin to review on the Putaway page.
+                </span>
+              </span>
+            </label>
           </div>
 
           {error && <p style={{ color: 'crimson' }}>{error}</p>}
