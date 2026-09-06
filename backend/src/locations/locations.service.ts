@@ -306,6 +306,44 @@ export class LocationsService {
     return { storageType };
   }
 
+  // The actual guard rail the TNR8 bug above should have hit BEFORE any bad
+  // data got written, not just a fix to what happens after the fact — the
+  // client's own direct follow-up once that bug was explained ("should we
+  // put a fix that if someone tries to superimpose 2 storage types we need
+  // to say NO to it?"). Blocks writing a Location into an Aisle some OTHER,
+  // conflicting flank family already occupies — same family (e.g. SPR next
+  // to Drive-in) stays completely fine, only a genuine cross-family clash
+  // (Rack vs Ground/Floor, or either vs Stillage) is refused. A hard block,
+  // not a warning — this isn't a policy call a client might reasonably want
+  // to override, it's the same class of physical impossibility as Drive-in's
+  // single-SKU column rule (two unrelated structures cannot actually occupy
+  // one Aisle identity in a real warehouse).
+  //
+  // `previousAisle` matters for `update()` specifically: TNR8's own real
+  // data, once backfilled with correct non-colliding flank numbers, now
+  // LEGITIMATELY has SPR and Ground/Floor coexisting under Aisle "1" side by
+  // side — editing one of those pre-existing rows (its Aisle unchanged)
+  // must not suddenly start failing just because a sibling row of a
+  // different family already happens to live there. The check only fires
+  // when the row's Aisle is actually CHANGING (including a brand-new row,
+  // where `previousAisle` is undefined) — moving/creating into a genuinely
+  // conflicting Aisle is exactly the mistake this exists to catch; leaving
+  // an already-settled row where it already was never re-triggers it.
+  private async assertNoConflictingFamily(warehouseId: string, aisle: string, storageType: string, previousAisle: string | undefined, errors: string[], excludeId?: string): Promise<void> {
+    if (previousAisle === aisle) return;
+    const conflict = await this.prisma.location.findFirst({
+      where: { warehouseId, aisle, NOT: this.flankFamilyFilter(storageType), ...(excludeId ? { id: { not: excludeId } } : {}) },
+      select: { storageType: true },
+    });
+    if (conflict) {
+      const existingLabel = STORAGE_TYPE_LABELS[conflict.storageType] ?? conflict.storageType;
+      const incomingLabel = STORAGE_TYPE_LABELS[storageType] ?? storageType;
+      errors.push(
+        `Aisle "${aisle}" already has ${existingLabel} locations — a ${incomingLabel} location can't share the same Aisle number with a different physical storage structure. Use a different Aisle number for this batch.`,
+      );
+    }
+  }
+
   private async resolveFlankNumber(warehouseId: string, aisle: string, storageType: string, isSecondary: boolean, excludeId?: string): Promise<{ flankNumber: number; isSecondaryFlank: boolean }> {
     const existing = await this.prisma.location.findMany({
       where: { warehouseId, aisle, flankNumber: { not: null }, ...this.flankFamilyFilter(storageType), ...(excludeId ? { id: { not: excludeId } } : {}) },
@@ -325,7 +363,7 @@ export class LocationsService {
   // returns everything needed to insert it (or the errors blocking it). Never
   // throws; callers decide single-record (throw) vs batch (collect) handling.
   // Same "one function, many callers" shape as SkusService.validateSkuData.
-  private async prepareRow(data: any, user: any, excludeId?: string): Promise<{ errors: string[]; warehouseId?: string; zoneType?: string; storageType?: string; categoryId?: string; fields?: Record<string, any>; code?: string }> {
+  private async prepareRow(data: any, user: any, excludeId?: string, previousAisle?: string): Promise<{ errors: string[]; warehouseId?: string; zoneType?: string; storageType?: string; categoryId?: string; fields?: Record<string, any>; code?: string }> {
     const errors: string[] = [];
     const { zoneType, storageType, fields } = this.buildLocationFields(data, errors);
     const categoryId = await this.resolveCategory(data.category, errors);
@@ -334,7 +372,8 @@ export class LocationsService {
     else await this.assertWarehouseAccess(warehouseId, user, errors);
     let isSecondaryFlank = false;
     if (warehouseId && fields.aisle && errors.length === 0) {
-      const resolvedSection = await this.assertSectionConsistency(warehouseId, fields.aisle, data.section, errors, excludeId);
+      await this.assertNoConflictingFamily(warehouseId, fields.aisle, storageType, previousAisle, errors, excludeId);
+      const resolvedSection = errors.length === 0 ? await this.assertSectionConsistency(warehouseId, fields.aisle, data.section, errors, excludeId) : undefined;
       if (resolvedSection) fields.section = resolvedSection;
       // Only generate() ever sets data.isSecondary (true for a row from a
       // Second Range or the "mirror" checkbox) — manual create/import never
@@ -344,9 +383,11 @@ export class LocationsService {
       // in which case it's ambiguous which one a hand-typed row belongs to
       // and this defaults to the primary — a real known limitation, not an
       // oversight (manual create is the rare/secondary path; see CLAUDE.md).
-      const resolved = await this.resolveFlankNumber(warehouseId, fields.aisle, storageType, !!data.isSecondary, excludeId);
-      fields.flankNumber = resolved.flankNumber;
-      isSecondaryFlank = resolved.isSecondaryFlank;
+      if (errors.length === 0) {
+        const resolved = await this.resolveFlankNumber(warehouseId, fields.aisle, storageType, !!data.isSecondary, excludeId);
+        fields.flankNumber = resolved.flankNumber;
+        isSecondaryFlank = resolved.isSecondaryFlank;
+      }
     }
     if (errors.length > 0) return { errors };
     return { errors, warehouseId, zoneType, storageType, categoryId, fields, code: this.buildCode(storageType, fields, isSecondaryFlank) };
@@ -798,7 +839,7 @@ export class LocationsService {
   async update(id: string, data: any, user: any) {
     const existingLocation = await this.assertAccess(id, user);
 
-    const prepared = await this.prepareRow({ ...data, warehouseId: data.warehouseId || existingLocation.warehouseId }, user, id);
+    const prepared = await this.prepareRow({ ...data, warehouseId: data.warehouseId || existingLocation.warehouseId }, user, id, existingLocation.aisle ?? undefined);
     if (prepared.errors.length > 0) throw new BadRequestException(prepared.errors);
 
     const duplicate = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: prepared.warehouseId!, code: prepared.code! } } });
