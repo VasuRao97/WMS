@@ -3699,6 +3699,46 @@ page and re-entering 3D on Aisle 1 now correctly settles into a visible, well-fr
 few seconds with no manual zoom needed (previously stayed blank indefinitely until a manual
 scroll-to-zoom). `tsc -b` clean both times. Throwaway company cleaned up afterward.
 
+**Two more real bugs, same day, immediate follow-up**: the client tested the fix above and reported
+the 3D view was STILL unusable ("i cannot see anything in it, let it be the cubes we decided
+earlier") — the `computeFocus()` height fix alone wasn't enough. The actual root cause, found by
+inspecting `CameraRig`: `<Canvas camera={{ position: focus.camPos }}>` already placed the CAMERA
+correctly on mount, but `<OrbitControls>` has no `target` prop (deliberately — `CameraRig` owns it
+imperatively), so `controls.target` started at three.js's own default `(0,0,0)` instead of the real
+initial focus target. The camera sat in the right place but was aimed at the ORIGIN — for a small
+default layout this was a minor misframe, but the whole point of the earlier height fix (bigger
+`span`, camera further out) made the resulting angle-off-target far more likely to show nothing at
+all, and it only "self-corrected" once the slow per-frame lerp (0.08) crawled `controls.target` from
+`(0,0,0)` to the real target over a couple of seconds — reading as a stuck blank canvas the whole
+time it converged, not a crash. Fixed with a `useEffect` in `CameraRig` that runs ONCE on mount and
+snaps `controls.target` straight to the correct initial value with no animation — the very first
+frame is now already correct; every LATER focus change (checking a different aisle) still animates
+smoothly via the existing `useFrame` lerp, untouched.
+
+**The second, unrelated bug the client caught in the same pass**: "3 deep should be 3 deep from both
+sides of aisle? we had a deep discussion and aligned this... I think we corrected it in our layout
+generator." Correct — `LocationsService`'s real range generator has built both flanks of a mirrored
+aisle since 2026-08-25, but `SimulationService.buildLayout()` had only ever built ONE flank per aisle
+(`flankNumber: aisle`, explicitly commented at the time as "a simple single-sided default layout is
+enough to watch the algorithm work") — a fair v1 simplification before Depth was configurable, not a
+fair physical picture once it became something worth actually looking at. Fixed: `buildLayout()` now
+allocates TWO flank numbers per aisle (sequential, matching the real generator's warehouse-wide
+`nextFlankNumber` allocation) and builds each one the full configured Depth, both flanks reusing the
+same rack numbers (the "mirror" convention) with the secondary flank's `code` getting the same `B`
+suffix `LocationsService.buildCode()` already uses. `layoutMatches()` also gained a flank-count check
+(`DEFAULT_AISLES * 2`) specifically so a sandbox built before this fix correctly rebuilds itself the
+next time Run is clicked — the same auto-rebuild-on-mismatch path every other config change already
+uses, no separate migration needed.
+
+Verified live end-to-end (throwaway company `SIMCAM1`): re-ran Levels=5/Depth=3/SPR through the real
+UI on a fresh company — confirmed 3D now renders visibly on the very first frame with no wait at all
+(both the default whole-warehouse overview and a selected aisle's full detail), and confirmed 2D now
+shows Aisle 3 as two real flanks (`R5` and `R6`, both fully 3-deep with `D1/D2/D3`) with a walkway
+between them, matching `LocationsService`'s own mirrored-aisle convention exactly. Cross-checked via
+Warehouse Master's Storage Type Mapping table: `Mapped` count exactly doubled to 270 (3 aisles × 3
+racks × 5 levels × 3 depth × 2 flanks), confirming the fix precisely. `tsc --noEmit`/`tsc -b` both
+clean. Throwaway company cleaned up afterward.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full

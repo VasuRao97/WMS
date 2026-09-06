@@ -119,7 +119,7 @@ export class SimulationService {
 
     const existingLocations = await this.prisma.location.findMany({
       where: { warehouseId: warehouse.id },
-      select: { storageType: true, level: true, depth: true },
+      select: { storageType: true, level: true, depth: true, flankNumber: true },
     });
 
     if (existingLocations.length === 0) {
@@ -132,16 +132,20 @@ export class SimulationService {
   }
 
   // Whether the sandbox's CURRENT locations already match a requested
-  // config — every row the same Storage Type, and the highest Level/Depth
-  // number present equal to what's requested (the sandbox only ever holds
-  // one shape at a time, so "the max present" is enough to characterize it,
-  // no need to check every individual row for a gap).
-  private layoutMatches(locations: { storageType: string; level: string | null; depth: number | null }[], config: SandboxLayoutConfig): boolean {
+  // config — every row the same Storage Type, the highest Level/Depth
+  // number present equal to what's requested, and BOTH flanks present per
+  // aisle (DEFAULT_AISLES * 2 distinct flankNumbers — see buildLayout()'s
+  // comment) rather than the old single-flank shape (2026-09-06 fix, see
+  // below) — so a sandbox built before that fix correctly rebuilds itself
+  // the next time Run is clicked, the same auto-rebuild-on-mismatch path
+  // every other config change already goes through, no separate migration.
+  private layoutMatches(locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null }[], config: SandboxLayoutConfig): boolean {
     if (locations.length === 0) return false;
     if (locations.some((l) => l.storageType !== config.storageType)) return false;
     const maxLevel = Math.max(...locations.map((l) => Number(l.level) || 1));
     const maxDepth = Math.max(...locations.map((l) => l.depth ?? 1));
-    return maxLevel === config.levels && maxDepth === config.depth;
+    const flankCount = new Set(locations.map((l) => l.flankNumber)).size;
+    return maxLevel === config.levels && maxDepth === config.depth && flankCount === DEFAULT_AISLES * 2;
   }
 
   // Builds the sandbox's Rack layout fresh — Aisles/Racks fixed at
@@ -151,6 +155,23 @@ export class SimulationService {
   // LocationsService.generate() itself uses for a multi-deep lane — this is
   // what actually lets a Drive-in configuration exercise its own
   // deepest-tier-first fill order for real.
+  //
+  // BOTH flanks per aisle (2026-09-06 fix, caught live: "3 deep should be 3
+  // deep from both sides of aisle... we corrected it in our layout
+  // generator") — the real align-before-coding conversation behind
+  // `LocationsService.resolveFlankNumber`/the "mirror same numbers on other
+  // side" generator option established that a real aisle normally has racks
+  // on BOTH sides, each independently as deep as the other. The sandbox's
+  // very first version only ever built one flank per aisle (a deliberate
+  // v1 simplification, documented as such at the time) — real enough to
+  // exercise the algorithm's per-lane logic, but not a fair physical
+  // picture once Depth became something worth actually looking at. Both
+  // flanks here reuse the SAME rack numbers (the "mirror" convention, not
+  // "continuous numbering") — simplest, and `flankNumber` already makes
+  // them physically distinct lanes regardless of the shared numbers, same
+  // as the real generator. `buildCode()`'s own suffix convention is
+  // mirrored too: the secondary flank's code gets a `B` appended right
+  // after the rack segment, so codes stay unique despite reusing numbers.
   private async buildLayout(warehouseId: string, categoryId: string, config: SandboxLayoutConfig) {
     const existingStorageType = await this.prisma.warehouseStorageType.findFirst({
       where: { warehouseId, storageType: config.storageType, categoryId },
@@ -168,26 +189,34 @@ export class SimulationService {
     }
 
     const rows: any[] = [];
+    let nextFlankNumber = 0;
     for (let aisle = 1; aisle <= DEFAULT_AISLES; aisle++) {
-      for (let rack = 1; rack <= DEFAULT_RACKS; rack++) {
-        for (let level = 1; level <= config.levels; level++) {
-          for (let depth = 1; depth <= config.depth; depth++) {
-            const aisleStr = String(aisle);
-            const rackStr = String(rack).padStart(2, '0');
-            const depthSuffix = config.depth > 1 ? `-D${depth}` : '';
-            rows.push({
-              warehouseId,
-              code: `${aisleStr}-R${rackStr}-L${String(level).padStart(2, '0')}-B1${depthSuffix}`,
-              zoneType: 'ACTUAL_STORAGE',
-              storageType: config.storageType,
-              categoryId,
-              aisle: aisleStr,
-              rack: rackStr,
-              level: String(level),
-              bin: '1',
-              depth: config.depth > 1 ? depth : undefined,
-              flankNumber: aisle, // one flank per aisle — a simple single-sided default layout is enough to watch the algorithm work
-            });
+      const aisleStr = String(aisle);
+      const flanks: { flankNumber: number; isSecondary: boolean }[] = [
+        { flankNumber: ++nextFlankNumber, isSecondary: false },
+        { flankNumber: ++nextFlankNumber, isSecondary: true },
+      ];
+      for (const { flankNumber, isSecondary } of flanks) {
+        const codeSuffix = isSecondary ? 'B' : '';
+        for (let rack = 1; rack <= DEFAULT_RACKS; rack++) {
+          const rackStr = String(rack).padStart(2, '0');
+          for (let level = 1; level <= config.levels; level++) {
+            for (let depth = 1; depth <= config.depth; depth++) {
+              const depthSuffix = config.depth > 1 ? `-D${depth}` : '';
+              rows.push({
+                warehouseId,
+                code: `${aisleStr}-R${rackStr}${codeSuffix}-L${String(level).padStart(2, '0')}-B1${depthSuffix}`,
+                zoneType: 'ACTUAL_STORAGE',
+                storageType: config.storageType,
+                categoryId,
+                aisle: aisleStr,
+                rack: rackStr,
+                level: String(level),
+                bin: '1',
+                depth: config.depth > 1 ? depth : undefined,
+                flankNumber,
+              });
+            }
           }
         }
       }

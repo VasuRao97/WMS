@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Edges, Grid, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -265,6 +265,30 @@ function CameraRig({ camPos, target, controlsRef }: { camPos: [number, number, n
     prevKey.current = key;
     animating.current = true;
   }
+
+  // Real root cause of "I cannot see anything in it" (2026-09-06, caught by
+  // the client's own live testing): `<Canvas camera={{ position: camPos }}>`
+  // already places the camera correctly on mount, but `OrbitControls` itself
+  // has no `target` prop (deliberately — CameraRig owns it imperatively, see
+  // below), so `controls.target` starts at three.js's own default (0,0,0)
+  // instead of the real initial focus target. The camera sat in the RIGHT
+  // place but was aimed at the ORIGIN — for a small default layout the
+  // resulting angle was off enough to look empty, and it only "fixed
+  // itself" once the slow per-frame lerp (0.08) crawled `controls.target`
+  // from (0,0,0) to the real target over a couple of seconds, which reads
+  // as a blank canvas the whole time it's converging. This effect runs
+  // ONCE on mount and snaps `controls.target` straight to the correct
+  // initial value with no animation — the very first frame is already
+  // correct. Every LATER focus change (checking a different aisle) still
+  // animates smoothly via the useFrame lerp below, untouched.
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.target.set(target[0], target[1], target[2]);
+      controls.update();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useFrame(({ camera }) => {
     if (!animating.current) return;
