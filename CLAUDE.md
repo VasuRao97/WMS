@@ -4449,6 +4449,57 @@ the same day, not yet designed — combining ABC classification with a new FMS (
 moving, movement-frequency) axis for a more precise Putaway placement rule than either axis gives
 alone. Needs its own align-before-coding pass before any schema, same as Topics 1/2 did.
 
+### Locations/Bins: a real flankNumber collision bug, plus Ground box size parity (2026-09-06, next session)
+A live client bug report, not a design conversation: "i generated ground storage locations in tnr8
+warehouse, but in both 2d and 3d view i cannot find them" — plus a second, related observation from
+the same message: "pallet sizes are same, but in your diagram, 16 pallets of 1 bin of ground looks
+equal to your rack's one pallet? pls check."
+
+**Root cause, traced against the real dev DB (read-only) rather than guessed**: the client's real
+`TNR8` warehouse has SPR racks AND Ground/Floor blocks both generated under the same Aisle code
+`"1"` — plausible to do by accident (or even deliberately, not realizing an Aisle number needs to
+stay unique per physical structure). `LocationsService.resolveFlankNumber()` — which decides whether
+a new batch reuses an Aisle's existing flank number or allocates a fresh one — scoped its "does this
+Aisle already have a flank" lookup by Aisle code ALONE, with no `storageType` filter at all. So the
+Ground/Floor batch (generated after the SPR racks) saw "Aisle 1 already has flankNumbers [1, 2]" and
+silently REUSED them, rather than getting its own. `LocationsPlanView.tsx`/`Locations3DView.tsx` both
+assume `flankNumber` uniquely identifies one physical flank (at most two per Aisle) — two unrelated
+storage types sharing one collapses their rows into the same position slot in the Plan View grouping,
+garbling the render. The Ground locations were never actually missing — they were there, just
+silently entangled with the pre-existing SPR rows at the same Aisle+flank+position key, which is
+exactly what the client's own screenshot showed (overlapping/doubled box text where Ground and SPR
+boxes fought for the same coordinate slot).
+
+**Fix**: `resolveFlankNumber()` now scopes its lookup to the same "flank family"
+`LocationsPlanView.tsx`'s own grouping already uses — `RACK_STORAGE_TYPES` (SPR/Drive-in/ASRS) share
+one space (a real aisle can legitimately mix rack sub-types on one flank, and the Plan View already
+renders them together), Ground/Floor and Stillage each get their own. A new `flankFamilyFilter()`
+helper backs both the existing-flank lookup and stays consistent with the exact same family boundary
+the frontend already treats as one visual unit. **Only affects NEW generations going forward** — the
+client's real `TNR8` warehouse still has its already-corrupted flankNumbers on the 1200 existing
+Ground rows; fixing those (a backfill or a full regenerate) needs the client's own go-ahead before
+touching real data, not something to do unilaterally.
+
+**The second complaint, addressed separately**: 2D's Ground box (`LocationsPlanView.tsx`) was always
+exactly `CELL_W` wide — identical to a single Rack pallet box — regardless of how many real columns
+it actually holds. Now scales box width proportionally to real column count (`GROUND_WIDTH_CAP_
+MULTIPLIER`, capped at 6× to bound the layout for an unusually wide bin), so a 4-column bin reads as
+visibly ~4× bigger than a 1-pallet rack box instead of the same size. Deliberately a bounded,
+low-risk fix — WIDTH only, height stays fixed `CELL_H` so every row's vertical spacing/pairing
+between flanks is completely untouched (reuses the exact same "cells can be different widths within
+one flank, anchored near edge, ragged far edge" mechanism Rack's own multi-depth boxes already
+established) — not the fuller "one real sub-box per column×depth position" treatment 3D already got
+in the previous pass (`40bc66f3`), which remains a larger, still-open follow-up if more visual
+fidelity in 2D specifically is wanted later. 3D itself needed no change here — it already renders
+each real position as its own box, so the size disparity was already accurate there.
+
+Verified live end-to-end (a throwaway warehouse deliberately reproducing the exact client mistake —
+SPR generated under Aisle "1", then Ground/Floor ALSO generated under Aisle "1"): confirmed via the
+real rendered UI that SPR and Ground now split into two cleanly separate, correctly-labeled flanks
+(`R1`/`R2`) with zero overlap in both 2D and 3D, and confirmed the Ground box renders visibly ~4×
+wider than the SPR box in 2D, matching the real, dramatically-larger footprint 3D already showed.
+`tsc --noEmit`(backend)/`tsc -b`(frontend) both clean. Throwaway company cleaned up afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No

@@ -4,7 +4,16 @@ A forward-looking plan — what's shipped, what's next, and what's deliberately 
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
 what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **the
 FMS×ABC combined-classification study** (see "Immediate candidates" below) — the client's own
-stated next topic once Ground/Floor Putaway was fully aligned. Most recently, same day: **the
+stated next topic once Ground/Floor Putaway was fully aligned. **Open item before that, though**: a
+real client bug report needs a decision — the `TNR8` warehouse has SPR and Ground/Floor both
+generated under Aisle "1" by mistake, which corrupted their flankNumbers (a real generator bug, now
+fixed for new generations — see CLAUDE.md's "Locations/Bins: a real flankNumber collision bug"
+section) but the ~1200 EXISTING Ground rows in that warehouse are still on the old, colliding
+flankNumbers. Needs the client's own call: backfill those rows' flankNumbers, or just delete and
+regenerate that warehouse's Ground/Floor locations now that the underlying bug is fixed. Also fixed
+the same session, a related visual gap the client caught in the same message: 2D's Ground box is now
+sized proportionally to its real column count instead of always matching a single rack pallet's box
+size. Most recently, same day, before that: **the
 Putaway Simulation sandbox now supports Ground/Floor as a selectable storage type** — "can we have a
 simulator now for ground?" — closing the last gap in the sandbox's storage-type coverage
 (SPR/Drive-in/ASRS already worked). Investigating this surfaced and fixed two real, pre-existing
