@@ -2,8 +2,25 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06, later the same day:
-a deliberate **hardening pass** (line-by-line correctness/performance review, not a new module) —
+what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **Ground/
+Floor Putaway — schema built, logic next.** Picked ahead of Inventory and the FMS×ABC study on a
+real argument (Inventory's gap is a missing convenience since on-hand data is already derivable
+elsewhere; Ground/Floor's is a missing *capability* — `suggestBin()` returns `NEEDS_BIN`
+unconditionally for that storage type, no workaround, and the gap had been independently re-flagged
+three separate times before finally getting tackled). A full design conversation settled the
+physical model (a bin subdivides into single-file LIFO "columns," mechanically identical to a Rack
+lane just laid flat), a genuinely new column-lifecycle rule (closed to new putaway once picking
+starts on it, until fully empty — feeding the still-unbuilt reslotting engine), and per-class
+`respectsColumnBoundariesA/B/C/D` toggles (the client's own explicit ask — "give the flexibility to
+A B C D"). Also closed a real, unrelated gap discovered along the way: `WarehouseStorageType.
+maxSkusClassA/B/C` has been completely dead (no UI ever set it) since 2026-08-24 — the upcoming
+Company Settings editor will fix this for Rack too, not just Ground. Schema committed (`dd05b81a`);
+still to build: the Location generator (one row per pallet position, not per whole block),
+`suggestBin()`'s own Ground logic, and the Settings UI. Full design trail in the
+`wms-putaway-design` memory. **Immediately after this: the FMS×ABC combined-classification study**
+(candidate #2 below) — the client's own stated next topic, and Ground's own bin-selection logic is
+deliberately shipping with a placeholder pending that exact study. Before this, same day: a
+deliberate **hardening pass** (line-by-line correctness/performance review, not a new module) —
 `suggestBin()` rebuilt to avoid several full-map rescans on its hottest path, two real race
 conditions closed (Simulation's SKU pool, Pallet's scan-time load resolution), 9 missing DB indexes
 added across the tables that grow fastest, and the frontend bundle split so a login no longer
@@ -938,16 +955,9 @@ ordering/aging-based task prioritization.
   client-configurable ("let it be a client decision, not ours") but `WarehouseStorageType` rows have
   no edit path at all today (only ever created, never updated) — needs a real scope decision
   (create-time-only fix vs. a first-ever edit capability for these rows) before building.
-- **Ground/Floor still has no Putaway bin-suggestion logic of its own** (raised again directly,
-  2026-09-06) — `suggestBin()` only has real placement logic for the three rack storage types
-  (SPR/Drive-in/ASRS); a warehouse whose eligible storage type is `GROUND_FLOOR` (or `STILLAGE`)
-  always comes back `NEEDS_BIN` today, no matter how much floor space is actually free. This has
-  been the stated reason for staying rack-only at every prior fork ("let's finish racked first") —
-  Drive-in's own split-out strategy (2026-09-02), the Pick Face SPR-only scope (2026-09-05), and the
-  Simulation sandbox's Storage Type restriction all explicitly deferred Ground/Stillage rather than
-  building it. Needs its own design pass before coding — floor-stacked stock has no natural "lane"
-  concept the rack logic's LIFO-depth/lane-grouping model can reuse directly (a Ground block is a
-  footprint of `depth × width × height`, not a line of individually-addressable positions), so this
+- **Stillage still has no Putaway bin-suggestion logic of its own** — untouched by the Ground/Floor
+  work below; `suggestBin()` still has no real placement logic for `STILLAGE`, always returns
+  `NEEDS_BIN`. Not yet even design-discussed.
   isn't a small extension of the existing algorithm, it's closer to a second, genuinely different
   placement strategy — same shape as the Drive-in split, likely bigger.
 - **Self-service driver check-in** (`SelfCheckInRequest`, schema-only) — flagged as a top Yard/Gate
