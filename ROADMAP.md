@@ -2,8 +2,16 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06: **Plan View backlog
-items 2 and 3 are done** — a per-company "Allow Putaway location override" toggle (Company Settings)
+what to pick up next. Updated as priorities shift — last updated 2026-09-06: **ABC velocity
+reassessment is built and verified** — a real monthly job re-derives each SKU's A/B/C/D class PER
+WAREHOUSE (not company-wide) from its own actual trailing dispatch quantity, replacing blind trust in
+a manually-typed/imported class. A new standalone "ABC Classification" nav page plus a Company Settings
+section (enable toggle, configurable A/B/C cutoffs, assessment window) round it out. This was the
+first of two explicitly sequenced topics ("lets finish topic 1 first then go into topic 2") — the
+second, dock-relative Putaway placement (near/low bins for fast movers, tied to real dock geometry
+instead of today's arbitrary flank-number proxy), is next up, not yet started. See CLAUDE.md's "ABC
+velocity reassessment" section and the `wms-abc-velocity-design` memory for the full detail. Earlier
+the same day: **Plan View backlog items 2 and 3 are done** — a per-company "Allow Putaway location override" toggle (Company Settings)
 lets an operator complete a trip at a different real, active bin instead of today's hard block, and
 any such mismatch now surfaces as a discrepancy — a `⚠` flag on the task queue row, plus a dedicated
 Supervisor+ "Discrepancies" list with a Mark Reviewed action. Only backlog items 1 (Yard spatial
@@ -44,6 +52,43 @@ consolidation ("marrying" loose cases onto a pallet before
 Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
 ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
 for the complete design-to-build trail.
+
+## Session note (2026-09-06 — ABC velocity reassessment, Topic 1 of 2)
+Two topics raised together, deliberately sequenced by explicit client instruction: "lets finish topic
+1 first then go into topic 2. pls note." This note covers Topic 1 only.
+
+**The trigger**: "i wont believe the import ABC class, as it can be a one time master dump for the
+client, but we have to check the regular monthly dispatches (trailing 3 months) and re-access the ABC
+SKUs for each category." A real monthly job now re-derives each SKU's class from actual dispatch
+velocity instead of trusting whatever was typed in or Excel-imported.
+
+**The one design fork worth stopping to confirm**: warehouse-scoped, not company-wide — settled by the
+client's own example, "in kashmir you wont set coke a lot? but its A item you might sell minuite maid
+the most... lets keep it warehouse level." Verified for real: the exact Kashmir/Chennai scenario,
+reproduced with real data, correctly classified Minute Maid as A in one warehouse and C in the other,
+Coke the exact reverse.
+
+**Built**: per-warehouse classification (`SkuWarehouseClass`, cumulative-%-of-dispatched-quantity
+ranking, configurable 75/15/10 cutoffs), a real 4th class `D` for zero-dispatch SKUs ("3 months + no
+sales"), a monthly cron (1st of the month, at night) plus an on-demand "Run Now," and a historical
+dispatch bootstrap import (a genuinely separate `HistoricalDispatchSeed` table, not fake backdated
+ledger rows — `StockMovement.locationId` is required and nobody actually knows a 2-month-old
+shipment's real bin). New "ABC Classification" page plus a Company Settings section. See CLAUDE.md's
+matching section for the full build/verification detail.
+
+**Deliberately not built yet**: the daily reslotting/consolidation suggestion engine (points 5/6 —
+"system should suggest which are available for re-slotting and which few bins/pallets can be
+consolidated... every day system should push these changes so hygiene of inventory is high"). This
+genuinely needs Topic 2's own placement rules to know what a good target bin even looks like — schema
+is laid down ready, the algorithm itself waits for Topic 2 to conclude.
+
+**Next**: Topic 2 — dock-relative Putaway placement. Confirmed so far: A/B prefer near+low, C prefers
+far+high (soft preference, not a hard zone); A always outranks B for a contested bin; Drive-in now
+also gets a near-for-A/far-for-B-C column reservation (a reversal of the earlier "no class treatment"
+call). The big open piece: today's "near" is `flankNumber`, an arbitrary creation-order proxy with no
+relationship to real dock positions — a warehouse with Inbound docks on one side and Outbound on the
+other needs the Locations generator itself to capture that, which hasn't been designed yet. See the
+`wms-abc-velocity-design` memory for the complete open list.
 
 ## Session note (2026-09-06 — Putaway Simulation: a sandbox to watch the real algorithm work)
 The client's own question, a tangent off the Plan View backlog rather than one of its numbered

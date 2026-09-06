@@ -3884,6 +3884,102 @@ timestamp; clicked the real "Mark Reviewed" button and confirmed the row updated
 reviewer's name and timestamp, with the button correctly disappearing. `tsc --noEmit`/`tsc -b` both
 clean. Both throwaway companies cleaned up afterward.
 
+### ABC velocity reassessment — per-warehouse, from real dispatch data (2026-09-06)
+
+A new topic, deliberately sequenced: "lets finish topic 1 first then go into topic 2" — see
+`[[wms-abc-velocity-design]]` in memory for the full multi-round design conversation; this section is
+the settled result plus what's built and verified. The trigger: "i wont believe the import ABC class,
+as it can be a one time master dump for the client, but we have to check the regular monthly
+dispatches (trailing 3 months) and re-assess the ABC SKUs for each category."
+
+**Warehouse-scoped, not company-wide — the one design fork worth stopping to confirm.** `Sku.abcClass`
+is a single flat field, company-wide, since the SKU catalog itself is unscoped in this codebase. But
+the client's own worked example settled it immediately: "keep it warehouse wide only, because SKUS
+should be region specific, in kashmir you wont set coke a lot? but its A item you might sell minuite
+maid the most." New `SkuWarehouseClass` (Sku × Warehouse, `@@unique`) holds the real computed result;
+`Sku.abcClass` itself is never touched by this job — it stays the manually-set/imported fallback for a
+warehouse that has no computed classification yet (brand new, feature off, or short of a full
+assessment window's real history).
+
+**Classification math**: total dispatched quantity (not order count), ranked within each Product
+Category independently, per warehouse. Cutoffs (default 75/15/10, cumulative %) are a real per-company
+setting — `Company.abcClassAPercent/B/C`, validated server-side to always sum to exactly 100 using the
+EFFECTIVE value per field (current stored value for anything a given request leaves untouched, so
+changing just one field still validates against the other two's real current values, not against a
+missing one). A genuine 4th class, `D` (`Sku.abcClass`-style fields are plain strings, not Postgres
+enums, so a 4th value needed no migration dance), for any SKU with zero dispatches across the whole
+trailing window — "you can keep D class, for 3 months + no sales." The same `Company.
+abcAssessmentWindowMonths` setting serves both the ranking lookback AND the dead-stock threshold, a
+deliberate synthesis rather than two separate dials. A SKU that hasn't existed in a warehouse for the
+FULL window yet is left completely alone (no row written at all) rather than unfairly flagged dead
+before it's had a real chance to move.
+
+**A real implementation judgment call, flagged rather than silently assumed**: within the cumulative-%
+ranking, a SKU's class is decided by the cumulative-% BEFORE adding its own volume, not after. A naive
+"cumulative after" check can push a single dominant SKU (say, 80% of a tiny category's whole volume)
+straight past both the A and B cutoffs into C — backwards from what "A = top movers" means. Using
+cumulative-before instead guarantees the single highest-volume SKU in any category always lands in A
+regardless of how large its own share is. Not yet re-confirmed with the client in these exact words.
+
+**The historical bootstrap problem, and why it isn't fake ledger rows.** There is currently ZERO real
+dispatch history anywhere in this running system — Outbound/Picking/Dispatch don't exist yet, `DISPATCH`
+is only a `StockMovement` enum value nothing has ever written. `StockMovement.locationId` is a required,
+non-nullable field, and nobody actually knows which bin a shipment from 2 months ago came from — faking
+a location on synthetic backdated rows would be dishonest data. Instead, a genuinely separate
+`HistoricalDispatchSeed` table (SKU × Warehouse × Month × Quantity, clearly labeled as imported history,
+never disguised as a real ledger entry) — the classification math sums real `StockMovement` DISPATCH
+rows AND whichever seed rows fall in the trailing window together, one formula, no special-casing once
+real data eventually makes this table permanently empty for a given SKU/warehouse/month going forward.
+Confirmed format: a flat per-month total, not fake per-transaction rows — "ok its fine, you make logic
+here, ill upload temp data file for it if needed."
+
+**Monthly cron, 1st of the month at midnight** — "it should be automatic job, lets say 1st of every
+month in the night, so it doesnt take bandwith while actual work is going on." `AbcClassificationScheduler`
+(`@Cron('0 0 1 * *')`) only processes companies with `Company.abcReassessmentEnabled` (default `false`,
+same per-company opt-in shape as every other consequential automatic-behavior toggle in this codebase).
+A "Run Now" endpoint (`POST /abc-classification/run`) also exists so a client doesn't have to wait for
+the real cron to see results.
+
+**Backend**: new `abc-classification/` module — `AbcClassificationService` (the real computation in
+`reassessCompany()`/`reassessWarehouse()`, `runNow()`, `current()` for the read-only results view, and
+`importHistoricalDispatch()` for the bootstrap Excel import), `AbcClassificationScheduler`,
+`AbcClassificationController`. `CompaniesService`'s settings GET/PATCH extended with the five new
+fields, gated `MASTER_DATA_READ_ROLES`/`MASTER_DATA_WRITE_ROLES` matching every other master-data-tier
+read/write in this codebase.
+
+**Frontend**: Company Settings gained an "ABC Velocity Reassessment" card (enable toggle, the three
+percentage inputs with a live sum indicator, the assessment-window input) and a new standalone "ABC
+Classification" nav page — warehouse picker, Run Now, a results table showing the computed class
+alongside the SKU Master's own manual/imported class side by side (so the mismatch this whole feature
+exists to catch is visible at a glance), and the Historical Dispatch Import form.
+
+**Deliberately NOT built yet — the real, honest boundary of "Topic 1 done."** The daily reslotting/
+consolidation suggestion engine (the client's own points 5/6: "system should suggest which are
+available for re-slotting and which few bins/pallets can be consolidated in same level or something,"
+refreshed daily "so hygiene of inventory is high") needs Topic 2's own placement rules (near/low for
+A/B, far/high for C, and the still-open dock-relative-layout question) to know what "a good target bin"
+even means — it's genuinely blocked on Topic 2's outcome, not deferred by choice. The schema IS already
+laid down ready (`ReslottingSuggestion`/`ReslottingSuggestionSource`, `suggestedLocationId` nullable on
+purpose), same "ready ahead of time" pattern as `DockLocationDistance` — only the actual detect-and-
+suggest-a-target algorithm waits.
+
+Verified two ways. A comprehensive diagnostic script directly against the real dev DB (company
+`ABCCHK1`, two warehouses "Kashmir" and "Chennai" reproducing the client's own worked example exactly):
+Minute Maid correctly landed Class A in Kashmir and Class C in Chennai, Coke the exact reverse — genuine
+region-specific classification, not a company-wide average; a Historical Dispatch Seed contribution
+correctly summed alongside real dispatch quantity to shift a SKU's rank; a SKU with old presence and
+zero dispatches correctly became `D`, while a SKU only recently present and also zero-dispatch correctly
+got NO row at all (not unfairly flagged dead); `runNow()`'s guard correctly rejected when the toggle was
+off and succeeded once on; the historical import correctly accepted a valid row and rejected an unknown
+SKU code and an unparseable month with clear per-row errors; `CompaniesService`'s percent-sum validation
+correctly rejected a 99-total submission and accepted a 100-total one. Then re-verified live through the
+actual rendered UI (throwaway company `ABCUI1`): enabled the real checkbox and saved through the real
+Company Settings form, confirmed it persisted via a direct API check; seeded two SKUs with deliberately
+WRONG manual classes (one imported as C that really moves like an A, one imported as A that really moves
+like a C) and clicked the real "Run Reassessment Now" button — the results table correctly showed the
+computed class alongside the stale manual one, visibly disagreeing exactly as the whole feature is
+meant to catch. `tsc --noEmit`/`tsc -b` both clean. Both throwaway companies cleaned up afterward.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full
@@ -4195,6 +4291,16 @@ the real, unmodified `suggestBin()` algorithm against auto-generated synthetic S
 speed-adjustable step-by-step animation through the same 2D/3D Plan View components. Pick Face
 re-slotting simulation (the same sandbox idea applied to the OTHER algorithm) is the explicitly
 deferred next phase for this feature specifically.
+
+**ABC velocity reassessment now exists** (2026-09-06, see "ABC velocity reassessment" above) — a
+genuinely new topic, sequenced deliberately ("lets finish topic 1 first then go into topic 2"): a real
+monthly job (1st of the month, off-hours) re-derives each SKU's A/B/C/D class PER WAREHOUSE from its
+own actual trailing dispatch quantity, replacing blind trust in a manually-typed/imported `Sku.abcClass`
+— confirmed warehouse-scoped rather than company-wide with a real worked example ("in kashmir you wont
+sell coke a lot? but its A item you might sell minute maid the most"). A companion "dock-relative
+Putaway placement" topic (near/low bins for A/B, far/high for C, tied to real warehouse dock geometry
+rather than today's arbitrary flank-number proxy) is the client's own explicitly next-up conversation —
+see `[[wms-abc-velocity-design]]` in memory for everything already covered and still genuinely open.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

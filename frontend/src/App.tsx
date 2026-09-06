@@ -16,6 +16,7 @@ import InsightsPage from './InsightsPage';
 import PalletsPage from './PalletsPage';
 import AnalyticsPage from './AnalyticsPage';
 import SimulationPage from './SimulationPage';
+import AbcClassificationPage from './AbcClassificationPage';
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -37,8 +38,13 @@ const CAN_VIEW_ANALYTICS = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUP
 // — the simulation writes real Location/Sku/StockMovement rows into the
 // sandbox, same write-tier as generating Locations or managing SKUs.
 const CAN_RUN_SIMULATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
+// Same tier as AbcClassificationController's own read gate
+// (MASTER_DATA_READ_ROLES) — Run Now/Import both require the write tier
+// server-side, but the page itself is just as readable as Insights/
+// Analytics for a Supervisor.
+const CAN_VIEW_ABC_CLASSIFICATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets' | 'analytics' | 'simulation';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets' | 'analytics' | 'simulation' | 'abcclassification';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -139,6 +145,11 @@ function App() {
             Analytics
           </button>
         )}
+        {CAN_VIEW_ABC_CLASSIFICATION.includes(user?.role) && (
+          <button onClick={() => setTab('abcclassification')} style={{ fontWeight: tab === 'abcclassification' ? 'bold' : 'normal' }}>
+            ABC Classification
+          </button>
+        )}
         <button onClick={() => setTab('inboundorders')} style={{ fontWeight: tab === 'inboundorders' ? 'bold' : 'normal' }}>
           Inbound Orders
         </button>
@@ -184,6 +195,8 @@ function App() {
         <InsightsPage />
       ) : tab === 'analytics' ? (
         <AnalyticsPage />
+      ) : tab === 'abcclassification' ? (
+        <AbcClassificationPage />
       ) : tab === 'simulation' ? (
         <SimulationPage />
       ) : tab === 'companysettings' ? (

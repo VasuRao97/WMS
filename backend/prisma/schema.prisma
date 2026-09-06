@@ -210,6 +210,42 @@ model Company {
   // see PutawayTrip.scannedLocationId/discrepancyReviewedAt for how it's
   // tracked once it happens.
   allowPutawayLocationOverride Boolean @default(false)
+
+  // Monthly ABC reassessment from real dispatch velocity (2026-09-06 — see
+  // [[wms-abc-velocity-design]] in memory for the full design conversation)
+  // — the client's own explicit distrust of an imported/manually-typed
+  // Sku.abcClass ("i wont believe the import ABC class, as it can be a one
+  // time master dump"): a real monthly job re-derives each SKU's class from
+  // its own actual trailing dispatch quantity instead, PER WAREHOUSE (see
+  // SkuWarehouseClass below — confirmed directly, not assumed: "keep it
+  // warehouse wide only, because SKUS should be region specific... in
+  // kashmir you wont sell coke a lot? but its A item"). Off by default —
+  // an explicit per-company opt-in, same as every other consequential
+  // automatic-behavior toggle in this codebase.
+  abcReassessmentEnabled Boolean @default(false)
+
+  // Cumulative-%-of-dispatched-quantity cutoffs, confirmed directly:
+  // "A: 75% of what got dispatched, B: next 15%, C: next 10%" — but these
+  // three numbers are a real per-company setting on this page, not
+  // hardcoded, since "we need to get from the client" what their own real
+  // split should be; 75/15/10 is only this project's own placeholder
+  // default. Not validated to sum to exactly 100 at the DB level — the
+  // service layer's own by-hand validation (same "no DTO layer" convention
+  // as everywhere else) is where that's enforced.
+  abcClassAPercent Decimal @default(75)
+  abcClassBPercent Decimal @default(15)
+  abcClassCPercent Decimal @default(10)
+
+  // ONE window serves two purposes, confirmed as a natural synthesis rather
+  // than two separate settings: (1) the trailing period the ranking itself
+  // looks back over ("trailing 3 months"), and (2) the "no dispatch at all
+  // in this period" threshold that flags a SKU into the real 4th class, D
+  // (confirmed: "you can keep D class, for 3 months + no sales" — Sku.
+  // abcClass is a plain nullable String, not a Postgres enum, so a 4th
+  // value needed no schema change of its own). Default 3, per the client's
+  // own number, but a real per-company dial like every other assessment
+  // input on this page.
+  abcAssessmentWindowMonths Int @default(3)
 }
 
 enum AgingGranularity {
@@ -230,16 +266,16 @@ enum GatePassResetPeriod {
 }
 
 model User {
-  id                 String       @id @default(uuid())
-  email              String       @unique
-  passwordHash       String
-  name               String
-  role               Role
+  id                   String       @id @default(uuid())
+  email                String       @unique
+  passwordHash         String
+  name                 String
+  role                 Role
   // Free-text specialization label for Supervisor/Operator (e.g. "Inbound Sup",
   // "Shift Sup", "Picking") — descriptive only for now, for future KPI/task-routing
   // reporting. Not read by any permission check; the real access rules run purely
   // off `role` + `assignedWarehouses`.
-  functionTag        String?
+  functionTag          String?
   // Contact number, added 2026-08-27 specifically so staff (Managers/
   // Admins) can actually receive SMS/WhatsApp notifications — a real gap
   // found while building detention alerting: only Driver had a phone
@@ -248,7 +284,7 @@ model User {
   // either way, same as before this field existed. No uniqueness
   // constraint (same reasoning as Driver.phone — not a reliable natural
   // key to enforce).
-  phone              String?
+  phone                String?
   // Operator capability flags (2026-09-02, Putaway assignment deep-dive) —
   // "loader and picker should not be same at big warehouses, but its
   // possible that in small locations they both are same." Both nullable
@@ -265,40 +301,42 @@ model User {
   // (see [[wms-putaway-design]]), so nothing routes off this field until
   // that module exists; captured now so it isn't a second field-adding
   // pass later, same "schema now, logic later" shape as DockLocationDistance.
-  canOperateMhe      Boolean?
+  canOperateMhe        Boolean?
   canHandleGroundBlock Boolean?
-  isActive           Boolean      @default(true)
-  createdAt          DateTime     @default(now())
+  isActive             Boolean      @default(true)
+  createdAt            DateTime     @default(now())
   // Fast "last seen" lookup — a cached/derived convenience, same relationship
   // to `LoginEvent` below as on-hand stock has to `StockMovement`: the ledger
   // (LoginEvent, append-only, one row per login, forever) is the source of
   // truth; this field is just the latest value read off it, updated
   // alongside every LoginEvent insert so the two never drift.
-  lastLoginAt        DateTime?
-  companyId          String?
-  company            Company?     @relation(fields: [companyId], references: [id])
-  assignedWarehouses Warehouse[]
-  loginEvents        LoginEvent[]
+  lastLoginAt          DateTime?
+  companyId            String?
+  company              Company?     @relation(fields: [companyId], references: [id])
+  assignedWarehouses   Warehouse[]
+  loginEvents          LoginEvent[]
 
-  receiptsCreated               InboundReceipt[]        @relation("ReceiptCreatedBy")
-  putawayTripsClaimed           PutawayTrip[]           @relation("PutawayTripClaimedBy")
-  putawayDiscrepanciesReviewed  PutawayTrip[]           @relation("PutawayTripDiscrepancyReviewedBy")
-  putawayReassignmentsRequested PutawayReassignment[]   @relation("PutawayReassignmentRequestedBy")
-  palletLoadsClosed             PalletLoad[]            @relation("PalletLoadClosedBy")
-  multiSkuLaneRequestsRequested MultiSkuLaneException[] @relation("MultiSkuLaneRequestedBy")
-  multiSkuLaneRequestsReviewed  MultiSkuLaneException[] @relation("MultiSkuLaneReviewedBy")
-  multiSkuLaneRequestsRevoked   MultiSkuLaneException[] @relation("MultiSkuLaneRevokedBy")
-  ordersCreated                 OutboundOrder[]         @relation("OrderCreatedBy")
-  picksCompleted                PickTask[]              @relation("PickedBy")
-  dispatches                    Dispatch[]              @relation("DispatchedBy")
-  movements                     StockMovement[]         @relation("MovementCreatedBy")
-  gateEntriesIn                 VehicleGateEntry[]      @relation("GateInBy")
-  gateEntriesOut                VehicleGateEntry[]      @relation("GateOutBy")
-  gateEntriesDocked             VehicleGateEntry[]      @relation("DockedInBy")
-  gateEntriesSealedBy           VehicleGateEntry[]      @relation("SealCapturedBy")
-  inboundScansPerformed         InboundReceiptScan[]    @relation("InboundScannedBy")
-  inboundScansReviewed          InboundReceiptScan[]    @relation("InboundScanReviewedBy")
-  inwardCompletions             VehicleGateEntry[]      @relation("InwardCompletedBy")
+  receiptsCreated                 InboundReceipt[]         @relation("ReceiptCreatedBy")
+  putawayTripsClaimed             PutawayTrip[]            @relation("PutawayTripClaimedBy")
+  putawayDiscrepanciesReviewed    PutawayTrip[]            @relation("PutawayTripDiscrepancyReviewedBy")
+  putawayReassignmentsRequested   PutawayReassignment[]    @relation("PutawayReassignmentRequestedBy")
+  palletLoadsClosed               PalletLoad[]             @relation("PalletLoadClosedBy")
+  multiSkuLaneRequestsRequested   MultiSkuLaneException[]  @relation("MultiSkuLaneRequestedBy")
+  multiSkuLaneRequestsReviewed    MultiSkuLaneException[]  @relation("MultiSkuLaneReviewedBy")
+  multiSkuLaneRequestsRevoked     MultiSkuLaneException[]  @relation("MultiSkuLaneRevokedBy")
+  historicalDispatchSeedsImported HistoricalDispatchSeed[] @relation("HistoricalDispatchSeedImportedBy")
+  reslottingSuggestionsActioned   ReslottingSuggestion[]   @relation("ReslottingSuggestionActionedBy")
+  ordersCreated                   OutboundOrder[]          @relation("OrderCreatedBy")
+  picksCompleted                  PickTask[]               @relation("PickedBy")
+  dispatches                      Dispatch[]               @relation("DispatchedBy")
+  movements                       StockMovement[]          @relation("MovementCreatedBy")
+  gateEntriesIn                   VehicleGateEntry[]       @relation("GateInBy")
+  gateEntriesOut                  VehicleGateEntry[]       @relation("GateOutBy")
+  gateEntriesDocked               VehicleGateEntry[]       @relation("DockedInBy")
+  gateEntriesSealedBy             VehicleGateEntry[]       @relation("SealCapturedBy")
+  inboundScansPerformed           InboundReceiptScan[]     @relation("InboundScannedBy")
+  inboundScansReviewed            InboundReceiptScan[]     @relation("InboundScanReviewedBy")
+  inwardCompletions               VehicleGateEntry[]       @relation("InwardCompletedBy")
 
   notificationsReceived       NotificationLog[]    @relation("NotificationRecipient")
   notificationsEscalatedTo    NotificationLog[]    @relation("NotificationEscalatedTo")
@@ -391,25 +429,28 @@ model Warehouse {
 
   assignedUsers User[]
 
-  shipToAssignments      CustomerShipTo[]
-  locations              Location[]
-  inboundReceipts        InboundReceipt[]
-  outboundOrders         OutboundOrder[]
-  stockMovements         StockMovement[]
-  storageTypes           WarehouseStorageType[]
-  dispatchFlows          WarehouseDispatchFlow[]
-  dockDoors              DockDoor[]
-  gateEntries            VehicleGateEntry[]
-  yardSlots              YardSlot[]
-  gatePassSequences      GatePassSequence[]
-  notificationLogs       NotificationLog[]
-  selfCheckInRequests    SelfCheckInRequest[]
-  equipment              Equipment[]
-  equipmentSuitability   WarehouseEquipmentSuitability[]
-  multiSkuLaneExceptions MultiSkuLaneException[]
-  vehicles               Vehicle[]
-  drivers                Driver[]
-  pallets                Pallet[]
+  shipToAssignments       CustomerShipTo[]
+  locations               Location[]
+  inboundReceipts         InboundReceipt[]
+  outboundOrders          OutboundOrder[]
+  stockMovements          StockMovement[]
+  storageTypes            WarehouseStorageType[]
+  dispatchFlows           WarehouseDispatchFlow[]
+  dockDoors               DockDoor[]
+  gateEntries             VehicleGateEntry[]
+  yardSlots               YardSlot[]
+  gatePassSequences       GatePassSequence[]
+  notificationLogs        NotificationLog[]
+  selfCheckInRequests     SelfCheckInRequest[]
+  equipment               Equipment[]
+  equipmentSuitability    WarehouseEquipmentSuitability[]
+  multiSkuLaneExceptions  MultiSkuLaneException[]
+  vehicles                Vehicle[]
+  drivers                 Driver[]
+  pallets                 Pallet[]
+  skuClasses              SkuWarehouseClass[]
+  historicalDispatchSeeds HistoricalDispatchSeed[]
+  reslottingSuggestions   ReslottingSuggestion[]
 
   @@unique([companyId, code])
 }
@@ -634,64 +675,66 @@ model Location {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  stockMovements          StockMovement[]
-  putawayFrom             PutawayTask[]          @relation("PutawayFromLocation")
-  putawayTo               PutawayTask[]          @relation("PutawayToLocation")
-  putawayTripsScanned     PutawayTrip[]          @relation("PutawayTripScannedLocation")
-  putawayReassignedFrom   PutawayReassignment[]  @relation("PutawayReassignmentFrom")
-  putawayReassignedTo     PutawayReassignment[]  @relation("PutawayReassignmentTo")
-  receiptLinesStaged      InboundReceiptLine[]
+  stockMovements              StockMovement[]
+  putawayFrom                 PutawayTask[]                @relation("PutawayFromLocation")
+  putawayTo                   PutawayTask[]                @relation("PutawayToLocation")
+  putawayTripsScanned         PutawayTrip[]                @relation("PutawayTripScannedLocation")
+  putawayReassignedFrom       PutawayReassignment[]        @relation("PutawayReassignmentFrom")
+  putawayReassignedTo         PutawayReassignment[]        @relation("PutawayReassignmentTo")
+  receiptLinesStaged          InboundReceiptLine[]
   // A receipt-level default staging spot, chosen once the vehicle is
   // actually at the dock (2026-08-27 — see InboundReceipt.stagingLocationId's
   // comment for why this replaced requiring a location per-line at
   // order-creation time).
-  receiptsStaged          InboundReceipt[]
-  allocations             Allocation[]
-  returns                 Return[]
-  dockDistances           DockLocationDistance[]
-  defaultStagingForDocks  DockDoor[]             @relation("DockDoorInboundStaging")
-  outboundStagingForDocks DockDoor[]             @relation("DockDoorOutboundStaging")
+  receiptsStaged              InboundReceipt[]
+  allocations                 Allocation[]
+  returns                     Return[]
+  dockDistances               DockLocationDistance[]
+  defaultStagingForDocks      DockDoor[]                   @relation("DockDoorInboundStaging")
+  outboundStagingForDocks     DockDoor[]                   @relation("DockDoorOutboundStaging")
+  reslottingSuggestionTargets ReslottingSuggestion[]       @relation("ReslottingSuggestionTarget")
+  reslottingSuggestionSources ReslottingSuggestionSource[] @relation("ReslottingSuggestionSourceLocation")
 
   @@unique([warehouseId, code])
 }
 
 model Sku {
-  id                 String               @id @default(uuid())
-  code               String
-  description        String
-  categoryId         String
-  category           ProductCategory      @relation(fields: [categoryId], references: [id])
-  subCategory        String?
-  baseUom            String
-  hsnCode            String
-  storageCondition   String               @default("AMBIENT")
-  batchTracked       Boolean              @default(false)
-  shelfLifeTracked   Boolean              @default(false)
-  shelfLifeDays      Int?
-  isActive           Boolean              @default(true)
-  weightUom          String?
-  grossWeight        Decimal?
-  isHazmat           Boolean              @default(false)
-  hazmatClass        String?
-  hasUniqueBarcode   Boolean              @default(false)
-  abcClass           String?
-  currency           String?
-  standardCost       Decimal?
-  moq                Decimal?
+  id                      String                   @id @default(uuid())
+  code                    String
+  description             String
+  categoryId              String
+  category                ProductCategory          @relation(fields: [categoryId], references: [id])
+  subCategory             String?
+  baseUom                 String
+  hsnCode                 String
+  storageCondition        String                   @default("AMBIENT")
+  batchTracked            Boolean                  @default(false)
+  shelfLifeTracked        Boolean                  @default(false)
+  shelfLifeDays           Int?
+  isActive                Boolean                  @default(true)
+  weightUom               String?
+  grossWeight             Decimal?
+  isHazmat                Boolean                  @default(false)
+  hazmatClass             String?
+  hasUniqueBarcode        Boolean                  @default(false)
+  abcClass                String?
+  currency                String?
+  standardCost            Decimal?
+  moq                     Decimal?
   // Which of this SKU's declared storageUnits (EACH/INNER/CASE/PALLET) is
   // its primary unit for putaway/picking sizing — must match one of the
   // unitTypes in storageUnits below. Dimensions themselves aren't stored
   // here: look up CategoryPackSpec(categoryId, primaryStorageUnit) instead,
   // so a correction to "Car Tyres' case size" doesn't require editing every
   // Car Tyres SKU individually.
-  primaryStorageUnit String?
+  primaryStorageUnit      String?
   // Per-SKU override of Company.putawayDefaultBatchQty, in this SKU's own
   // baseUom (2026-08-28, skeleton only — see [[wms-putaway-design]]) —
   // e.g. "release a putaway task every 6 cases" for one SKU vs. a much
   // higher number of loose eaches for another. Falls back to the
   // company-wide default, then to "every scan is its own task" when
   // neither is set. Only consulted in IMMEDIATE putaway trigger mode.
-  putawayBatchQty    Decimal?
+  putawayBatchQty         Decimal?
   // Pallet consolidation ("marrying" loose cases onto a pallet before
   // Putaway — 2026-09-01, see [[wms-putaway-design]]'s Pallet consolidation
   // entry) — max cases a single Pallet load of THIS SKU may hold before it
@@ -702,23 +745,26 @@ model Sku {
   // deliberately NOT calculated — a real geometric best-fit/packing
   // algorithm was explicitly ruled out as a separate, much bigger future
   // problem, same tier as the still-deferred GS1 barcode parsing.
-  maxCasesPerPallet  Decimal?
-  createdAt          DateTime             @default(now())
-  companyId          String
-  company            Company              @relation(fields: [companyId], references: [id])
-  erpCode            String?
-  storageUnits       SkuStorageUnit[]
-  barcodes           SkuBarcode[]
-  asParent           SkuRelationship[]    @relation("ParentSku")
-  asChild            SkuRelationship[]    @relation("ChildSku")
-  stockMovements     StockMovement[]
-  receiptLines       InboundReceiptLine[]
-  inboundScans       InboundReceiptScan[]
-  putawayTasks       PutawayTask[]
-  palletLoads        PalletLoad[]
-  outboundOrderLine  OutboundOrderLine[]
-  allocations        Allocation[]
-  returns            Return[]
+  maxCasesPerPallet       Decimal?
+  createdAt               DateTime                 @default(now())
+  companyId               String
+  company                 Company                  @relation(fields: [companyId], references: [id])
+  erpCode                 String?
+  storageUnits            SkuStorageUnit[]
+  barcodes                SkuBarcode[]
+  asParent                SkuRelationship[]        @relation("ParentSku")
+  asChild                 SkuRelationship[]        @relation("ChildSku")
+  stockMovements          StockMovement[]
+  receiptLines            InboundReceiptLine[]
+  inboundScans            InboundReceiptScan[]
+  putawayTasks            PutawayTask[]
+  palletLoads             PalletLoad[]
+  outboundOrderLine       OutboundOrderLine[]
+  allocations             Allocation[]
+  returns                 Return[]
+  warehouseClasses        SkuWarehouseClass[]
+  historicalDispatchSeeds HistoricalDispatchSeed[]
+  reslottingSuggestions   ReslottingSuggestion[]
 
   @@unique([companyId, code])
 }
@@ -2197,6 +2243,134 @@ model MultiSkuLaneException {
   revokedById String?
   revokedBy   User?     @relation("MultiSkuLaneRevokedBy", fields: [revokedById], references: [id])
   revokedAt   DateTime?
+}
+
+// ------------------------------------------------------------
+// ABC VELOCITY CLASSIFICATION (per-warehouse) + RESLOTTING
+// ------------------------------------------------------------
+// 2026-09-06, see [[wms-abc-velocity-design]] in memory for the full design
+// conversation. The client's own distrust of a manually-typed/imported
+// Sku.abcClass ("i wont believe the import ABC class, as it can be a one
+// time master dump") — a real monthly job re-derives each SKU's class from
+// its own actual trailing dispatch quantity instead. Confirmed WAREHOUSE-
+// scoped, not company-wide ("SKUS should be region specific... in kashmir
+// you wont sell coke a lot? but its A item you might sell minute maid the
+// most") — Sku.abcClass itself is untouched and stays the manually-set/
+// imported fallback for a warehouse that has no computed classification
+// yet (a brand-new SKU, or the feature toggled off, or a warehouse still
+// short of the full assessment window's worth of real history).
+
+// One row per (Sku, Warehouse) — the computed result, refreshed by
+// AbcReassessmentScheduler on the 1st of every month. `D` (not a
+// Postgres-enum value — abcClass stays a plain string, same shape as
+// Sku.abcClass itself) is the real 4th tier for a SKU with ZERO dispatched
+// quantity across the whole trailing Company.abcAssessmentWindowMonths
+// window ("you can keep D class, for 3 months + no sales") — a SKU that
+// hasn't existed in this warehouse for the full window yet is left alone
+// entirely (no row written) rather than unfairly flagged dead before it's
+// had a real chance to move.
+model SkuWarehouseClass {
+  id            String    @id @default(uuid())
+  skuId         String
+  sku           Sku       @relation(fields: [skuId], references: [id])
+  warehouseId   String
+  warehouse     Warehouse @relation(fields: [warehouseId], references: [id])
+  abcClass      String // 'A' | 'B' | 'C' | 'D'
+  // The actual trailing-window dispatched quantity that produced this
+  // class — kept for audit/display (so a Supervisor can see WHY a SKU
+  // landed where it did), not just the resulting letter.
+  dispatchedQty Decimal
+  computedAt    DateTime  @default(now())
+
+  @@unique([skuId, warehouseId])
+}
+
+// Historical dispatch bootstrap (2026-09-06) — real, ongoing classification
+// always sums real StockMovement DISPATCH rows once Outbound/Picking/
+// Dispatch exist and write them for real (with a real locationId — that
+// field is required on StockMovement, non-negotiably, since a real
+// movement always happens somewhere physical). But there is currently ZERO
+// real dispatch history anywhere in this system (those modules don't exist
+// yet), and even once they do, a brand-new client has no 3 months of
+// history to look back on. Rather than fabricate fake locations on
+// synthetic backdated StockMovement rows (dishonest data — nobody actually
+// knows which bin a shipment 2 months ago came from), this is a genuinely
+// separate, clearly-labeled "this is imported history, not a real ledger
+// entry" input: a flat SKU + Warehouse + Quantity + which month it covers.
+// AbcReassessmentScheduler's own trailing-window sum adds real
+// StockMovement DISPATCH quantities AND whichever of these rows fall in
+// the window together — one formula, two sources, no special-casing once
+// real data eventually makes this table permanently empty for a given
+// SKU/warehouse/month going forward.
+model HistoricalDispatchSeed {
+  id           String    @id @default(uuid())
+  skuId        String
+  sku          Sku       @relation(fields: [skuId], references: [id])
+  warehouseId  String
+  warehouse    Warehouse @relation(fields: [warehouseId], references: [id])
+  // First day of the month this quantity covers (e.g. 2026-06-01 for all of
+  // June) — a plain month bucket, not a real transaction date, since that's
+  // genuinely all a historical total can honestly claim to know.
+  month        DateTime
+  quantity     Decimal
+  importedById String
+  importedBy   User      @relation("HistoricalDispatchSeedImportedBy", fields: [importedById], references: [id])
+  importedAt   DateTime  @default(now())
+
+  @@unique([skuId, warehouseId, month])
+}
+
+enum ReslottingSuggestionType {
+  RESLOT // this SKU's class changed (or went dead) and its current spot no longer fits
+  CONSOLIDATE // this SKU sits fragmented across several partial bins that could merge
+}
+
+enum ReslottingSuggestionStatus {
+  PENDING
+  ACTIONED
+  DISMISSED
+}
+
+// Schema laid down ready, same "ready ahead of time" pattern as
+// DockLocationDistance — the actual daily detect-and-suggest-a-target-bin
+// LOGIC is deliberately not built yet, since computing a genuine target
+// bin needs Topic 2's own placement rules (near/low for A/B, far/high for
+// C, and the still-open dock-relative-layout question) to know what "a
+// good spot" even means. `suggestedLocationId` is nullable specifically so
+// a suggestion can exist ("this SKU needs attention") before a concrete
+// target can be computed. See [[wms-abc-velocity-design]] for the full
+// open list.
+model ReslottingSuggestion {
+  id                  String                     @id @default(uuid())
+  warehouseId         String
+  warehouse           Warehouse                  @relation(fields: [warehouseId], references: [id])
+  skuId               String
+  sku                 Sku                        @relation(fields: [skuId], references: [id])
+  type                ReslottingSuggestionType
+  suggestedLocationId String?
+  suggestedLocation   Location?                  @relation("ReslottingSuggestionTarget", fields: [suggestedLocationId], references: [id])
+  reason              String
+  status              ReslottingSuggestionStatus @default(PENDING)
+  createdAt           DateTime                   @default(now())
+  actionedAt          DateTime?
+  actionedById        String?
+  actionedBy          User?                      @relation("ReslottingSuggestionActionedBy", fields: [actionedById], references: [id])
+
+  sources ReslottingSuggestionSource[]
+}
+
+// The bin(s) a suggestion is proposing to move FROM — a child table since a
+// SKU can legitimately be fragmented across more than one location (the
+// same "more than one of, make it a child table" convention as
+// SkuBarcode/CustomerShipTo), covering RESLOT (typically one source) and
+// CONSOLIDATE (typically several) with the same shape.
+model ReslottingSuggestionSource {
+  id           String               @id @default(uuid())
+  suggestionId String
+  suggestion   ReslottingSuggestion @relation(fields: [suggestionId], references: [id])
+  locationId   String
+  location     Location             @relation("ReslottingSuggestionSourceLocation", fields: [locationId], references: [id])
+  quantity     Decimal
 }
 
 // ------------------------------------------------------------

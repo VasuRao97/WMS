@@ -39,6 +39,11 @@ export class CompaniesService {
         defaultMaxCasesPerPallet: true,
         putawayAssignmentGraceMinutes: true,
         allowPutawayLocationOverride: true,
+        abcReassessmentEnabled: true,
+        abcClassAPercent: true,
+        abcClassBPercent: true,
+        abcClassCPercent: true,
+        abcAssessmentWindowMonths: true,
       },
     });
   }
@@ -85,6 +90,24 @@ export class CompaniesService {
       const n = Number(data.putawayAssignmentGraceMinutes);
       if (!Number.isInteger(n) || n < 0) errors.push('Putaway Assignment Grace Minutes must be a whole number, 0 or more.');
     }
+    // ABC velocity reassessment (2026-09-06 — see [[wms-abc-velocity-design]])
+    // — the three cutoff percentages must sum to exactly 100, checked using
+    // the EFFECTIVE value for each (whatever's being submitted now, falling
+    // back to whatever's already stored for a field this request leaves
+    // untouched) — so submitting just one changed percentage still validates
+    // correctly against the other two's current values, not against a
+    // missing/undefined field.
+    const abcPercentFields = ['abcClassAPercent', 'abcClassBPercent', 'abcClassCPercent'] as const;
+    if (abcPercentFields.some((f) => data[f] !== undefined)) {
+      const current = await this.prisma.company.findUnique({ where: { id: companyId }, select: { abcClassAPercent: true, abcClassBPercent: true, abcClassCPercent: true } });
+      const effective = abcPercentFields.map((f) => (data[f] !== undefined && data[f] !== null && data[f] !== '' ? Number(data[f]) : Number(current![f])));
+      if (effective.some((n) => isNaN(n) || n < 0)) errors.push('ABC Class percentages must be non-negative numbers.');
+      else if (Math.round(effective.reduce((s, n) => s + n, 0) * 100) / 100 !== 100) errors.push(`ABC Class A/B/C percentages must add up to 100 (currently ${effective.reduce((s, n) => s + n, 0)}).`);
+    }
+    if (data.abcAssessmentWindowMonths !== undefined && data.abcAssessmentWindowMonths !== null && data.abcAssessmentWindowMonths !== '') {
+      const n = Number(data.abcAssessmentWindowMonths);
+      if (!Number.isInteger(n) || n <= 0) errors.push('ABC Assessment Window (months) must be a positive whole number.');
+    }
     if (errors.length > 0) throw new BadRequestException(errors);
 
     return this.prisma.company.update({
@@ -116,6 +139,17 @@ export class CompaniesService {
         // Putaway location override (2026-09-06) — a plain boolean toggle,
         // same "omitted means unchanged" convention as allowErpInboundPush.
         allowPutawayLocationOverride: data.allowPutawayLocationOverride === undefined ? undefined : !!data.allowPutawayLocationOverride,
+        // ABC velocity reassessment (2026-09-06) — abcReassessmentEnabled is
+        // a plain toggle; the three percentages and the window have real DB
+        // defaults (same "no unconfigured state" shape as
+        // putawayAssignmentGraceMinutes) — omitted leaves them unchanged, a
+        // blank/null value is simply ignored rather than attempted as a
+        // clear.
+        abcReassessmentEnabled: data.abcReassessmentEnabled === undefined ? undefined : !!data.abcReassessmentEnabled,
+        abcClassAPercent: data.abcClassAPercent !== undefined && data.abcClassAPercent !== null && data.abcClassAPercent !== '' ? Number(data.abcClassAPercent) : undefined,
+        abcClassBPercent: data.abcClassBPercent !== undefined && data.abcClassBPercent !== null && data.abcClassBPercent !== '' ? Number(data.abcClassBPercent) : undefined,
+        abcClassCPercent: data.abcClassCPercent !== undefined && data.abcClassCPercent !== null && data.abcClassCPercent !== '' ? Number(data.abcClassCPercent) : undefined,
+        abcAssessmentWindowMonths: data.abcAssessmentWindowMonths !== undefined && data.abcAssessmentWindowMonths !== null && data.abcAssessmentWindowMonths !== '' ? Number(data.abcAssessmentWindowMonths) : undefined,
       },
       select: {
         id: true,
@@ -131,6 +165,11 @@ export class CompaniesService {
         defaultMaxCasesPerPallet: true,
         putawayAssignmentGraceMinutes: true,
         allowPutawayLocationOverride: true,
+        abcReassessmentEnabled: true,
+        abcClassAPercent: true,
+        abcClassBPercent: true,
+        abcClassCPercent: true,
+        abcAssessmentWindowMonths: true,
       },
     });
   }

@@ -34,6 +34,11 @@ type Settings = {
   defaultMaxCasesPerPallet?: number | string | null;
   putawayAssignmentGraceMinutes?: number | string;
   allowPutawayLocationOverride?: boolean;
+  abcReassessmentEnabled?: boolean;
+  abcClassAPercent?: number | string;
+  abcClassBPercent?: number | string;
+  abcClassCPercent?: number | string;
+  abcAssessmentWindowMonths?: number | string;
 };
 
 // Aging Methodology (2026-08-29) is warehouse-scoped, not company-scoped —
@@ -56,6 +61,11 @@ function CompanySettingsPage() {
   const [defaultMaxCasesPerPallet, setDefaultMaxCasesPerPallet] = useState('');
   const [putawayAssignmentGraceMinutes, setPutawayAssignmentGraceMinutes] = useState('2');
   const [allowPutawayLocationOverride, setAllowPutawayLocationOverride] = useState(false);
+  const [abcReassessmentEnabled, setAbcReassessmentEnabled] = useState(false);
+  const [abcClassAPercent, setAbcClassAPercent] = useState('75');
+  const [abcClassBPercent, setAbcClassBPercent] = useState('15');
+  const [abcClassCPercent, setAbcClassCPercent] = useState('10');
+  const [abcAssessmentWindowMonths, setAbcAssessmentWindowMonths] = useState('3');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [keyError, setKeyError] = useState('');
@@ -87,6 +97,11 @@ function CompanySettingsPage() {
         setDefaultMaxCasesPerPallet(data.defaultMaxCasesPerPallet != null ? String(data.defaultMaxCasesPerPallet) : '');
         setPutawayAssignmentGraceMinutes(data.putawayAssignmentGraceMinutes != null ? String(data.putawayAssignmentGraceMinutes) : '2');
         setAllowPutawayLocationOverride(!!data.allowPutawayLocationOverride);
+        setAbcReassessmentEnabled(!!data.abcReassessmentEnabled);
+        setAbcClassAPercent(data.abcClassAPercent != null ? String(data.abcClassAPercent) : '75');
+        setAbcClassBPercent(data.abcClassBPercent != null ? String(data.abcClassBPercent) : '15');
+        setAbcClassCPercent(data.abcClassCPercent != null ? String(data.abcClassCPercent) : '10');
+        setAbcAssessmentWindowMonths(data.abcAssessmentWindowMonths != null ? String(data.abcAssessmentWindowMonths) : '3');
       });
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
       .then((res) => (res.status === 401 ? null : res.json()))
@@ -157,6 +172,11 @@ function CompanySettingsPage() {
         defaultMaxCasesPerPallet: defaultMaxCasesPerPallet === '' ? null : defaultMaxCasesPerPallet,
         putawayAssignmentGraceMinutes: putawayAssignmentGraceMinutes === '' ? undefined : putawayAssignmentGraceMinutes,
         allowPutawayLocationOverride,
+        abcReassessmentEnabled,
+        abcClassAPercent,
+        abcClassBPercent,
+        abcClassCPercent,
+        abcAssessmentWindowMonths,
       }),
     });
     const data = await res.json();
@@ -327,6 +347,56 @@ function CompanySettingsPage() {
           {agingError && <p style={{ color: 'crimson', marginTop: 8 }}>{agingError}</p>}
           {agingSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
         </div>
+      </div>
+
+      <div style={{ marginTop: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
+        <h3 style={{ marginTop: 0 }}>ABC Velocity Reassessment</h3>
+        <p style={{ marginTop: -4, marginBottom: 16, fontSize: 13, color: '#888' }}>
+          A real monthly job (1st of every month, at night) re-derives each SKU's A/B/C class per warehouse from its
+          own actual trailing dispatch quantity — never company-wide, since the same SKU can be a fast mover in one
+          warehouse and barely move in another. Off by default; the manually-set/imported class on SKU Master stays
+          the fallback until a warehouse has enough real history. See the "ABC Classification" page to run it on
+          demand and see results.
+        </p>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={abcReassessmentEnabled} onChange={(e) => setAbcReassessmentEnabled(e.target.checked)} />
+              <strong>Enable monthly ABC reassessment</strong>
+            </label>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Class cutoffs (cumulative % of dispatched quantity)</label>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#888' }}>
+              Must add up to 100. E.g. 75/15/10 means the top SKUs making up 75% of a category's dispatched volume
+              are Class A, the next 15% are B, the rest are C.
+            </p>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12 }}>A:</span>
+              <input value={abcClassAPercent} onChange={(e) => setAbcClassAPercent(e.target.value)} style={{ width: 60, padding: 6 }} />
+              <span style={{ fontSize: 12 }}>B:</span>
+              <input value={abcClassBPercent} onChange={(e) => setAbcClassBPercent(e.target.value)} style={{ width: 60, padding: 6 }} />
+              <span style={{ fontSize: 12 }}>C:</span>
+              <input value={abcClassCPercent} onChange={(e) => setAbcClassCPercent(e.target.value)} style={{ width: 60, padding: 6 }} />
+              {(() => {
+                const sum = [abcClassAPercent, abcClassBPercent, abcClassCPercent].reduce((s, v) => s + (Number(v) || 0), 0);
+                return <span style={{ fontSize: 12, color: sum === 100 ? '#2e7d32' : 'crimson' }}>= {sum}{sum !== 100 ? ' (must be 100)' : ''}</span>;
+              })()}
+            </div>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Assessment window (months)</label>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#888' }}>
+              How far back the ranking looks, and also the "no dispatch at all in this period" threshold that flags a
+              SKU into a real 4th class, D (dead stock).
+            </p>
+            <input value={abcAssessmentWindowMonths} onChange={(e) => setAbcAssessmentWindowMonths(e.target.value)} style={{ width: 100, padding: 6 }} />
+          </div>
+
+          {error && <p style={{ color: 'crimson' }}>{error}</p>}
+          {saved && <p style={{ color: 'green' }}>Saved.</p>}
+          <button type="submit">Save Settings</button>
+        </form>
       </div>
 
       <div style={{ marginTop: 24, padding: 16, border: '1px solid #ccc', borderRadius: 8 }}>
