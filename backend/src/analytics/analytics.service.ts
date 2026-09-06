@@ -15,7 +15,10 @@ import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../commo
 // putaway (moving the closed pallet to its bin, from PutawayTrip) — both
 // entirely derived from data already being written elsewhere, no new
 // schema, same "always derive, never store a counter" philosophy as
-// everywhere else in this codebase.
+// everywhere else in this codebase. A third metric, Pick Face trip time,
+// was added 2026-09-05 the same session Pick Face itself shipped (see
+// [[wms-putaway-design]]) — NOT pallet-level like the two above, grouped by
+// task instead since a PickFaceTask has no palletLoadId at all.
 @Injectable()
 export class AnalyticsService {
   constructor(private prisma: PrismaService) {}
@@ -180,6 +183,76 @@ export class AnalyticsService {
         claimedAt: t.claimedAt,
       }));
 
-    return { marrying, putaway, abandoned };
+    // ------------------------------------------------------------
+    // Pick Face (2026-09-05, see [[wms-putaway-design]]) — a third,
+    // separately-reported metric, added the same session Pick Face itself
+    // shipped, per the client's own explicit call ("add Pick Face time as a
+    // third metric"). NOT pallet-level like the two reports above — a
+    // PickFaceTask has no palletLoadId at all (it's a plain reserve<->pick-
+    // face SKU move, not a Pallet consolidation concept), so this groups by
+    // (taskId, claimedById) instead — the same "sum every trip an operator
+    // ran against one unit of work" shape, just keyed by task rather than
+    // by pallet. No abandoned-claim equivalent exists yet: PickFaceTrip has
+    // no ABANDONED status/claim-expiry (see [[wms-putaway-design]]'s
+    // still-open list), so there's nothing to flag here today.
+    // ------------------------------------------------------------
+    const pickFaceTrips = await this.prisma.pickFaceTrip.findMany({
+      where: { status: 'COMPLETED', task: { warehouse: warehouseFilter } },
+      select: {
+        claimedAt: true,
+        completedAt: true,
+        claimedById: true,
+        claimedBy: { select: { id: true, name: true } },
+        task: {
+          select: {
+            id: true,
+            reason: true,
+            sku: { select: { code: true } },
+            fromLocation: { select: { code: true } },
+            toLocation: { select: { code: true } },
+          },
+        },
+      },
+    });
+
+    type PickFaceBucket = {
+      operatorId: string; operatorName: string; taskId: string; reason: string; skuCode: string;
+      fromCode: string; toCode: string; totalMinutes: number; tripCount: number;
+    };
+    const pickFaceBuckets = new Map<string, PickFaceBucket>();
+    for (const t of pickFaceTrips) {
+      if (!t.completedAt) continue;
+      const key = `${t.task.id}|${t.claimedById}`;
+      const minutes = (t.completedAt.getTime() - t.claimedAt.getTime()) / 60000;
+      const existing = pickFaceBuckets.get(key);
+      if (existing) {
+        existing.totalMinutes += minutes;
+        existing.tripCount += 1;
+      } else {
+        pickFaceBuckets.set(key, {
+          operatorId: t.claimedById,
+          operatorName: t.claimedBy.name,
+          taskId: t.task.id,
+          reason: t.task.reason,
+          skuCode: t.task.sku.code,
+          fromCode: t.task.fromLocation.code,
+          toCode: t.task.toLocation.code,
+          totalMinutes: minutes,
+          tripCount: 1,
+        });
+      }
+    }
+    const pickFace = [...pickFaceBuckets.values()].map((b) => ({
+      operatorId: b.operatorId,
+      operatorName: b.operatorName,
+      reason: b.reason,
+      skuCode: b.skuCode,
+      fromCode: b.fromCode,
+      toCode: b.toCode,
+      tripCount: b.tripCount,
+      durationMinutes: Math.round(b.totalMinutes * 10) / 10,
+    }));
+
+    return { marrying, putaway, abandoned, pickFace };
   }
 }

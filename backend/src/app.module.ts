@@ -25,6 +25,7 @@ import { PalletsModule } from './pallets/pallets.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { SimulationModule } from './simulation/simulation.module';
 import { AbcClassificationModule } from './abc-classification/abc-classification.module';
+import { PickFaceModule } from './pick-face/pick-face.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { AbcClassificationModule } from './abc-classification/abc-classification
     AnalyticsModule,
     SimulationModule,
     AbcClassificationModule,
+    PickFaceModule,
   ],
   controllers: [AppController],
   providers: [AppService],

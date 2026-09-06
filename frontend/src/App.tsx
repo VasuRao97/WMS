@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import LoginPage from './LoginPage';
 
-// 2026-09-06 hardening-pass fix: every one of these 17 pages used to be a
+// 2026-09-06 hardening-pass fix: every one of these pages used to be a
 // plain eager import, meaning a single visit to ANY page (even just to log
 // in and look at Warehouses) downloaded and parsed the code for all of
 // them in one ~1.4MB bundle — including Locations3DView's Three.js/React
@@ -23,6 +23,7 @@ const InboundOrdersPage = lazy(() => import('./InboundOrdersPage'));
 const DockDoorsPage = lazy(() => import('./DockDoorsPage'));
 const EquipmentPage = lazy(() => import('./EquipmentPage'));
 const PutawayPage = lazy(() => import('./PutawayPage'));
+const PickFacePage = lazy(() => import('./PickFacePage'));
 const InsightsPage = lazy(() => import('./InsightsPage'));
 const PalletsPage = lazy(() => import('./PalletsPage'));
 const AnalyticsPage = lazy(() => import('./AnalyticsPage'));
@@ -55,7 +56,7 @@ const CAN_RUN_SIMULATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
 // Analytics for a Supervisor.
 const CAN_VIEW_ABC_CLASSIFICATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'insights' | 'pallets' | 'analytics' | 'simulation' | 'abcclassification';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'pickface' | 'insights' | 'pallets' | 'analytics' | 'simulation' | 'abcclassification';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -172,6 +173,9 @@ function App() {
             Simulation
           </button>
         )}
+        <button onClick={() => setTab('pickface')} style={{ fontWeight: tab === 'pickface' ? 'bold' : 'normal' }}>
+          Pick Face
+        </button>
         {user?.role === 'COMPANY_ADMIN' && (
           <button onClick={() => setTab('companysettings')} style={{ fontWeight: tab === 'companysettings' ? 'bold' : 'normal' }}>
             Company Settings
@@ -203,6 +207,8 @@ function App() {
           <PalletsPage />
         ) : tab === 'putaway' ? (
           <PutawayPage />
+        ) : tab === 'pickface' ? (
+          <PickFacePage />
         ) : tab === 'insights' ? (
           <InsightsPage />
         ) : tab === 'analytics' ? (
