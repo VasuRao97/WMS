@@ -55,9 +55,36 @@ type Settings = {
 // example), an I-shape (opposite-end docks) needs two. Same "no general
 // Warehouse Edit form, so it lives here" reasoning as Aging Methodology.
 type DockZoneRow = { purpose: 'INBOUND' | 'OUTBOUND' | 'BOTH'; nearAisleEnd: 'LOW' | 'HIGH' };
+// Storage-type SKU-sharing caps + column-boundary toggles (2026-09-06 —
+// see the Ground design conversation in wms-putaway-design memory).
+// maxSkusClass* has real enforcement in suggestBin() for BOTH Rack and
+// Ground/Floor, but never had a UI to set it until now; respectsColumn
+// Boundaries* only means anything for GROUND_FLOOR (a Rack lane's depth
+// positions are already individually addressable, there's no "column" to
+// subdivide further) but is harmless to carry on any row regardless.
+type StorageTypeRow = {
+  id: string;
+  storageType: string;
+  category?: { id: string; name: string } | null;
+  maxSkusClassA?: number | null;
+  maxSkusClassB?: number | null;
+  maxSkusClassC?: number | null;
+  respectsColumnBoundariesClassA?: boolean;
+  respectsColumnBoundariesClassB?: boolean;
+  respectsColumnBoundariesClassC?: boolean;
+  respectsColumnBoundariesClassD?: boolean;
+};
 // pickFaceEnabled (2026-09-05) rides the same WarehouseRow/picker too —
 // same "no general Warehouse Edit form" reason.
-type WarehouseRow = { id: string; code: string; name: string; agingGranularity?: 'DAY' | 'WEEK' | 'MONTH' | null; dockZones?: DockZoneRow[]; pickFaceEnabled?: boolean };
+type WarehouseRow = {
+  id: string;
+  code: string;
+  name: string;
+  agingGranularity?: 'DAY' | 'WEEK' | 'MONTH' | null;
+  dockZones?: DockZoneRow[];
+  pickFaceEnabled?: boolean;
+  storageTypes?: StorageTypeRow[];
+};
 
 function CompanySettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -102,6 +129,23 @@ function CompanySettingsPage() {
   const [pickFaceSaved, setPickFaceSaved] = useState(false);
   const [pickFaceSaving, setPickFaceSaving] = useState(false);
 
+  // Storage-type SKU-sharing caps + column-boundary toggles (2026-09-06) —
+  // its own warehouse picker AND a storage-type-row picker, since a
+  // warehouse can have several WarehouseStorageType rows (one per storage
+  // type x category) each needing its own numbers.
+  const [capsWarehouseId, setCapsWarehouseId] = useState('');
+  const [capsRowId, setCapsRowId] = useState('');
+  const [capsMaxA, setCapsMaxA] = useState('');
+  const [capsMaxB, setCapsMaxB] = useState('');
+  const [capsMaxC, setCapsMaxC] = useState('');
+  const [capsBoundaryA, setCapsBoundaryA] = useState(true);
+  const [capsBoundaryB, setCapsBoundaryB] = useState(true);
+  const [capsBoundaryC, setCapsBoundaryC] = useState(true);
+  const [capsBoundaryD, setCapsBoundaryD] = useState(false);
+  const [capsError, setCapsError] = useState('');
+  const [capsSaved, setCapsSaved] = useState(false);
+  const [capsSaving, setCapsSaving] = useState(false);
+
   const load = () => {
     fetch('http://localhost:3000/companies/settings', { headers: authHeaders() })
       .then((res) => {
@@ -138,8 +182,77 @@ function CompanySettingsPage() {
           setDockZoneWarehouseId((prev) => prev || data[0].id);
           setDockZoneRows(data[0].dockZones || []);
           setPickFaceEnabled(!!data[0].pickFaceEnabled);
+          setCapsWarehouseId((prev) => prev || data[0].id);
+          const firstRow = (data[0].storageTypes || [])[0];
+          if (firstRow) applyCapsRow(firstRow);
         }
       });
+  };
+
+  // Shared by the initial load and by switching the warehouse/row pickers —
+  // pre-fills the caps editor's fields from one WarehouseStorageType row.
+  const applyCapsRow = (row: StorageTypeRow) => {
+    setCapsRowId(row.id);
+    setCapsMaxA(row.maxSkusClassA != null ? String(row.maxSkusClassA) : '');
+    setCapsMaxB(row.maxSkusClassB != null ? String(row.maxSkusClassB) : '');
+    setCapsMaxC(row.maxSkusClassC != null ? String(row.maxSkusClassC) : '');
+    setCapsBoundaryA(row.respectsColumnBoundariesClassA !== false);
+    setCapsBoundaryB(row.respectsColumnBoundariesClassB !== false);
+    setCapsBoundaryC(row.respectsColumnBoundariesClassC !== false);
+    setCapsBoundaryD(!!row.respectsColumnBoundariesClassD);
+  };
+
+  const handleCapsWarehouseChange = (id: string) => {
+    setCapsWarehouseId(id);
+    setCapsError('');
+    setCapsSaved(false);
+    const wh = warehouses.find((w) => w.id === id);
+    const firstRow = (wh?.storageTypes || [])[0];
+    if (firstRow) applyCapsRow(firstRow);
+    else setCapsRowId('');
+  };
+
+  const handleCapsRowChange = (rowId: string) => {
+    setCapsError('');
+    setCapsSaved(false);
+    const wh = warehouses.find((w) => w.id === capsWarehouseId);
+    const row = (wh?.storageTypes || []).find((r) => r.id === rowId);
+    if (row) applyCapsRow(row);
+  };
+
+  const handleSaveStorageTypeCaps = async () => {
+    if (!capsWarehouseId || !capsRowId) return;
+    setCapsError('');
+    setCapsSaved(false);
+    setCapsSaving(true);
+    const res = await fetch(`http://localhost:3000/warehouses/${capsWarehouseId}/storage-type-caps`, {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        storageTypeRowId: capsRowId,
+        maxSkusClassA: capsMaxA === '' ? null : capsMaxA,
+        maxSkusClassB: capsMaxB === '' ? null : capsMaxB,
+        maxSkusClassC: capsMaxC === '' ? null : capsMaxC,
+        respectsColumnBoundariesClassA: capsBoundaryA,
+        respectsColumnBoundariesClassB: capsBoundaryB,
+        respectsColumnBoundariesClassC: capsBoundaryC,
+        respectsColumnBoundariesClassD: capsBoundaryD,
+      }),
+    });
+    const data = await res.json();
+    setCapsSaving(false);
+    if (!res.ok) {
+      setCapsError(errorText(data, 'Could not save storage-type caps.'));
+      return;
+    }
+    setWarehouses((prev) =>
+      prev.map((w) =>
+        w.id !== capsWarehouseId
+          ? w
+          : { ...w, storageTypes: (w.storageTypes || []).map((r) => (r.id === capsRowId ? data : r)) },
+      ),
+    );
+    setCapsSaved(true);
   };
 
   useEffect(() => {
@@ -507,6 +620,65 @@ function CompanySettingsPage() {
           </div>
           {pickFaceError && <p style={{ color: 'crimson', marginTop: 8 }}>{pickFaceError}</p>}
           {pickFaceSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
+        </div>
+
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #eee' }}>
+          <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Storage-Type SKU Sharing (per warehouse, per storage type)</label>
+          <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>
+            How many distinct SKUs suggestBin() will let share one physical lane (Rack) or bin (Ground/Floor)
+            for a given storage type + category — blank means no limit. For Ground/Floor bins, "respects
+            column boundaries" additionally controls whether a column must stay single-SKU internally, or can
+            mix different SKUs at different depths (off is the free-mixing "dead stock" default for Class D —
+            any class can opt into it).
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+            <select value={capsWarehouseId} onChange={(e) => handleCapsWarehouseChange(e.target.value)} style={{ padding: 6, minWidth: 180 }}>
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+              ))}
+            </select>
+            <select value={capsRowId} onChange={(e) => handleCapsRowChange(e.target.value)} style={{ padding: 6, minWidth: 220 }}>
+              {(warehouses.find((w) => w.id === capsWarehouseId)?.storageTypes || []).map((r) => (
+                <option key={r.id} value={r.id}>{r.storageType} — {r.category?.name ?? 'Uncategorized'}</option>
+              ))}
+            </select>
+          </div>
+          {!capsRowId ? (
+            <p style={{ fontSize: 13, color: '#888' }}>This warehouse has no storage-type rows to configure yet.</p>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                <span style={{ fontSize: 12 }}>Class A limit:</span>
+                <input value={capsMaxA} onChange={(e) => setCapsMaxA(e.target.value)} placeholder="no limit" style={{ width: 90, padding: 6 }} />
+                <span style={{ fontSize: 12 }}>Class B limit:</span>
+                <input value={capsMaxB} onChange={(e) => setCapsMaxB(e.target.value)} placeholder="no limit" style={{ width: 90, padding: 6 }} />
+                <span style={{ fontSize: 12 }}>Class C limit:</span>
+                <input value={capsMaxC} onChange={(e) => setCapsMaxC(e.target.value)} placeholder="no limit" style={{ width: 90, padding: 6 }} />
+              </div>
+              {warehouses.find((w) => w.id === capsWarehouseId)?.storageTypes?.find((r) => r.id === capsRowId)?.storageType === 'GROUND_FLOOR' && (
+                <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                  <span style={{ fontSize: 12, color: '#888' }}>Respects column boundaries:</span>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                    <input type="checkbox" checked={capsBoundaryA} onChange={(e) => setCapsBoundaryA(e.target.checked)} /> A
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                    <input type="checkbox" checked={capsBoundaryB} onChange={(e) => setCapsBoundaryB(e.target.checked)} /> B
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                    <input type="checkbox" checked={capsBoundaryC} onChange={(e) => setCapsBoundaryC(e.target.checked)} /> C
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                    <input type="checkbox" checked={capsBoundaryD} onChange={(e) => setCapsBoundaryD(e.target.checked)} /> D
+                  </label>
+                </div>
+              )}
+              <button type="button" onClick={handleSaveStorageTypeCaps} disabled={capsSaving}>
+                {capsSaving ? 'Saving...' : 'Save'}
+              </button>
+              {capsError && <p style={{ color: 'crimson', marginTop: 8 }}>{capsError}</p>}
+              {capsSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
+            </>
+          )}
         </div>
       </div>
 

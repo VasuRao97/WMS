@@ -93,6 +93,18 @@ export class WarehousesController {
     return this.warehousesService.setPickFaceEnabled(id, !!body.pickFaceEnabled, user);
   }
 
+  // 2026-09-06 — the real UI for the long-dead maxSkusClassA/B/C fields
+  // (Rack and Ground/Floor both) plus Ground's newer
+  // respectsColumnBoundariesClassA/B/C/D toggles. `storageTypeRowId` picks
+  // WHICH of this warehouse's WarehouseStorageType rows (one per storage
+  // type x category) is being edited — see the service method's own
+  // comment for why it lives in the body, not the URL.
+  @Patch(':id/storage-type-caps')
+  @Roles('COMPANY_ADMIN')
+  setStorageTypeCaps(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.warehousesService.setStorageTypeCaps(id, body.storageTypeRowId, body, user);
+  }
+
   // Route order matters — @Delete('all') must be declared before
   // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')

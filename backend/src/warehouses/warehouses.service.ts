@@ -449,6 +449,64 @@ export class WarehousesService {
     });
   }
 
+  // 2026-09-06 — finally closes the "completely dead field" gap flagged
+  // since 2026-08-24: WarehouseStorageType.maxSkusClassA/B/C has always had
+  // real enforcement in suggestBin() but never had a UI/API to set it, for
+  // EITHER storage-type family (Rack or Ground/Floor) — this is the first
+  // one. `respectsColumnBoundariesClassA/B/C/D` is the newer, Ground-only
+  // half (see the Ground design conversation in wms-putaway-design memory)
+  // — meaningless for Rack, but harmless to save regardless, since
+  // suggestRackBin() never reads it. `storageTypeRowId` is required in the
+  // body (not the URL) — a warehouse can have several WarehouseStorageType
+  // rows (one per storage type x category), so the warehouse id alone
+  // can't say which one; this still asserts the row genuinely belongs to
+  // THIS warehouse before touching it, same defense-in-depth as every
+  // other scoped write in this codebase.
+  async setStorageTypeCaps(
+    warehouseId: string,
+    storageTypeRowId: string,
+    data: {
+      maxSkusClassA?: number | null;
+      maxSkusClassB?: number | null;
+      maxSkusClassC?: number | null;
+      respectsColumnBoundariesClassA?: boolean;
+      respectsColumnBoundariesClassB?: boolean;
+      respectsColumnBoundariesClassC?: boolean;
+      respectsColumnBoundariesClassD?: boolean;
+    },
+    user: any,
+  ) {
+    await this.assertAccess(warehouseId, user);
+    if (!storageTypeRowId) throw new BadRequestException('storageTypeRowId is required.');
+    const row = await this.prisma.warehouseStorageType.findUnique({ where: { id: storageTypeRowId } });
+    if (!row || row.warehouseId !== warehouseId) {
+      throw new BadRequestException('That storage-type row does not belong to this warehouse.');
+    }
+
+    const capField = (key: 'maxSkusClassA' | 'maxSkusClassB' | 'maxSkusClassC', label: string): number | null | undefined => {
+      const v = (data as any)[key];
+      if (v === undefined) return undefined; // omitted -> leave untouched
+      if (v === null || v === '') return null; // explicit clear -> unbounded
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0) throw new BadRequestException(`${label} must be a positive whole number, or blank for no limit.`);
+      return n;
+    };
+
+    return this.prisma.warehouseStorageType.update({
+      where: { id: storageTypeRowId },
+      data: {
+        maxSkusClassA: capField('maxSkusClassA', 'Class A limit'),
+        maxSkusClassB: capField('maxSkusClassB', 'Class B limit'),
+        maxSkusClassC: capField('maxSkusClassC', 'Class C limit'),
+        ...(data.respectsColumnBoundariesClassA !== undefined ? { respectsColumnBoundariesClassA: !!data.respectsColumnBoundariesClassA } : {}),
+        ...(data.respectsColumnBoundariesClassB !== undefined ? { respectsColumnBoundariesClassB: !!data.respectsColumnBoundariesClassB } : {}),
+        ...(data.respectsColumnBoundariesClassC !== undefined ? { respectsColumnBoundariesClassC: !!data.respectsColumnBoundariesClassC } : {}),
+        ...(data.respectsColumnBoundariesClassD !== undefined ? { respectsColumnBoundariesClassD: !!data.respectsColumnBoundariesClassD } : {}),
+      },
+      include: { category: true },
+    });
+  }
+
   async removeAll(user: any) {
     const warehouses = await this.prisma.warehouse.findMany({
       where: companyFilter(user),
