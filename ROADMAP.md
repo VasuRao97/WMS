@@ -2,7 +2,17 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06: **the "Rows 1-N"
+what to pick up next. Updated as priorities shift — last updated 2026-09-06, later the same day:
+a deliberate **hardening pass** (line-by-line correctness/performance review, not a new module) —
+`suggestBin()` rebuilt to avoid several full-map rescans on its hottest path, two real race
+conditions closed (Simulation's SKU pool, Pallet's scan-time load resolution), 9 missing DB indexes
+added across the tables that grow fastest, and the frontend bundle split so a login no longer
+downloads all 17 pages (plus Three.js) in one ~1.4MB chunk. See the git history / commit
+`e1744b7d` for the full detail — nothing to build further here, this was cleanup, not scope. Same
+day: a new to-do was raised, not yet designed — **combining ABC classification with a new FMS
+(Fast/Medium/Slow-moving) axis for exact material putaway logic** — added to the "Immediate
+candidates" list below and to the `wms-abc-velocity-design` memory. Just before the hardening pass,
+same day: **the "Rows 1-N"
 row-position summary is built** — closes a loose end from earlier the same session (Simulation's
 Plan View: "1 being the start and last number being the last"). Each flank's existing `R{n}` callout
 now has a second, smaller line under it counting positions the same way this view already pairs
@@ -819,50 +829,50 @@ an already-completed mis-putaway gets corrected, and real queue-ordering/aging-b
 prioritization (the FIFO discussion got paused for the racked-vs-non-racked detour and was never
 fully resumed).
 
-The first three candidates below are the module-level options (unchanged from before); the rest
-are smaller items raised in earlier sessions — pick any of them, not a forced order.
+Pick any of these, not a forced order — refreshed 2026-09-06 (the previous version of this list was
+stale, still describing Putaway as unbuilt from a much earlier session; see CLAUDE.md's build log
+for everything that's actually shipped since).
 
 ## Immediate candidates for the next session
 
 Pick one — these are the live options on the table, not a forced order:
 
-1. **Putaway — core logic built and verified (2026-08-28), three bin-suggestion bugs found and
-   fixed via live testing (2026-08-29).** Moves received stock from staging to a real final storage
-   bin, via trigger modes (Company-Settings-configurable, default IMMEDIATE), ABC/multi-deep-lane-
-   aware bin suggestion (now reservation-aware, prefers the fullest eligible lane regardless of
-   which SKU got there first, and correctly treats each flank of a mirrored aisle as its own lane),
-   and a real scan-driven execution flow (now showing/accepting the human "Rack Name" instead of the
-   raw DB code). Not fully done, though — genuinely open pieces to pick up next: Ground/Stillage's
-   own version of the multi-position logic (racked came first, on purpose), a cancel/exception path
-   for a task that can't be completed, correcting an already-completed mis-putaway, and real
-   queue-ordering/aging-based task prioritization. Also still the natural eventual consumer of
-   `DockLocationDistance` once that has real data to rank bins by.
-2. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
-   hand at Location X." The ledger (`StockMovement`) has real data in it now (Inbound receiving
-   writes to it), but nothing renders it. Even a read-only view would close a real, felt gap.
-3. **Outbound order maker** — the flow you described in an earlier conversation (destination +
-   vehicle capacity check, weight *and* volume, triggering a pick list) — a real, well-understood
-   need, but benefits from Inventory existing first so a "can this order be fulfilled" check means
-   something. Would also be the first real user of the Gate & Yard "Vehicles to Load" queue added
-   this session.
-4. **Dock-out → Gate-out signal** — your own explicit ask, promised for "next session": an active
-   notification telling security a vehicle is ready to Gate Out, plus real logic for the fact that
-   paperwork/documentation still takes time after dock-out before Gate Out can actually happen.
-   Needs a real design conversation first (touches similar territory to the still-fully-deferred
-   Dock Scheduler) — not a quick toggle.
-5. **Dock + Staging + Yard visualizer** — raised this session, paused mid-conversation before any
-   decisions were made. Same spirit as the Locations Plan View. Needs a real spatial-data pass
-   first (Dock Doors/Yard Slots have no position/sequence data today) — see the four open questions
-   in the session note above before building anything.
-6. **A cancel/void path for a mistaken Gate In** (2026-08-29) — Gate In now hard-blocks a vehicle
-   that already has an open entry elsewhere (a real gap, closed this session), but there's still no
-   way to void a genuinely mistaken entry (wrong vehicle typed, never gated out) — today that would
-   need a manual Gate Out to clear. Flagged, not designed.
-7. **The reslotting/consolidation suggestion engine** (2026-09-06) — now genuinely unblocked: both
+1. **The reslotting/consolidation suggestion engine** (2026-09-06) — now genuinely unblocked: both
    Topic 1 (real per-warehouse ABC classification) and Topic 2 (dock-relative placement rules) it
    was waiting on are built. `ReslottingSuggestion`/`ReslottingSuggestionSource` schema has sat ready
    since Topic 1 — the actual detect-a-misplaced-SKU/suggest-a-target-bin algorithm and its daily job
    still need designing and building.
+2. **FMS classification combined with ABC, for exact material putaway** (2026-09-06, new) — "go in
+   depth for FMS model of inventory as well, looking at the combo of abc and fms we need to make a
+   logic of exact material putaway." FMS (Fast/Medium/Slow-moving, ranked by movement *frequency*)
+   is a different axis than ABC (ranked by dispatched quantity/value) — a combined ABC×FMS matrix is
+   the natural next refinement on top of Topics 1/2's placement work, and closely related to item 1
+   above. Nothing designed yet — see the new section in the `wms-abc-velocity-design` memory for the
+   real open questions to raise first (what drives FMS, how many tiers, how the combined matrix
+   actually changes `suggestBin()` beyond what ABC + dock-proximity already do).
+3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
+   hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
+   it. Even a read-only view would close a real, felt gap. Next in the stated module build order.
+4. **Outbound order maker** — destination + vehicle capacity check (weight *and* volume), triggering
+   a pick list — the module after Inventory in the build order. Benefits from Inventory existing
+   first so a "can this order be fulfilled" check means something.
+5. **Dock-out → Gate-out signal** — an active notification telling security a vehicle is ready to
+   Gate Out, plus real logic for the fact that paperwork/documentation still takes time after
+   dock-out before Gate Out can actually happen. Needs a real design conversation first (touches
+   similar territory to the still-fully-deferred Dock Scheduler) — not a quick toggle.
+6. **Dock + Staging + Yard visualizer** — paused mid-conversation before any decisions were made.
+   Same spirit as the Locations Plan View. Needs a real spatial-data pass first (Dock Doors/Yard
+   Slots have no position/sequence data today) — see the four open questions in the session note
+   above before building anything.
+7. **A cancel/void path for a mistaken Gate In** (2026-08-29) — Gate In hard-blocks a vehicle that
+   already has an open entry elsewhere, but there's still no way to void a genuinely mistaken entry
+   (wrong vehicle typed, never gated out) — today that needs a manual Gate Out to clear. Flagged,
+   not designed.
+
+Also genuinely still open within Putaway itself, not a separate module: Ground/Stillage's own
+version of the multi-position bin logic (racked came first, on purpose), a cancel/exception path for
+a task that can't be completed, correcting an already-completed mis-putaway, and real queue-
+ordering/aging-based task prioritization.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 

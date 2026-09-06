@@ -4146,6 +4146,114 @@ catches a dead backend import/variable like the two above; `tsc --noEmit` alone 
 regardless. Worth an occasional `npm run lint` sweep on the backend specifically for this reason,
 not just when chasing a specific bug.
 
+### Hardening pass: suggestBin() performance, two race conditions, missing indexes, frontend bundle size (2026-09-06, next session)
+A deliberate, explicitly time-boxed sweep, requested directly ("go line by line and check if
+anything can be made better to keep our calculation power needed down and makes system smoother"),
+then extended further ("go in depth... we need to fix all issues before we proceed") — real
+correctness/performance fixes, not new scope. `npm run lint`'s `--fix` flag accidentally reformatted
+78 files with zero logic changes mid-pass (pure line-wrapping, a ~6,000-line diff) — caught,
+confirmed with the client, and cleanly reverted (pristine content pulled back via `git show`,
+intended fixes reapplied on top) before anything was committed; worth remembering **never run
+`npm run lint` on this backend expecting a read-only report — it always runs `--fix`.** Use
+`npx eslint "src/**/*.ts"` directly (no `--fix`) for a read-only pass instead.
+
+**`suggestBin()` — the hottest path in the whole app (runs on every scan, every receipt line, every
+pallet close) — had three separate O(locations × entire warehouse's movement history) rescans per
+call**, each re-scanning the FULL `balanceByLocSku` map with a string `.startsWith()` check for
+every single candidate location, instead of an O(1) lookup. Fixed by building a proper
+`skuBalancesByLocation` index (locationId → skuId → balance) once per call, alongside the existing
+flat map, and using it everywhere a per-location occupant/emptiness check was needed. Also **fetched
+every occupant SKU's `abcClass` with its own `tx.sku.findUnique()` call PER LANE** — one DB round
+trip per (lane, occupant SKU) pair instead of one query total; batched into a single `sku.findMany()`
+alongside the existing "still incoming" lookup (which already had the same SKU-id set in hand).
+Purely a refactor of HOW existing data is looked up, not what's computed — verified equivalent by
+construction (same source loop, same key derivation) and via `tsc --noEmit`.
+
+**Two real race conditions closed**, same "check-then-act with nothing stopping two concurrent
+callers" shape this project already learned once (the Simulation sandbox's own lazy Warehouse/
+Category setup, 2026-09-06 earlier the same day):
+- `SimulationService.ensureSkuPool()` — a second lazy-create path in the same file that wasn't
+  covered by the earlier fix. Two near-simultaneous "Run Simulation" calls (a double-click, two
+  tabs, React StrictMode's dev-mode double-invoke) could both see the SKU pool short by the same
+  count and both try to create the same `SIM-A1`-style code, the loser hitting a raw
+  unique-constraint 500. Fixed with `upsert()` (keyed on `Sku`'s own `companyId_code` unique
+  constraint), same pattern as the original fix.
+- `PalletsService.resolveLoadForScan()` — two near-simultaneous scans of the SAME physical pallet
+  (a double-submit, a flaky-network client retry) could both see "no OPEN load yet" and both create
+  one, violating "at most one open load per pallet." This one couldn't use a plain `upsert()` —
+  "at most one OPEN load" is a CONDITIONAL uniqueness rule (only while `status='OPEN'`), not a
+  column-level unique constraint Prisma's schema can express. Fixed instead with a
+  `SELECT id FROM "Pallet" WHERE id = ${palletId} FOR UPDATE` row lock at the top of the function:
+  since this call is always inside the caller's own `scan()`/`approveScan()` transaction, a
+  concurrent second call simply blocks there until the first commits, then re-reads accurate state
+  — deliberately NOT the "catch a unique-constraint violation mid-transaction" pattern used
+  elsewhere, since Postgres doesn't let a transaction keep querying after a failed statement
+  without a savepoint (which Prisma doesn't auto-add per query), so catching the error there would
+  have silently left the surrounding transaction poisoned instead of actually recovering.
+
+**9 missing indexes added, each only where a real, currently-unindexed query was traced first** —
+not speculative additions. Checked every actual query against each model before adding anything:
+- `StockMovement` — the existing `@@index([skuId, locationId])` doesn't serve ANY real query in the
+  codebase (nothing anywhere filters by `skuId` alone), while three of the hottest queries in the
+  app (`suggestBin()`, the Plan View occupancy overlay, Insights' storage-utilization report) all
+  filter by `locationId` alone, which a composite index whose leading column is `skuId` can't serve
+  efficiently. Added `@@index([locationId])` alongside the existing composite (kept, untouched).
+- `PutawayTask`/`PutawayTrip` — both had ZERO indexes beyond their primary key despite being
+  append-only, unboundedly-growing logs queried constantly by exact shapes traced in the code:
+  `PutawayTask`: `@@index([receiptLineId])`, `@@index([toLocationId, status])`,
+  `@@index([status, openForAccumulation])`. `PutawayTrip`: `@@index([taskId])`,
+  `@@index([claimedById, status])`, `@@index([status, claimedAt])`.
+- `InboundReceiptLine` — same zero-index gap; `receiptId` is filtered on every Match Order/scan/
+  receiving-modal load, `skuId` inside `suggestBin()`'s own "still incoming" check. Added
+  `@@index([receiptId])` and `@@index([skuId])`.
+- `NotificationLog` — `DetentionAlertScheduler` (every 5 min) and `PutawayAssignmentScheduler`
+  (every 1 min) both filter this unboundedly-growing audit log by
+  `referenceType`+`referenceId`+`eventType` exactly; the existing `[companyId, eventType, status]`
+  composite doesn't help either lookup. Added `@@index([referenceType, referenceId, eventType])`.
+- `VehicleGateEntry` — `{vehicleId, gateOutAt: null}` is checked on every Gate In (the duplicate-
+  open-entry block); `{gateOutAt: null}` alone is scanned by two different schedulers every few
+  minutes. Added a PARTIAL index (`WHERE "gateOutAt" IS NULL`) rather than a plain composite —
+  Prisma's schema DSL can't express a conditional index directly, so it's hand-added in the
+  migration SQL only (documented in schema.prisma so it isn't a surprise on a future `prisma db
+  pull`). "Currently open" stays a small, roughly constant-sized fraction of this table regardless
+  of how much closed history accumulates — the textbook case for a partial index over a composite
+  one.
+
+Migrations `20260906030000_stock_movement_location_index`, `20260906040000_hot_path_indexes`,
+`20260906050000_vehicle_gate_entry_open_index` — all hand-written (same `migrate deploy`-only
+workflow this project always uses) and applied cleanly against the real dev DB; every new index
+confirmed present via a direct `psql`/`pg_indexes` query afterward, not just assumed from a clean
+migration run.
+
+**Frontend bundle — was one eager ~1.4MB chunk (365KB gzipped) downloaded on every single login**,
+regardless of which page a user actually opened, including the full `three`/`@react-three/fiber`/
+`@react-three/drei` stack. Two changes: (1) `App.tsx`'s 17 tab-page imports converted to
+`React.lazy()` + one shared `<Suspense>` around the tab-switch ternary — the initial shell dropped
+to ~200KB (63KB gzipped); only `LoginPage` stays eager (small, needed before any `<Suspense>`
+boundary exists). (2) `Locations3DView` (the actual Three.js consumer) was still eagerly imported
+inside BOTH its real callers (`LocationsPage.tsx`, `SimulationPage.tsx`) even after the tab-level
+split — lazy-loaded it in both places too, which let Vite/Rollup correctly split it into one shared
+~934KB chunk that only downloads the first time a viewer actually toggles to 3D, instead of on
+every Locations/Simulation page visit (confirmed via the actual build output: `LocationsPage`'s own
+chunk dropped from 978KB to 44.7KB once this landed).
+
+**Also checked, came back clean, nothing to fix**: no `console.log`/`@ts-ignore`/raw-SQL-injection-
+risk/hardcoded-credential/auth-bypass anywhere in the backend; no floating promises anywhere except
+the standard NestJS `bootstrap()` entry-point boilerplate in `main.ts` (expected, not a bug); no
+WebGL memory leaks in `Locations3DView` (React Three Fiber disposes declarative JSX-created
+geometries/materials automatically — no raw imperative `new THREE.X()` usage anywhere to leak);
+every `setInterval`/`addEventListener` in the frontend already has correct cleanup; the frontend's
+own occupancy-map building (`LocationsPlanView.tsx`/`Locations3DView.tsx`) was already using a
+proper `Map` for O(1) lookups, unlike the backend twin that needed fixing.
+
+Verified: `tsc --noEmit` (backend), `prisma validate`, a full `nest build`, `tsc -b` (frontend), and
+a full `vite build` all clean throughout. Committed as `e1744b7d` on `feature/3d-plan-view`.
+
+**Flagged, not fixed this pass** — see the `wms-abc-velocity-design` memory: a real to-do was raised
+the same day, not yet designed — combining ABC classification with a new FMS (Fast/Medium/Slow-
+moving, movement-frequency) axis for a more precise Putaway placement rule than either axis gives
+alone. Needs its own align-before-coding pass before any schema, same as Topics 1/2 did.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
