@@ -2,7 +2,13 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06: **dock-relative Putaway
+what to pick up next. Updated as priorities shift — last updated 2026-09-06: **the "Rows 1-N"
+row-position summary is built** — closes a loose end from earlier the same session (Simulation's
+Plan View: "1 being the start and last number being the last"). Each flank's existing `R{n}` callout
+now has a second, smaller line under it counting positions the same way this view already pairs
+rows (by position, not raw stored number) — shows on the real Locations Plan View too, since it's
+the same shared component Simulation reuses. See CLAUDE.md's "Plan View: 'Rows 1-N' row-position
+summary" section. Just before that, same day: **dock-relative Putaway
 placement (Topic 2) is built and verified**, right after Topic 1 — a new `WarehouseDockZone` config
 (0-2 zones per warehouse, capturing which end of the aisle order sits near an Inbound/Outbound/Both
 dock) now drives `suggestBin()`'s placement of fast (A/B) vs. slow (C/D) movers, replacing today's
@@ -58,6 +64,24 @@ consolidation ("marrying" loose cases onto a pallet before
 Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
 ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
 for the complete design-to-build trail.
+
+## Session note (2026-09-06, same session — Plan View "Rows 1-N" row-position summary)
+Closes the loose end flagged at the end of the Topic 2 note below — the very first ask from earlier
+this same session, picked back up once both ABC topics concluded: "we need to have start row number
+and finish row number so we know it in the layout, 1 being the start and last number being the
+last." Scoped at the time to Simulation's Plan View, "a 'Rows 1-8' summary near each flank header."
+
+**Built**: each flank's existing `R{n}` callout in `LocationsPlanView.tsx` now has a second, smaller
+"Rows 1-N" line under it — a position count (1 nearest the corner, N farthest), not the raw stored
+rack/block numbers, consistent with this view's own "rows pair by position" rule. Shown at both the
+top and bottom of each column (mirrored, same as the R{n} callout itself). Shows on the real
+Locations Plan View too, not just Simulation — it's the exact same shared component. 2D-only; 3D
+already shows each position as a real object in space.
+
+Verified live through Simulation's real UI (throwaway company `ROWSCHK1`): the default 3×3×3 sandbox
+showed "Rows 1-3" everywhere; setting Length to 8 and re-running correctly showed "Rows 1-8"
+instead, confirmed via direct SVG text-node inspection (each `<text>` element's own `y` position, not
+just page text). See CLAUDE.md's matching section for full detail.
 
 ## Session note (2026-09-06 — ABC velocity reassessment, Topic 1 of 2)
 Two topics raised together, deliberately sequenced by explicit client instruction: "lets finish topic
@@ -126,8 +150,9 @@ detect-and-suggest algorithm itself still isn't written. The A-vs-B same-bin-con
 the MHE-travel-time alternative to the flat level rule (both raised earlier in this same
 conversation) remain open, not decided either way. Also still outstanding, unrelated to either
 topic: the "start row number/finish row number" ask from earlier this same session (Simulation's
-Plan View) was never built — the conversation pivoted to velocity/placement and never returned to
-it.
+Plan View) was never built at the time this note was written — the conversation had pivoted to
+velocity/placement without returning to it. **Closed later the same session** — see the "Rows 1-N"
+session note above.
 
 ## Session note (2026-09-06 — Putaway Simulation: a sandbox to watch the real algorithm work)
 The client's own question, a tangent off the Plan View backlog rather than one of its numbered

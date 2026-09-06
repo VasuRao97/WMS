@@ -4068,7 +4068,46 @@ since `DockLocationDistance` still has zero data-entry tooling) was never explic
 re-raised — stays a documented future upgrade, not decided against. The earlier, still-outstanding
 "start row number/finish row number" ask from this same session (Simulation's Plan View, "Rows 1-8"
 summary near each flank header) was never built and never revisited after the conversation pivoted
-to velocity/placement — a genuine loose end, not abandoned by decision.
+to velocity/placement — a genuine loose end, not abandoned by decision. **Closed later the same
+session** — see "Plan View: 'Rows 1-N' row-position summary" below.
+
+### Plan View: "Rows 1-N" row-position summary (2026-09-06, same session)
+Closes the loose end flagged above — the very first ask from earlier this session, picked back up
+once Topic 2 concluded: "we need to have start row number and finish row number so we know it in
+the layout, 1 being the start and last number being the last." Scoped via clarifying questions at
+the time to Simulation's Plan View, shown as "a 'Rows 1-8' summary near each flank header."
+
+**A position count, not the raw stored rack/block numbers** — consistent with this view's own
+long-standing "rows pair by position, not by raw number" rule (a mirrored aisle's two flanks can
+even reuse the same underlying rack numbers, so the raw numbers were never a meaningful "1 to N"
+anyway). `rowsLabel(cellCount)` (`LocationsPlanView.tsx`) returns `"Row 1"` for a single position or
+`"Rows 1-N"` for N, where 1 is always the position nearest the corner and N the farthest — exactly
+matching the client's own "1 being the start, last being the last" framing, computed straight from
+`rightCells.length`/`leftCells.length`, which the layout builder already had.
+
+**Rendered as a second, smaller line right under each flank's existing `R{n}` callout**, both at the
+top of the column and mirrored at the bottom (same "repeat the header at both ends of a tall aisle"
+reasoning the R{n} callout itself already followed). Fitting a third stacked line at the top required
+growing `PAD_TOP` by 14px — done by shifting the Section/Aisle lines' own offsets to compensate, so
+they land at the exact same absolute pixel position as before, with the new Rows line taking the
+freed-up slot closest to the walkway. The bottom (mirrored) side needed no such change — the new
+line simply fits in the existing gap between the walkway's bottom edge and the Aisle/Flank line,
+since it's a shorter offset than what was already there.
+
+**Scoped to Simulation per the client's own choice, but this is the exact same shared
+`LocationsPlanView.tsx` component the real Locations page's Table View ↔ Plan View toggle already
+uses** — so it appears there too, the same "one shared component, both benefit" pattern as every
+other Plan View upgrade this session (occupancy overlay, click-to-inspect, the Level toggle, the
+back-to-back `AISLE_GAP` fix). Deliberately 2D-only — 3D already shows each flank's boxes as real,
+individually visible objects in space; a text summary of "how many" doesn't add anything there the
+way it does for a top-down SVG plan.
+
+Verified live through Simulation's real UI (throwaway company `ROWSCHK1`): the default 3×3×3
+sandbox showed "Rows 1-3" next to every `R{n}` callout (top and bottom); setting Length to 8 and
+re-running showed "Rows 1-8" everywhere instead, confirmed both via the rendered page text and via
+direct SVG text-node inspection of each `<text>` element's own `y` attribute (36/50 at the top,
+604/592 at the bottom — the new Rows line sitting exactly where designed, no overlap with the
+existing Aisle/Flank line). `tsc -b` clean. Throwaway company cleaned up afterward.
 
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
@@ -4401,6 +4440,13 @@ return a plausible answer. The daily reslotting/consolidation suggestion engine 
 schema-only is now genuinely unblocked (this was the placement-rule dependency it was waiting on)
 but still not built — see `[[wms-abc-velocity-design]]` in memory for that and every other
 remaining open item from both topics.
+
+**The "Rows 1-N" row-position summary is also done** (2026-09-06, same session, see "Plan View:
+'Rows 1-N' row-position summary" above) — closes the loose end from earlier the same session
+(Simulation's Plan View, "1 being the start and last number being the last"): each flank's existing
+`R{n}` callout now has a second, smaller "Rows 1-N" line right under it, counting positions the same
+way this view already pairs rows (by position, not raw stored number). Shows on the real Locations
+Plan View too, since it's the same shared component Simulation reuses.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel

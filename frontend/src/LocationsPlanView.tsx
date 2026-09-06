@@ -71,12 +71,19 @@ const WALKWAY_W = 34;
 // doesn't need to be a huge gap between 2 flanks, its back to back then
 // aisle" — WALKWAY_W is the one real gap, this is not (2026-09-06).
 const AISLE_GAP = 6;
-const PAD_TOP = 46;
+// 46 originally; +14 (2026-09-06) to fit a third header line — the "Rows
+// 1-N" summary below each flank's R{n} callout (see rowsLabel() below) —
+// without disturbing the Section/Aisle lines' own existing position
+// (their offsets from PAD_TOP were adjusted to compensate, so they land at
+// the exact same absolute y as before).
+const PAD_TOP = 60;
 // Tall enough to mirror the top header (Section/Aisle + flank callouts) at
 // the bottom of each column too — on a tall aisle (many rows), scrolling to
 // the far end used to lose sight of which flank (R1/R2...) you were looking
 // at; repeating the same callouts at the bottom fixes that. Confirmed
-// 2026-08-25.
+// 2026-08-25. Unlike PAD_TOP, this didn't need to grow for the Rows
+// summary below — the new line fits in the existing gap between the
+// walkway's bottom edge and the Aisle/Flank line without pushing anything.
 const PAD_BOTTOM = 46;
 const PAD_X = 16;
 
@@ -102,6 +109,24 @@ function levelRangeLabel(levels: string[]): string | undefined {
   const max = nums[nums.length - 1];
   if (min === 1) return levelLabel(max);
   return `${levelLabel(min)}-${levelLabel(max)}`;
+}
+
+// "Rows 1-N" summary shown near each flank's header (2026-09-06 — the
+// client's own ask: "we need to have start row number and finish row
+// number so we know it in the layout, 1 being the start and last number
+// being the last"). Deliberately a POSITION count, not the raw stored
+// rack/block numbers — consistent with this view's existing "rows pair by
+// position, not by raw number" rule (see the file-level comment above): 1
+// is always the row nearest the corner, N is the farthest, regardless of
+// what the underlying Rack/Block values actually are. Scoped to Simulation
+// first per the client's own choice, but this view is the exact same
+// shared component the real Locations page uses, so it shows there too —
+// same "one shared component, both benefit" pattern as every other Plan
+// View upgrade this session (occupancy overlay, click-to-inspect, the
+// Level toggle, the back-to-back AISLE_GAP fix).
+function rowsLabel(cellCount: number): string | undefined {
+  if (cellCount === 0) return undefined;
+  return cellCount === 1 ? 'Row 1' : `Rows 1-${cellCount}`;
 }
 
 // One footprint position (a Rack, a Ground block, a Stillage stack) can draw
@@ -382,7 +407,9 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
             : "Colored by each bin's current occupant's A/B/C Class — plain grey means empty."}
         {' '}Aisle 1 sits closest to the bottom-right corner; each further aisle is added to its left. A single-sided
         aisle draws as one flank on the right; a second flank (left) only appears when it was actually generated (a
-        Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number.
+        Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number — each
+        flank's "Rows 1-N" summary (next to its R{'{n}'} callout) counts positions this way too, 1 nearest the
+        corner through N farthest, regardless of the underlying Rack/Block numbers.
         {skipped > 0 ? ` ${skipped} location(s) with no Aisle set are not shown.` : ''}
       </p>
       {availableLevels.length > 0 && (
@@ -455,7 +482,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
                     <>
                       <text
                         x={walkwayLeftX + WALKWAY_W / 2}
-                        y={PAD_TOP - 24}
+                        y={PAD_TOP - 38}
                         textAnchor="middle"
                         fontSize={13}
                         fontWeight="bold"
@@ -466,7 +493,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
                       </text>
                       <text
                         x={walkwayLeftX + WALKWAY_W / 2}
-                        y={PAD_TOP - 10}
+                        y={PAD_TOP - 24}
                         textAnchor="middle"
                         fontSize={10}
                         fontFamily="sans-serif"
@@ -478,7 +505,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
                   ) : (
                     <text
                       x={walkwayLeftX + WALKWAY_W / 2}
-                      y={PAD_TOP - 10}
+                      y={PAD_TOP - 24}
                       textAnchor="middle"
                       fontSize={12}
                       fontWeight="bold"
@@ -489,30 +516,58 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
                     </text>
                   )}
                   {aisle.rightFlankNumber != null && (
-                    <text
-                      x={walkwayRightX + aisle.maxRightW / 2}
-                      y={PAD_TOP - 10}
-                      textAnchor="middle"
-                      fontSize={12}
-                      fontWeight="bold"
-                      fontFamily="sans-serif"
-                      fill="#222"
-                    >
-                      R{aisle.rightFlankNumber}
-                    </text>
+                    <>
+                      <text
+                        x={walkwayRightX + aisle.maxRightW / 2}
+                        y={PAD_TOP - 24}
+                        textAnchor="middle"
+                        fontSize={12}
+                        fontWeight="bold"
+                        fontFamily="sans-serif"
+                        fill="#222"
+                      >
+                        R{aisle.rightFlankNumber}
+                      </text>
+                      {rowsLabel(aisle.rightCells.length) && (
+                        <text
+                          x={walkwayRightX + aisle.maxRightW / 2}
+                          y={PAD_TOP - 10}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fontFamily="sans-serif"
+                          fill="#777"
+                        >
+                          {rowsLabel(aisle.rightCells.length)}
+                        </text>
+                      )}
+                    </>
                   )}
                   {aisle.leftFlankNumber != null && (
-                    <text
-                      x={walkwayLeftX - aisle.maxLeftW / 2}
-                      y={PAD_TOP - 10}
-                      textAnchor="middle"
-                      fontSize={12}
-                      fontWeight="bold"
-                      fontFamily="sans-serif"
-                      fill="#222"
-                    >
-                      R{aisle.leftFlankNumber}
-                    </text>
+                    <>
+                      <text
+                        x={walkwayLeftX - aisle.maxLeftW / 2}
+                        y={PAD_TOP - 24}
+                        textAnchor="middle"
+                        fontSize={12}
+                        fontWeight="bold"
+                        fontFamily="sans-serif"
+                        fill="#222"
+                      >
+                        R{aisle.leftFlankNumber}
+                      </text>
+                      {rowsLabel(aisle.leftCells.length) && (
+                        <text
+                          x={walkwayLeftX - aisle.maxLeftW / 2}
+                          y={PAD_TOP - 10}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fontFamily="sans-serif"
+                          fill="#777"
+                        >
+                          {rowsLabel(aisle.leftCells.length)}
+                        </text>
+                      )}
+                    </>
                   )}
                   {/* Same header, mirrored below the columns — on a tall
                       aisle, scrolling to the far row used to lose sight of
@@ -555,30 +610,58 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
                     </text>
                   )}
                   {aisle.rightFlankNumber != null && (
-                    <text
-                      x={walkwayRightX + aisle.maxRightW / 2}
-                      y={walkwayBottomY + 22}
-                      textAnchor="middle"
-                      fontSize={12}
-                      fontWeight="bold"
-                      fontFamily="sans-serif"
-                      fill="#222"
-                    >
-                      R{aisle.rightFlankNumber}
-                    </text>
+                    <>
+                      {rowsLabel(aisle.rightCells.length) && (
+                        <text
+                          x={walkwayRightX + aisle.maxRightW / 2}
+                          y={walkwayBottomY + 10}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fontFamily="sans-serif"
+                          fill="#777"
+                        >
+                          {rowsLabel(aisle.rightCells.length)}
+                        </text>
+                      )}
+                      <text
+                        x={walkwayRightX + aisle.maxRightW / 2}
+                        y={walkwayBottomY + 22}
+                        textAnchor="middle"
+                        fontSize={12}
+                        fontWeight="bold"
+                        fontFamily="sans-serif"
+                        fill="#222"
+                      >
+                        R{aisle.rightFlankNumber}
+                      </text>
+                    </>
                   )}
                   {aisle.leftFlankNumber != null && (
-                    <text
-                      x={walkwayLeftX - aisle.maxLeftW / 2}
-                      y={walkwayBottomY + 22}
-                      textAnchor="middle"
-                      fontSize={12}
-                      fontWeight="bold"
-                      fontFamily="sans-serif"
-                      fill="#222"
-                    >
-                      R{aisle.leftFlankNumber}
-                    </text>
+                    <>
+                      {rowsLabel(aisle.leftCells.length) && (
+                        <text
+                          x={walkwayLeftX - aisle.maxLeftW / 2}
+                          y={walkwayBottomY + 10}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fontFamily="sans-serif"
+                          fill="#777"
+                        >
+                          {rowsLabel(aisle.leftCells.length)}
+                        </text>
+                      )}
+                      <text
+                        x={walkwayLeftX - aisle.maxLeftW / 2}
+                        y={walkwayBottomY + 22}
+                        textAnchor="middle"
+                        fontSize={12}
+                        fontWeight="bold"
+                        fontFamily="sans-serif"
+                        fill="#222"
+                      >
+                        R{aisle.leftFlankNumber}
+                      </text>
+                    </>
                   )}
                   <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} getColor={getColor} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
                   <Flank cells={aisle.rightCells} edgeX={walkwayRightX} direction={1} yForRow={yForRow} getColor={getColor} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
