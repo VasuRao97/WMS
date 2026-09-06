@@ -67,6 +67,25 @@ import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
 const CELL_W = 110;
 const CELL_H = 60;
+// A Ground/Floor bin's box now scales with its real column count instead of
+// always being exactly CELL_W (one Rack box's own width) — a real client
+// complaint (2026-09-06): "16 pallets of 1 bin of ground looks equal to
+// your rack's one pallet." A bin with `width` columns holds that many real
+// side-by-side pallet positions per depth tier, so its box should read as
+// visibly bigger, not the same size as a single rack slot. Widening only
+// (not also taller) is deliberate — height staying fixed CELL_H keeps every
+// row's vertical spacing/pairing between flanks completely untouched (the
+// existing "cells can be different widths within one flank, anchored near
+// edge, ragged far edge" mechanism Rack's own multi-depth boxes already use
+// — see the file-level comment above — handles this safely with no other
+// change needed); Depth still shows as text in the box, same as before, not
+// also turned into a size cue, so this stays a bounded, low-risk fix rather
+// than the fuller "one real sub-box per column×depth position" treatment
+// 3D already got (still a separate, larger follow-up if more visual fidelity
+// is wanted — see buildCell's GROUND_FLOOR branch below). Capped so one
+// unusually wide bin (a real warehouse could have a 20-column block) can't
+// blow out the whole aisle's layout.
+const GROUND_WIDTH_CAP_MULTIPLIER = 6;
 const ROW_GAP = 6;
 const WALKWAY_W = 34;
 // The gap BETWEEN two separate aisles' outer flanks, not within one aisle's
@@ -224,8 +243,11 @@ function buildCell(posVal: string, rows: Location[]): Cell {
     const lines = [typeLabel, `${d}×${w}×${h}`];
     const category = rows[0].category?.name;
     if (category) lines.push(category);
-    const box: Box = { key: rows[0].id, lines, hasInactive: rows.some((r) => !r.isActive), width: CELL_W, storageType };
-    return { posVal, boxes: [box], totalWidth: CELL_W };
+    // Box width scales with real column count — see GROUND_WIDTH_CAP_MULTIPLIER
+    // above for why (a client-reported size-parity gap, not cosmetic polish).
+    const boxWidth = CELL_W * Math.max(1, Math.min(w, GROUND_WIDTH_CAP_MULTIPLIER));
+    const box: Box = { key: rows[0].id, lines, hasInactive: rows.some((r) => !r.isActive), width: boxWidth, storageType };
+    return { posVal, boxes: [box], totalWidth: boxWidth };
   }
 
   // Stillage: still one box, dimensions as text, one real row per stack —

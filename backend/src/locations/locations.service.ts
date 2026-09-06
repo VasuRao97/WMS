@@ -279,9 +279,36 @@ export class LocationsService {
   //   to be — their numbers only stay adjacent if the primary flank was
   //   fully built out before the secondary one is added, an operational
   //   convention, not something enforced here).
-  private async resolveFlankNumber(warehouseId: string, aisle: string, isSecondary: boolean, excludeId?: string): Promise<{ flankNumber: number; isSecondaryFlank: boolean }> {
+  //
+  // Scoped to the SAME physical "flank family" as `storageType`, not the raw
+  // Aisle string alone — a real bug caught 2026-09-06 via a client report
+  // ("generated Ground locations, can't find them in the Plan View"): two
+  // completely different physical structures (an SPR rack row and a Ground/
+  // Floor block row) can legitimately both get typed under the same Aisle
+  // code by mistake (or even on purpose, if a client just numbers aisles
+  // sequentially without realizing the number needs to stay unique per
+  // physical structure) — before this fix, the SECOND one generated silently
+  // REUSED the first's flankNumber(s), so both storage types ended up
+  // sharing one identity. LocationsPlanView.tsx/Locations3DView.tsx both
+  // assume flankNumber uniquely identifies one physical flank (at most two
+  // per Aisle) — sharing it between two unrelated storage types corrupts
+  // that invariant, merging both types' rows into the same position slot and
+  // garbling the render (this is what the client actually saw, not a missing
+  // location — the Ground rows WERE there, just silently entangled with
+  // pre-existing SPR rows at the same Aisle+position). Family, not exact
+  // storageType, because RACK_STORAGE_TYPES (SPR/Drive-in/ASRS) genuinely DO
+  // share one flank-numbering space today — a real aisle can mix rack
+  // sub-types on the same physical row, and the Plan View already renders
+  // them together via one `RACK_STORAGE_TYPES.includes()` check — only
+  // Ground/Floor and Stillage need their own separate space.
+  private flankFamilyFilter(storageType: string): { storageType: any } {
+    if (RACK_STORAGE_TYPES.includes(storageType)) return { storageType: { in: RACK_STORAGE_TYPES } };
+    return { storageType };
+  }
+
+  private async resolveFlankNumber(warehouseId: string, aisle: string, storageType: string, isSecondary: boolean, excludeId?: string): Promise<{ flankNumber: number; isSecondaryFlank: boolean }> {
     const existing = await this.prisma.location.findMany({
-      where: { warehouseId, aisle, flankNumber: { not: null }, ...(excludeId ? { id: { not: excludeId } } : {}) },
+      where: { warehouseId, aisle, flankNumber: { not: null }, ...this.flankFamilyFilter(storageType), ...(excludeId ? { id: { not: excludeId } } : {}) },
       select: { flankNumber: true },
       distinct: ['flankNumber'],
     });
@@ -317,7 +344,7 @@ export class LocationsService {
       // in which case it's ambiguous which one a hand-typed row belongs to
       // and this defaults to the primary — a real known limitation, not an
       // oversight (manual create is the rare/secondary path; see CLAUDE.md).
-      const resolved = await this.resolveFlankNumber(warehouseId, fields.aisle, !!data.isSecondary, excludeId);
+      const resolved = await this.resolveFlankNumber(warehouseId, fields.aisle, storageType, !!data.isSecondary, excludeId);
       fields.flankNumber = resolved.flankNumber;
       isSecondaryFlank = resolved.isSecondaryFlank;
     }
