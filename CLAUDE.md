@@ -4545,6 +4545,44 @@ afterward. No frontend change was needed — the generator's per-row error table
 create/edit form's inline error both already render whatever message a validation error carries,
 same as every other Locations validation failure.
 
+**Same day, immediate follow-up — the box-width-scaling fix above wasn't actually the right fix.**
+The client saw it live and pushed back directly: "how is this 4x4? looks like 1x4... dont one bin =
+4 pallets right? ie 4 rack bins = 1 ground bin?? pls think through, dont keep your rack as ideal, we
+need to align separately." A fair correction — scaling only WIDTH left every Ground box a flat,
+stretched-looking rectangle (fixed `CELL_H`, wider `CELL_W`) that never actually read as a two-axis
+"4×4" grid, no matter how wide it got.
+
+**The actual fix, thought through from Ground's own physical model rather than patched onto Rack's**:
+`posOf()` (`locationBoxUtils.ts`) now groups Ground/Floor by a block+column COMPOSITE key instead of
+block alone — each COLUMN becomes its own row/position, exactly the way each Rack BAY already is
+one. This isn't reusing Rack's rendering as a shortcut — it's recognizing the real physical
+equivalence Ground's own schema was deliberately built around from the start: `Location.rack` is
+reused as the column number, sharing the EXACT SAME single-file-LIFO-lane meaning `depth` already
+has with Rack (see schema.prisma's own comment on both fields, written back when the Ground design
+was first settled). Once a column is a row, Depth naturally splits into side-by-side boxes within
+that row using the identical mechanism Rack's own multi-deep lanes already use — no new rendering
+primitive needed anywhere, just the right grouping key.
+
+`LocationsPlanView.tsx`'s `buildCell()` GROUND_FLOOR branch now mirrors the RACK branch almost
+verbatim (depth-split into boxes, `B{block}-C{column}` + optional `D{n}` + Category as the label,
+same as Rack's own Name+Level+Category shape) — the `GROUND_WIDTH_CAP_MULTIPLIER` box-width-scaling
+hack from the previous fix is gone entirely; every Ground box is now plain `CELL_W`-sized, same as a
+Rack box, because it now represents exactly one real pallet position instead of an aggregate.
+`Locations3DView.tsx`'s `buildBoxesForAisle()` GROUND_FLOOR branch simplified the same way — `atPos`
+is already one column's own depth-series now, so the manual column+depth spreading the previous 3D
+fix needed is no longer necessary; it mirrors the RACK branch too (fixed floor-level Y instead of
+level-driven Y, `GROUND_UNIT`-sized boxes instead of `RACK_BOX_SIZE`, otherwise identical
+depth-along-x splitting).
+
+Verified: `tsc -b` clean. Live end-to-end (a throwaway warehouse with a real 4-wide×4-deep Ground
+bin, matching the client's own screenshot exactly): confirmed via the real rendered UI that 2D now
+shows a genuine 4-row×4-box grid — 16 individually visible boxes (`B01-C1`..`C4` × `D1`..`D4`) — in
+place of one stretched box; confirmed 3D shows the same real 4×4 grid of distinct, non-overlapping
+boxes; confirmed clicking an individual 3D box resolves to its own real Location row
+(`GF-1-BLK01-C4-D3`) with honest per-row dimensions (`3×4×1`), not an aggregate; confirmed via a
+direct API check that exactly 16 real positions exist for the bin, matching the rendered box count
+one-to-one. Throwaway company cleaned up afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No

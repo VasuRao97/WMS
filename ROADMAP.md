@@ -4,21 +4,28 @@ A forward-looking plan — what's shipped, what's next, and what's deliberately 
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
 what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **the
 FMS×ABC combined-classification study** (see "Immediate candidates" below) — the client's own
-stated next topic once Ground/Floor Putaway was fully aligned. Most recently, same day: a real
-client bug report ("generated ground storage locations in tnr8, can't find them") traced to SPR and
-Ground/Floor both being generated under Aisle "1" by mistake, which corrupted their flankNumbers —
-fixed the generator bug, **backfilled `TNR8`'s ~480 already-corrupted Ground rows to fresh,
-non-colliding flank numbers (client's explicit go-ahead)**, and — the client's own direct follow-up
-question, "should we say NO if someone tries to superimpose 2 storage types?" — added a real hard
-guard rail: `create()`/`generate()`/`bulkImport()`/`update()` now all refuse to write a Location
-into an Aisle a conflicting storage-type family already occupies (same Rack sub-types still freely
-mix, only a genuine cross-family clash like Rack vs. Ground/Floor is blocked), with existing rows
-whose Aisle isn't changing correctly grandfathered so this can't break `TNR8`'s own now-legitimate
-coexistence. See CLAUDE.md's "Locations/Bins: a real flankNumber collision bug, Ground box size
-parity, and a hard guard rail" section for the full detail. Also fixed the same session, a related
-visual gap the client caught in the same message: 2D's Ground box is now sized proportionally to its
-real column count instead of always matching a single rack pallet's box size. Before that, same day:
-**the
+stated next topic once Ground/Floor Putaway was fully aligned. Most recently, same day: the client
+saw the Ground box-width-scaling fix live and correctly pushed back — "how is this 4x4? looks like
+1x4... dont keep your rack as ideal, we need to align separately." **Ground/Floor's Plan View was
+properly rebuilt as a result**: each COLUMN now renders as its own row (exactly like a Rack bay
+already does — not a shortcut, but the real physical equivalence Ground's own schema was built
+around, since `Location.rack` is deliberately reused as the column number sharing the same LIFO
+meaning `depth` already has with Rack), with Depth splitting into real side-by-side boxes within
+each row the same way Rack's own multi-deep lanes already do. A 4×4 bin now genuinely renders as a
+4-row×4-box grid (16 individually visible, individually clickable positions) in both 2D and 3D,
+instead of one stretched or width-scaled box. See CLAUDE.md's "Locations/Bins: a real flankNumber
+collision bug, Ground box size parity, and a hard guard rail" section (the same-day follow-up
+subsection) for the full detail. Before that, same day: a real client bug report ("generated ground
+storage locations in tnr8, can't find them") traced to SPR and Ground/Floor both being generated
+under Aisle "1" by mistake, which corrupted their flankNumbers — fixed the generator bug,
+**backfilled `TNR8`'s ~480 already-corrupted Ground rows to fresh, non-colliding flank numbers
+(client's explicit go-ahead)**, and — the client's own direct follow-up question, "should we say NO
+if someone tries to superimpose 2 storage types?" — added a real hard guard rail:
+`create()`/`generate()`/`bulkImport()`/`update()` now all refuse to write a Location into an Aisle a
+conflicting storage-type family already occupies (same Rack sub-types still freely mix, only a
+genuine cross-family clash like Rack vs. Ground/Floor is blocked), with existing rows whose Aisle
+isn't changing correctly grandfathered so this can't break `TNR8`'s own now-legitimate coexistence.
+Before that, same day: **the
 Putaway Simulation sandbox now supports Ground/Floor as a selectable storage type** — "can we have a
 simulator now for ground?" — closing the last gap in the sandbox's storage-type coverage
 (SPR/Drive-in/ASRS already worked). Investigating this surfaced and fixed two real, pre-existing
