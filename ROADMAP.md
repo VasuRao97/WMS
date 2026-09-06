@@ -16,13 +16,16 @@ lane just laid flat), a genuinely new column-lifecycle rule (closed to new putaw
 starts on it, until fully empty — feeding the still-unbuilt reslotting engine), and per-class
 `respectsColumnBoundariesA/B/C/D` toggles (the client's own explicit ask — "give the flexibility to
 A B C D"). Also closed a real, unrelated gap discovered along the way: `WarehouseStorageType.
-maxSkusClassA/B/C` had been completely dead (no UI ever set it) since 2026-08-24 — the logic now
-honors it correctly for Ground too, though the actual Settings screen for either is still the one
-remaining piece not built. Design+schema committed `dd05b81a`, logic `68c1edbd` — verified via a
-throwaway-company script (21/21), catching and fixing one real bug along the way (free-mixing mode
-was checking "no stock of this SKU" instead of "no occupant at all," which would have let two SKUs
-collide on the same position). Full design and verification trail in the `wms-putaway-design`
-memory. **Immediately after this: the FMS×ABC combined-classification study**
+maxSkusClassA/B/C` had been completely dead (no UI ever set it) since 2026-08-24 — now has a real
+Company Settings mini-editor covering BOTH Rack and Ground/Floor, the first UI either family has
+ever had for it. **Ground/Floor Putaway is now fully built end to end** — schema (`dd05b81a`), logic
+(`68c1edbd`), and the settings UI (`949ff4d9`) all shipped and verified the same day. Verified via a
+throwaway-company script (21/21) for the logic, catching and fixing one real bug along the way
+(free-mixing mode was checking "no stock of this SKU" instead of "no occupant at all," which would
+have let two SKUs collide on the same position), plus a full live-browser pass for the settings UI
+(warehouse + storage-type-row pickers, save, reload, direct API check — all confirmed persisting
+correctly). Full design and verification trail in the `wms-putaway-design` memory. **Next: the
+FMS×ABC combined-classification study**
 (candidate #2 below) — the client's own stated next topic, and Ground's own bin-selection logic is
 deliberately shipping with a placeholder pending that exact study. Before this, same day: a
 deliberate **hardening pass** (line-by-line correctness/performance review, not a new module) —
