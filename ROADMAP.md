@@ -2,15 +2,21 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06: **ABC velocity
-reassessment is built and verified** — a real monthly job re-derives each SKU's A/B/C/D class PER
+what to pick up next. Updated as priorities shift — last updated 2026-09-06: **dock-relative Putaway
+placement (Topic 2) is built and verified**, right after Topic 1 — a new `WarehouseDockZone` config
+(0-2 zones per warehouse, capturing which end of the aisle order sits near an Inbound/Outbound/Both
+dock) now drives `suggestBin()`'s placement of fast (A/B) vs. slow (C/D) movers, replacing today's
+arbitrary flank-number-only proxy the moment a warehouse configures it, with a proven fallback to
+the old behavior when it doesn't — live-verified to genuinely flip direction between a U-shape and
+I-shape configuration. Also wires Topic 1's computed `SkuWarehouseClass` into real placement
+decisions for the first time (overriding a stale manual/imported class). New Company Settings "Dock
+Configuration" mini-editor. See CLAUDE.md's "Dock-relative Putaway placement — Topic 2" section and
+the `wms-abc-velocity-design` memory for the full detail. Just before that, same day: **ABC velocity
+reassessment (Topic 1) built and verified** — a real monthly job re-derives each SKU's A/B/C/D class PER
 WAREHOUSE (not company-wide) from its own actual trailing dispatch quantity, replacing blind trust in
 a manually-typed/imported class. A new standalone "ABC Classification" nav page plus a Company Settings
-section (enable toggle, configurable A/B/C cutoffs, assessment window) round it out. This was the
-first of two explicitly sequenced topics ("lets finish topic 1 first then go into topic 2") — the
-second, dock-relative Putaway placement (near/low bins for fast movers, tied to real dock geometry
-instead of today's arbitrary flank-number proxy), is next up, not yet started. See CLAUDE.md's "ABC
-velocity reassessment" section and the `wms-abc-velocity-design` memory for the full detail. Earlier
+section (enable toggle, configurable A/B/C cutoffs, assessment window) round it out. See CLAUDE.md's "ABC
+velocity reassessment" section for the full detail. Earlier
 the same day: **Plan View backlog items 2 and 3 are done** — a per-company "Allow Putaway location override" toggle (Company Settings)
 lets an operator complete a trip at a different real, active bin instead of today's hard block, and
 any such mismatch now surfaces as a discrepancy — a `⚠` flag on the task queue row, plus a dedicated
@@ -82,13 +88,46 @@ consolidated... every day system should push these changes so hygiene of invento
 genuinely needs Topic 2's own placement rules to know what a good target bin even looks like — schema
 is laid down ready, the algorithm itself waits for Topic 2 to conclude.
 
-**Next**: Topic 2 — dock-relative Putaway placement. Confirmed so far: A/B prefer near+low, C prefers
-far+high (soft preference, not a hard zone); A always outranks B for a contested bin; Drive-in now
-also gets a near-for-A/far-for-B-C column reservation (a reversal of the earlier "no class treatment"
-call). The big open piece: today's "near" is `flankNumber`, an arbitrary creation-order proxy with no
-relationship to real dock positions — a warehouse with Inbound docks on one side and Outbound on the
-other needs the Locations generator itself to capture that, which hasn't been designed yet. See the
-`wms-abc-velocity-design` memory for the complete open list.
+**Next (at the time)**: Topic 2 — dock-relative Putaway placement, picked up immediately after this
+same day. See the session note directly below.
+
+## Session note (2026-09-06 — dock-relative Putaway placement, Topic 2 of 2)
+Picked up right after Topic 1, same session. The client rejected the first proposed approach
+outright — a per-aisle manually-entered numeric proximity rank ("no no, not the right way") — and
+redirected to researching real warehouse layouts first: "look internet on differant types of
+warehouese." A WebSearch pass surveyed U-shape/I-shape/L-shape archetypes, leading to the accepted
+design once explained with a concrete worked example ("cool, thats what we need!").
+
+**Built**: new `WarehouseDockZone` (0-2 rows per warehouse — `purpose` Inbound/Outbound/Both +
+`nearAisleEnd` Low/High, relative to the warehouse's own natural-sorted Aisle order, reusing an
+existing convention rather than requiring a new per-aisle measurement). Confirmed: Outbound wins
+("it should go to near the outbound end," even though Outbound/Picking doesn't exist as a module
+yet), Outbound-proximity is the primary sort tiebreak ahead of Level, and Drive-in uses
+"first-available" (no fixed per-column class reservation). `suggestBin()`'s candidate sort now goes
+occupancyCount → Outbound-proximity → Level (SPR/ASRS only) → flankNumber (unchanged final
+fallback, so an unconfigured warehouse behaves exactly as before). Also wires Topic 1's computed
+`SkuWarehouseClass` into real placement for the first time — it now outranks a stale manual/imported
+`Sku.abcClass` the moment it exists for a warehouse, closing the loop between the two topics. New
+Company Settings "Dock Configuration" mini-editor (same "no general Warehouse Edit form" pattern as
+Aging Methodology).
+
+Verified via throwaway-company diagnostic scripts calling the real `suggestBin()` directly: a
+U-shape (1 zone) and an I-shape (2 zones, opposite ends) on an otherwise IDENTICAL layout produced
+genuinely REVERSED placement for the same SKUs — proof the direction actually flips with
+configuration, not just a plausible-looking answer — plus a confirmed unconfigured-warehouse
+fallback and the SkuWarehouseClass-override behavior. A second script confirmed Drive-in's
+first-available column selection. Then re-verified live through the real Company Settings UI,
+including a full page reload confirming persistence via the live DOM, not just in-memory state. See
+CLAUDE.md's matching section and the `wms-abc-velocity-design` memory for full detail.
+
+**Deliberately not built yet**: the daily reslotting/consolidation suggestion engine from Topic 1
+is now genuinely unblocked (this was the placement-rule dependency it needed) but the actual
+detect-and-suggest algorithm itself still isn't written. The A-vs-B same-bin-contention question and
+the MHE-travel-time alternative to the flat level rule (both raised earlier in this same
+conversation) remain open, not decided either way. Also still outstanding, unrelated to either
+topic: the "start row number/finish row number" ask from earlier this same session (Simulation's
+Plan View) was never built — the conversation pivoted to velocity/placement and never returned to
+it.
 
 ## Session note (2026-09-06 — Putaway Simulation: a sandbox to watch the real algorithm work)
 The client's own question, a tangent off the Plan View backlog rather than one of its numbered
@@ -794,6 +833,11 @@ Pick one — these are the live options on the table, not a forced order:
    that already has an open entry elsewhere (a real gap, closed this session), but there's still no
    way to void a genuinely mistaken entry (wrong vehicle typed, never gated out) — today that would
    need a manual Gate Out to clear. Flagged, not designed.
+7. **The reslotting/consolidation suggestion engine** (2026-09-06) — now genuinely unblocked: both
+   Topic 1 (real per-warehouse ABC classification) and Topic 2 (dock-relative placement rules) it
+   was waiting on are built. `ReslottingSuggestion`/`ReslottingSuggestionSource` schema has sat ready
+   since Topic 1 — the actual detect-a-misplaced-SKU/suggest-a-target-bin algorithm and its daily job
+   still need designing and building.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 

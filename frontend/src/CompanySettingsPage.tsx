@@ -47,7 +47,15 @@ type Settings = {
 // small "pick a warehouse, edit its own setting" control living here on
 // Company Settings instead — same pattern EquipmentPage.tsx's own
 // "Configure Equipment Type Matrix" section already established.
-type WarehouseRow = { id: string; code: string; name: string; agingGranularity?: 'DAY' | 'WEEK' | 'MONTH' | null };
+// Dock Configuration (2026-09-06, Topic 2 — see wms-abc-velocity-design
+// memory) is the real, physical counterpart to the ABC velocity numbers
+// below: 0-2 WarehouseDockZone rows telling Putaway's bin suggestion which
+// end of this warehouse's own aisle order sits near an Inbound/Outbound/
+// Both dock — a U-shape warehouse needs just one (client's own worked
+// example), an I-shape (opposite-end docks) needs two. Same "no general
+// Warehouse Edit form, so it lives here" reasoning as Aging Methodology.
+type DockZoneRow = { purpose: 'INBOUND' | 'OUTBOUND' | 'BOTH'; nearAisleEnd: 'LOW' | 'HIGH' };
+type WarehouseRow = { id: string; code: string; name: string; agingGranularity?: 'DAY' | 'WEEK' | 'MONTH' | null; dockZones?: DockZoneRow[] };
 
 function CompanySettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -77,6 +85,12 @@ function CompanySettingsPage() {
   const [agingError, setAgingError] = useState('');
   const [agingSaved, setAgingSaved] = useState(false);
   const [agingSaving, setAgingSaving] = useState(false);
+
+  const [dockZoneWarehouseId, setDockZoneWarehouseId] = useState('');
+  const [dockZoneRows, setDockZoneRows] = useState<DockZoneRow[]>([]);
+  const [dockZoneError, setDockZoneError] = useState('');
+  const [dockZoneSaved, setDockZoneSaved] = useState(false);
+  const [dockZoneSaving, setDockZoneSaving] = useState(false);
 
   const load = () => {
     fetch('http://localhost:3000/companies/settings', { headers: authHeaders() })
@@ -111,6 +125,8 @@ function CompanySettingsPage() {
         if (data.length > 0) {
           setAgingWarehouseId((prev) => prev || data[0].id);
           setAgingGranularity((data[0].agingGranularity as any) || 'DAY');
+          setDockZoneWarehouseId((prev) => prev || data[0].id);
+          setDockZoneRows(data[0].dockZones || []);
         }
       });
   };
@@ -150,6 +166,51 @@ function CompanySettingsPage() {
     }
     setWarehouses((prev) => prev.map((w) => (w.id === agingWarehouseId ? { ...w, agingGranularity: data.agingGranularity } : w)));
     setAgingSaved(true);
+  };
+
+  const handleDockZoneWarehouseChange = (id: string) => {
+    setDockZoneWarehouseId(id);
+    setDockZoneError('');
+    setDockZoneSaved(false);
+    const wh = warehouses.find((w) => w.id === id);
+    setDockZoneRows(wh?.dockZones || []);
+  };
+
+  const addDockZoneRow = () => {
+    if (dockZoneRows.length >= 2) return;
+    setDockZoneSaved(false);
+    setDockZoneRows((prev) => [...prev, { purpose: 'OUTBOUND', nearAisleEnd: 'LOW' }]);
+  };
+
+  const removeDockZoneRow = (index: number) => {
+    setDockZoneSaved(false);
+    setDockZoneRows((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const updateDockZoneRow = (index: number, field: keyof DockZoneRow, value: string) => {
+    setDockZoneSaved(false);
+    setDockZoneRows((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
+  };
+
+  const handleSaveDockZones = async () => {
+    if (!dockZoneWarehouseId) return;
+    setDockZoneError('');
+    setDockZoneSaved(false);
+    setDockZoneSaving(true);
+    const res = await fetch(`http://localhost:3000/warehouses/${dockZoneWarehouseId}/dock-zones`, {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ zones: dockZoneRows }),
+    });
+    const data = await res.json();
+    setDockZoneSaving(false);
+    if (!res.ok) {
+      setDockZoneError(errorText(data, 'Could not save Dock Configuration.'));
+      return;
+    }
+    setWarehouses((prev) => prev.map((w) => (w.id === dockZoneWarehouseId ? { ...w, dockZones: data } : w)));
+    setDockZoneRows(data);
+    setDockZoneSaved(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -346,6 +407,46 @@ function CompanySettingsPage() {
           </div>
           {agingError && <p style={{ color: 'crimson', marginTop: 8 }}>{agingError}</p>}
           {agingSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
+        </div>
+
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #eee' }}>
+          <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Dock Configuration (per warehouse)</label>
+          <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>
+            Tells Putaway which end of this warehouse's own Aisle order sits near an Inbound/Outbound/Both dock —
+            fast movers (Class A/B) are placed near whichever end serves Outbound, slow movers (C/D) far from it. A
+            warehouse with docks on one side only needs one zone (e.g. Outbound, near the Low-numbered aisles); one
+            with docks on opposite ends (Inbound one side, Outbound the other) needs two. Leave empty to keep
+            today's behavior (nearest to the lowest flank number, unrelated to real dock position).
+          </p>
+          <select value={dockZoneWarehouseId} onChange={(e) => handleDockZoneWarehouseChange(e.target.value)} style={{ padding: 6, minWidth: 180, marginBottom: 10 }}>
+            {warehouses.map((w) => (
+              <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+            ))}
+          </select>
+          {dockZoneRows.map((row, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <select value={row.purpose} onChange={(e) => updateDockZoneRow(i, 'purpose', e.target.value)} style={{ padding: 6, width: 120 }}>
+                <option value="INBOUND">Inbound</option>
+                <option value="OUTBOUND">Outbound</option>
+                <option value="BOTH">Both</option>
+              </select>
+              <span style={{ fontSize: 12, color: '#888' }}>near the</span>
+              <select value={row.nearAisleEnd} onChange={(e) => updateDockZoneRow(i, 'nearAisleEnd', e.target.value)} style={{ padding: 6, width: 100 }}>
+                <option value="LOW">Low</option>
+                <option value="HIGH">High</option>
+              </select>
+              <span style={{ fontSize: 12, color: '#888' }}>end of the aisle order</span>
+              <button type="button" onClick={() => removeDockZoneRow(i)} style={{ marginLeft: 'auto' }}>Remove</button>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button type="button" onClick={addDockZoneRow} disabled={dockZoneRows.length >= 2}>+ Add zone</button>
+            <button type="button" onClick={handleSaveDockZones} disabled={dockZoneSaving || !dockZoneWarehouseId}>
+              {dockZoneSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {dockZoneError && <p style={{ color: 'crimson', marginTop: 8 }}>{dockZoneError}</p>}
+          {dockZoneSaved && <p style={{ color: 'green', marginTop: 8 }}>Saved.</p>}
         </div>
       </div>
 

@@ -298,7 +298,11 @@ export class WarehousesService {
     }
     return this.prisma.warehouse.findMany({
       where,
-      include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
+      // dockZones (2026-09-06, Topic 2 — see wms-abc-velocity-design memory)
+      // included here so Company Settings' Dock Configuration editor can
+      // read a warehouse's current 0-2 zones straight off the already-
+      // fetched list, same pattern agingGranularity already uses.
+      include: { storageTypes: { include: { category: true } }, dispatchFlows: true, dockZones: true },
       orderBy: { code: 'asc' },
     });
   }
@@ -400,6 +404,36 @@ export class WarehousesService {
       data: { agingGranularity: agingGranularity as any },
       select: { id: true, code: true, agingGranularity: true },
     });
+  }
+
+  // Per-warehouse Dock Configuration (2026-09-06, Topic 2 — see
+  // wms-abc-velocity-design memory) — 0-2 WarehouseDockZone rows capturing
+  // which end of this warehouse's own natural-sorted aisle order sits near
+  // an Inbound/Outbound/Both dock zone. Same shape as setAgingGranularity()
+  // above: Company-Admin-only, no general Warehouse Edit form to hang this
+  // off instead, so it lives on Company Settings' own mini-editor. A full
+  // REPLACE (delete-then-recreate), not incremental add/edit/delete of
+  // individual rows — a warehouse's dock config is naturally "0-2 rows as
+  // a whole," one Save action, matching Aging Methodology's own single-
+  // field-at-a-time simplicity.
+  async setDockZones(id: string, zones: { purpose: string; nearAisleEnd: string }[], user: any) {
+    await this.assertAccess(id, user);
+    if (zones.length > 2) {
+      throw new BadRequestException('A warehouse can have at most 2 dock zones.');
+    }
+    for (const z of zones) {
+      if (!['INBOUND', 'OUTBOUND', 'BOTH'].includes(z.purpose)) {
+        throw new BadRequestException('Dock zone purpose must be Inbound, Outbound, or Both.');
+      }
+      if (!['LOW', 'HIGH'].includes(z.nearAisleEnd)) {
+        throw new BadRequestException('Dock zone near-end must be Low or High.');
+      }
+    }
+    await this.prisma.$transaction([
+      this.prisma.warehouseDockZone.deleteMany({ where: { warehouseId: id } }),
+      ...zones.map((z) => this.prisma.warehouseDockZone.create({ data: { warehouseId: id, purpose: z.purpose as any, nearAisleEnd: z.nearAisleEnd as any } })),
+    ]);
+    return this.prisma.warehouseDockZone.findMany({ where: { warehouseId: id } });
   }
 
   async removeAll(user: any) {

@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
 import { buildRackName, displayCode, laneKeyOf } from '../common/rack-name.util';
+import { buildOutboundProximityRanker } from '../common/dock-zone.util';
 
 // Rack storage types (RACK_STORAGE_TYPES in rack-name.util.ts, used here only
 // indirectly through laneKeyOf()/buildRackName() — this file no longer needs
@@ -90,7 +91,18 @@ export class PutawayTasksService {
 
     const sku = await tx.sku.findUnique({ where: { id: skuId } });
     if (!sku) return null;
-    const abcClass = (sku.abcClass || 'C').toUpperCase(); // unclassified defaults to C — confirmed 2026-08-28
+    // 2026-09-06 — Topic 2's real integration point with Topic 1's ABC
+    // velocity reassessment: the per-warehouse COMPUTED class
+    // (SkuWarehouseClass, real trailing-dispatch-derived, warehouse-scoped)
+    // now takes priority over the manually-set/imported Sku.abcClass the
+    // moment one exists for this warehouse — same override-when-known,
+    // fall-back-otherwise chain as everywhere else in this codebase
+    // (Vehicle overriding VehicleType, etc.). Without this, Topic 1's whole
+    // "don't trust the import" effort would never actually affect real
+    // placement decisions. Unclassified (neither exists) still defaults to
+    // C, unchanged — confirmed 2026-08-28.
+    const warehouseClass = await tx.skuWarehouseClass.findUnique({ where: { skuId_warehouseId: { skuId, warehouseId } } });
+    const abcClass = (warehouseClass?.abcClass || sku.abcClass || 'C').toUpperCase();
 
     const storageTypeRows = await tx.warehouseStorageType.findMany({ where: { warehouseId, categoryId: sku.categoryId } });
     const eligibleStorageTypes: string[] = storageTypeRows.map((r: any) => r.storageType).filter((t: string) => t !== 'MIX');
@@ -124,7 +136,7 @@ export class PutawayTasksService {
     // WarehouseEquipmentSuitability being warehouse-scoped rather than a
     // single platform/company-wide value). No separate Company lookup
     // needed any more.
-    const [warehouse, movements, openTaskTargets, exception] = await Promise.all([
+    const [warehouse, movements, openTaskTargets, exception, dockZones, allAisleRows] = await Promise.all([
       tx.warehouse.findUnique({ where: { id: warehouseId }, select: { agingGranularity: true } }),
       tx.stockMovement.findMany({
         where: { locationId: { in: locationIds } },
@@ -133,7 +145,20 @@ export class PutawayTasksService {
       }),
       tx.putawayTask.findMany({ where: { toLocationId: { in: locationIds }, status: { in: ['PENDING', 'NEEDS_BIN'] } }, select: { toLocationId: true, skuId: true } }),
       tx.multiSkuLaneException.findFirst({ where: { warehouseId, status: 'APPROVED' } }),
+      // Dock-relative placement (Topic 2, 2026-09-06) — the warehouse's own
+      // coarse dock-zone config, if any. See dock-zone.util.ts.
+      tx.warehouseDockZone.findMany({ where: { warehouseId } }),
+      // The FULL warehouse-wide distinct aisle list (not narrowed to this
+      // SKU's own eligible storage types/category) — proximity has to be
+      // computed against the warehouse's real physical aisle order, not
+      // just whichever aisles happen to be eligible for this one SKU, or a
+      // narrow eligible subset could wrongly redefine which end is "far."
+      tx.location.findMany({ where: { warehouseId, zoneType: 'ACTUAL_STORAGE', aisle: { not: null } }, select: { aisle: true }, distinct: ['aisle'] }),
     ]);
+    const outboundRanker = buildOutboundProximityRanker(
+      allAisleRows.map((r: any) => r.aisle).filter((a: string | null): a is string => !!a),
+      dockZones,
+    );
 
     // 2026-08-29 fix: default to same-CALENDAR-DAY, not exact-millisecond-
     // match. Before this fix (and before the field moved to Warehouse),
@@ -208,7 +233,7 @@ export class PutawayTasksService {
       lanes.get(key)!.push(loc);
     }
 
-    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null };
+    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null; aisle: string | null; level: string | null; storageType: string };
     const candidates: Candidate[] = [];
 
     for (const laneLocations of lanes.values()) {
@@ -323,33 +348,61 @@ export class PutawayTasksService {
         (loc: any) => [...balanceByLocSku.keys()].some((k) => k.startsWith(`${loc.id}|`) && (balanceByLocSku.get(k) || 0) > 0) || pendingSkuByLocation.has(loc.id),
       ).length;
 
-      candidates.push({ locationId: target.id, occupancyCount, flankNumber: target.flankNumber ?? null });
+      candidates.push({ locationId: target.id, occupancyCount, flankNumber: target.flankNumber ?? null, aisle: target.aisle ?? null, level: target.level ?? null, storageType: target.storageType });
     }
 
     if (candidates.length === 0) return null;
 
-    // Two-tier preference: (1) prefer the FULLEST eligible lane — most
-    // positions already occupied by anyone, same SKU or a different
-    // compatible one — so a lane sitting at 2/3 full always wins over one
-    // at 1/3 full. This naturally makes same-SKU top-up "win" too (a lane
-    // holding only this SKU has no competition, so it's already the
-    // fullest option for it) without needing a separate same-SKU rule —
-    // and for A-class it collapses back to exactly today's behavior,
-    // since A's maxSkusClassA=1 cap means the only way a lane can have
-    // ANY occupant at all is if it's this exact SKU. (2) otherwise order
-    // by flankNumber as the distance proxy until DockLocationDistance has
-    // real data — A-class prefers low (near), C-class prefers high (far),
-    // B defaults near same as A (no strong signal either way yet).
-    // 2026-08-29 — the client's own "3 C-class SKUs should share one
-    // lane's 3 depths, not open 3 separate levels" correction, refined a
-    // second time after the client's own trace showed the first fix was
-    // still too coarse (exact-SKU-match beating a fuller different-SKU
-    // lane).
+    // Preference order, confirmed 2026-09-06 (Topic 2 — see
+    // wms-abc-velocity-design memory): (1) prefer the FULLEST eligible
+    // lane — most positions already occupied by anyone, same SKU or a
+    // different compatible one — so a lane sitting at 2/3 full always wins
+    // over one at 1/3 full. This naturally makes same-SKU top-up "win" too
+    // (a lane holding only this SKU has no competition, so it's already
+    // the fullest option for it) without needing a separate same-SKU rule
+    // — and for A-class it collapses back to exactly today's behavior,
+    // since A's maxSkusClassA=1 cap means the only way a lane can have ANY
+    // occupant at all is if it's this exact SKU. 2026-08-29 — the client's
+    // own "3 C-class SKUs should share one lane's 3 depths, not open 3
+    // separate levels" correction, refined a second time after the
+    // client's own trace showed the first fix was still too coarse
+    // (exact-SKU-match beating a fuller different-SKU lane).
+    // (2) Outbound-proximity — confirmed as the PRIMARY tiebreak once a
+    // warehouse has real WarehouseDockZone config ("Outbound-proximity
+    // wins first"): near-movers (A/B, and any unclassified SKU, matching
+    // this codebase's existing "unclassified defaults to C-like" fallback
+    // being the ONLY thing that prefers far) want low proximity rank
+    // (near Outbound), C/D want high rank (far from Outbound, matching
+    // maxSkusForClass()'s own A/B-vs-everything-else split above).
+    // (3) Level — secondary tiebreak, SPR/ASRS only; Drive-in's own
+    // within-column fill order already fully governs level via its
+    // (depth DESC, level ASC) sort (see laneKeyOf()'s 2026-09-02 comment),
+    // so applying it again here as a between-LANE tiebreak would fight
+    // that rather than help it. (4) flankNumber — the original, purely
+    // arbitrary creation-order proxy, kept as the final fallback so an
+    // unconfigured warehouse (no dock zones at all) behaves EXACTLY as it
+    // always has ("First-available" for Drive-in falls out of this same
+    // ordering — whichever eligible column sorts first by proximity/level/
+    // flank simply wins, no separate reservation logic needed).
+    const preferFar = abcClass !== 'A' && abcClass !== 'B'; // C/D — same fallback bucket maxSkusForClass() already uses
     candidates.sort((a, b) => {
       if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
+
+      if (outboundRanker) {
+        const ra = a.aisle != null ? outboundRanker(a.aisle) : Number.MAX_SAFE_INTEGER;
+        const rb = b.aisle != null ? outboundRanker(b.aisle) : Number.MAX_SAFE_INTEGER;
+        if (ra !== rb) return preferFar ? rb - ra : ra - rb;
+      }
+
+      if (a.storageType !== 'DRIVE_IN' && b.storageType !== 'DRIVE_IN' && a.level != null && b.level != null) {
+        const la = Number(a.level) || 0;
+        const lb = Number(b.level) || 0;
+        if (la !== lb) return preferFar ? lb - la : la - lb;
+      }
+
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
-      return abcClass === 'C' ? fb - fa : fa - fb;
+      return preferFar ? fb - fa : fa - fb;
     });
 
     return candidates[0].locationId;

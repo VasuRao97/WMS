@@ -75,6 +75,15 @@ export class WarehousesController {
     return this.warehousesService.setAgingGranularity(id, body.agingGranularity ?? null, user);
   }
 
+  // Company-Admin-only, same reasoning as aging-granularity above — no
+  // general Warehouse Edit form exists, so this lives on Company Settings'
+  // own "Dock Configuration" mini-editor (2026-09-06, Topic 2).
+  @Patch(':id/dock-zones')
+  @Roles('COMPANY_ADMIN')
+  setDockZones(@Param('id') id: string, @Body() body: { zones: { purpose: string; nearAisleEnd: string }[] }, @CurrentUser() user: any) {
+    return this.warehousesService.setDockZones(id, body.zones ?? [], user);
+  }
+
   // Route order matters — @Delete('all') must be declared before
   // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')

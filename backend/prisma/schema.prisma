@@ -451,6 +451,7 @@ model Warehouse {
   skuClasses              SkuWarehouseClass[]
   historicalDispatchSeeds HistoricalDispatchSeed[]
   reslottingSuggestions   ReslottingSuggestion[]
+  dockZones               WarehouseDockZone[]
 
   @@unique([companyId, code])
 }
@@ -996,6 +997,58 @@ model DockLocationDistance {
   createdAt      DateTime @default(now())
 
   @@unique([dockDoorId, locationId])
+}
+
+// Dock-relative Putaway placement (2026-09-06 — see [[wms-abc-velocity-design]]
+// in memory, "Topic 2," for the full design conversation) — the client's own
+// catch: "the dock relativity needs to be fixed first, or else there would be
+// a lot of ways code will go hay wire." Deliberately NOT the same thing as
+// DockLocationDistance above (real per-dock-door × per-location meters,
+// schema-only, needs real measurement tooling that doesn't exist) — this is
+// a coarse, zero-data-entry-tooling, WAREHOUSE-level alternative that's
+// actually built and consumed by suggestBin() today. Real warehouse layouts
+// researched (U-shape: Inbound/Outbound share one wall; I-shape/through-flow:
+// opposite ends; L-shape: adjacent sides) confirmed the real, well-documented
+// tension this exists to resolve: in an I-shape warehouse, "near Inbound" and
+// "near Outbound" are literally opposite ends, so a placement rule has to
+// pick a side.
+//
+// A warehouse declares 1 zone (U-shape — one zone, purpose BOTH, serves
+// Inbound and Outbound identically since they're in the same place) or 2
+// zones (I-shape — one INBOUND, one OUTBOUND, on opposite ends). Each zone's
+// `nearAisleEnd` says which end of the warehouse's own natural-sorted aisle
+// order it sits near (LOW = the first/lowest aisle code, HIGH = the last).
+// This is the whole trick that avoids any per-aisle data entry: an aisle's
+// own distance to a zone is DERIVED from its position in that sort, never
+// typed in by hand. A warehouse with no zones configured at all (the
+// default, and every pre-existing warehouse) falls back to today's
+// flankNumber-based ordering — this is a pure opt-in upgrade, nothing
+// breaks for a warehouse that never sets it up.
+//
+// Confirmed directly, not the "obvious" choice: fast-moving (A/B) stock is
+// placed near whichever zone serves OUTBOUND, not Inbound, even though
+// Putaway is the only module that exists today — "it should go to near the
+// outbound end," since a fast mover gets picked far more often than it gets
+// put away, so optimizing for its eventual retrieval speed matters more than
+// optimizing today's single putaway trip.
+enum DockZonePurpose {
+  INBOUND
+  OUTBOUND
+  BOTH
+}
+
+enum DockZoneAisleEnd {
+  LOW // near the first/lowest aisle in this warehouse's own natural-sorted aisle order
+  HIGH // near the last/highest aisle
+}
+
+model WarehouseDockZone {
+  id           String           @id @default(uuid())
+  warehouseId  String
+  warehouse    Warehouse        @relation(fields: [warehouseId], references: [id])
+  purpose      DockZonePurpose
+  nearAisleEnd DockZoneAisleEnd
+  createdAt    DateTime         @default(now())
 }
 
 // Platform-level reference data (like ProductCategory — no companyId, not

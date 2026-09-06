@@ -3980,6 +3980,96 @@ like a C) and clicked the real "Run Reassessment Now" button — the results tab
 computed class alongside the stale manual one, visibly disagreeing exactly as the whole feature is
 meant to catch. `tsc --noEmit`/`tsc -b` both clean. Both throwaway companies cleaned up afterward.
 
+### Dock-relative Putaway placement — Topic 2 (2026-09-06, same session)
+Resumed per the client's own sequencing ("lets finish topic 1 first then go into topic 2") —
+see `[[wms-abc-velocity-design]]` in memory for the full multi-round conversation; this section is
+the settled result plus what's built and verified. The trigger: A/B-class stock should sit near a
+warehouse's docks, C/D far — but `flankNumber` (Locations' own creation-order proxy) has zero
+relationship to real dock geometry.
+
+**The client rejected the first proposed approach outright** ("no no, not the right way") — a
+per-aisle manually-entered numeric proximity rank — and redirected to researching real warehouse
+layouts first. A WebSearch pass surveyed real archetypes (U-shape: Inbound/Outbound share one wall,
+common under 150k sqft, good for cross-docking; I-shape/through-flow: opposite ends, high-
+throughput; L-shape: adjacent/perpendicular sides), leading to the accepted design: capture dock
+geometry coarsely, at the WAREHOUSE level, not per-aisle or per-location.
+
+**New `WarehouseDockZone`** (1-2 rows per warehouse) — `purpose` (`INBOUND`/`OUTBOUND`/`BOTH`) +
+`nearAisleEnd` (`LOW`/`HIGH`, relative to the warehouse's own natural-sorted Aisle order — the
+exact same convention `LocationsPlanView.tsx` already established for aisle ordering, reused here
+for free rather than requiring a fresh per-aisle measurement). A U-shape warehouse (docks on one
+side) needs one row; an I-shape (opposite-end docks) needs two. Confirmed once explained with a
+concrete 10-aisle worked example ("cool, thats what we need!").
+
+**Outbound wins, not Inbound** — even though Outbound/Picking doesn't exist as a module yet, fast
+movers are placed near whichever end serves OUTBOUND ("it should go to near the outbound end") —
+forward-looking: today's only real consumer is Putaway, but the placement optimizes for the
+eventual picking trip. **Sort priority, confirmed directly**: "Outbound-proximity wins first" (ahead
+of Level) and "First-available" for Drive-in (no fixed per-column class reservation — the same
+free-for-all-by-proximity shape SPR already used, not a "column 1 = A" fixed assignment).
+
+**New `common/dock-zone.util.ts`**: `buildOutboundProximityRanker(distinctAisles, dockZones)` —
+given a warehouse's FULL distinct-aisle list (not narrowed to one SKU's eligible storage-type/
+category subset, since a narrower subset could wrongly redefine which end is "far") and its
+`WarehouseDockZone` rows, returns a per-aisle proximity-rank function, or `null` when no OUTBOUND/
+BOTH zone is configured — callers fall back to today's `flankNumber` proxy unchanged in that case,
+so an unconfigured warehouse behaves exactly as it always has.
+
+**`suggestBin()`'s candidate sort, extended** (`putaway-tasks.service.ts`): (1) `occupancyCount`
+[unchanged], (2) **Outbound-proximity** [new, primary tiebreak — A/B/unclassified prefer low rank/
+near, C/D prefer high rank/far, matching the existing "unclassified defaults to C" convention], (3)
+**Level** [new, secondary tiebreak, SPR/ASRS only — Drive-in's own `(depth DESC, level ASC)`
+within-column fill order already fully governs level, so applying it again here as a between-lane
+tiebreak would fight rather than help], (4) `flankNumber` [unchanged, final fallback]. Drive-in's
+"first-available" behavior falls out of this same ordering for free — no separate reservation logic
+needed; whichever eligible column sorts first by proximity simply wins.
+
+**A deliberate Topic 1 ↔ Topic 2 integration, made while building this** (a direct, obvious
+consequence of both already-agreed designs, not separately re-confirmed in these exact words):
+`suggestBin()` now reads the per-warehouse COMPUTED class (`SkuWarehouseClass`, Topic 1's real
+trailing-dispatch-derived result) ahead of the manually-set/imported `Sku.abcClass`, same
+override-when-known/fall-back chain used everywhere else in this codebase (Vehicle overriding
+VehicleType, etc.). Without this, Topic 1's entire "don't trust the import" effort would never
+actually reach a real placement decision.
+
+**Frontend**: Company Settings gained a "Dock Configuration (per warehouse)" mini-editor — same "no
+general Warehouse Edit form, so it lives here" pattern as Aging Methodology: pick a warehouse,
+add/edit up to 2 zone rows (purpose + near-end), Save. Backend: `GET /warehouses` now includes each
+warehouse's `dockZones`, plus a new `PATCH /warehouses/:id/dock-zones` (`COMPANY_ADMIN`-only,
+full-replace semantics — delete-then-recreate the 0-2 rows in one transaction, matching
+`setAgingGranularity()`'s own single-field-editor shape).
+
+Verified two ways. A throwaway-company diagnostic script calling the real, unmodified `suggestBin()`
+directly (no HTTP layer, no reimplementation): a U-shape (1 zone, OUTBOUND/LOW) on a 5-aisle
+warehouse correctly placed Class A at Aisle 1 and Class C at Aisle 5; an I-shape (2 zones,
+OUTBOUND/HIGH + INBOUND/LOW) on an IDENTICAL layout correctly REVERSED both — Class A at Aisle 5,
+Class C at Aisle 1 — proving the placement direction genuinely flips with configuration, not just
+returning a plausible-looking answer; an unconfigured warehouse (no zones at all) fell back to
+exactly the old flankNumber-only behavior, both classes landing where they always would have; a SKU
+manually imported as Class C but carrying a computed `SkuWarehouseClass` of A for that warehouse
+correctly placed near Outbound, confirming the Topic 1 override actually takes effect. A second
+script confirmed Drive-in specifically: a fresh unit picks the Outbound-nearest empty column, and a
+different SKU correctly can't enter an already-occupied column, falling through to the
+next-nearest one instead (first-available, not a fixed reservation). Then re-verified live through
+the actual Company Settings UI (throwaway company `DOCKUI1`): added 2 real zone rows through the
+real form, saved, confirmed persistence via a direct API check, then did a full page reload and
+confirmed — via the live DOM `<select>` values, not just displayed text — both rows re-filled
+correctly from the database. `tsc --noEmit`/`tsc -b` both clean. Throwaway companies cleaned up
+afterward.
+
+**Deliberately not built this pass, flagged as open**: the daily reslotting/consolidation
+suggestion engine (Topic 1's own points 5/6) is now genuinely unblocked — Topic 2's placement rules
+exist — but the actual detect-and-suggest algorithm itself still hasn't been written; the schema
+(`ReslottingSuggestion`) has sat ready since Topic 1. The A-vs-B same-bin-contention question raised
+early in Topic 2's own discussion (only meaningful in a batch/reslotting context, not real-time
+`suggestBin()`) is still unaddressed — revisit once the reslotting engine gets built. The MHE-
+travel-time alternative to the flat level-based rule (the client offered it; recommended deferring
+since `DockLocationDistance` still has zero data-entry tooling) was never explicitly declined or
+re-raised — stays a documented future upgrade, not decided against. The earlier, still-outstanding
+"start row number/finish row number" ask from this same session (Simulation's Plan View, "Rows 1-8"
+summary near each flank header) was never built and never revisited after the conversation pivoted
+to velocity/placement — a genuine loose end, not abandoned by decision.
+
 ### Redundant-code pass before the next module (2026-09-06, same session)
 A deliberate pause, requested directly ("go through all code again and see if there are any
 redundant ones... let's correct them now before we proceed") rather than assumed — not a full
@@ -4297,10 +4387,20 @@ genuinely new topic, sequenced deliberately ("lets finish topic 1 first then go 
 monthly job (1st of the month, off-hours) re-derives each SKU's A/B/C/D class PER WAREHOUSE from its
 own actual trailing dispatch quantity, replacing blind trust in a manually-typed/imported `Sku.abcClass`
 — confirmed warehouse-scoped rather than company-wide with a real worked example ("in kashmir you wont
-sell coke a lot? but its A item you might sell minute maid the most"). A companion "dock-relative
-Putaway placement" topic (near/low bins for A/B, far/high for C, tied to real warehouse dock geometry
-rather than today's arbitrary flank-number proxy) is the client's own explicitly next-up conversation —
-see `[[wms-abc-velocity-design]]` in memory for everything already covered and still genuinely open.
+sell coke a lot? but its A item you might sell minute maid the most").
+
+**Dock-relative Putaway placement (Topic 2) is now also built** (2026-09-06, same session, see
+"Dock-relative Putaway placement — Topic 2" above) — `suggestBin()` now places fast movers (A/B, and
+Topic 1's computed `SkuWarehouseClass` when it exists, overriding the stale manual class) near
+whichever end of a warehouse a new `WarehouseDockZone` config says serves Outbound, slow movers
+(C/D) far from it — replacing today's arbitrary flank-number-only proxy the moment a warehouse
+configures its real dock geometry (Company Settings' new "Dock Configuration" editor), with a
+genuine, verified fallback to the old behavior for any warehouse that doesn't. Live-verified to
+actually flip direction between a U-shape (1 zone) and I-shape (2 zones) configuration, not just
+return a plausible answer. The daily reslotting/consolidation suggestion engine Topic 1 left
+schema-only is now genuinely unblocked (this was the placement-rule dependency it was waiting on)
+but still not built — see `[[wms-abc-velocity-design]]` in memory for that and every other
+remaining open item from both topics.
 
 ## Testing notes
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
