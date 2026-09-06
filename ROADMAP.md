@@ -938,6 +938,18 @@ ordering/aging-based task prioritization.
   client-configurable ("let it be a client decision, not ours") but `WarehouseStorageType` rows have
   no edit path at all today (only ever created, never updated) — needs a real scope decision
   (create-time-only fix vs. a first-ever edit capability for these rows) before building.
+- **Ground/Floor still has no Putaway bin-suggestion logic of its own** (raised again directly,
+  2026-09-06) — `suggestBin()` only has real placement logic for the three rack storage types
+  (SPR/Drive-in/ASRS); a warehouse whose eligible storage type is `GROUND_FLOOR` (or `STILLAGE`)
+  always comes back `NEEDS_BIN` today, no matter how much floor space is actually free. This has
+  been the stated reason for staying rack-only at every prior fork ("let's finish racked first") —
+  Drive-in's own split-out strategy (2026-09-02), the Pick Face SPR-only scope (2026-09-05), and the
+  Simulation sandbox's Storage Type restriction all explicitly deferred Ground/Stillage rather than
+  building it. Needs its own design pass before coding — floor-stacked stock has no natural "lane"
+  concept the rack logic's LIFO-depth/lane-grouping model can reuse directly (a Ground block is a
+  footprint of `depth × width × height`, not a line of individually-addressable positions), so this
+  isn't a small extension of the existing algorithm, it's closer to a second, genuinely different
+  placement strategy — same shape as the Drive-in split, likely bigger.
 - **Self-service driver check-in** (`SelfCheckInRequest`, schema-only) — flagged as a top Yard/Gate
   gap in competitor research, still "later we do it."
 - **Yard Plan View** — needs a small spatial-layout design pass first (Yard Slots have no
