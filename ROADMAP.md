@@ -77,6 +77,16 @@ assertions and one `Decimal`-in-template-string nit across 5 backend files, zero
 
 All of the above merged to `main` and pushed (`1ee0bdc6`, `66cf0daa`) — no outstanding branches.
 
+**Same-day follow-up: a top-WMS gap check.** Researched what leading platforms (Blue Yonder,
+Manhattan Associates, general industry checklists) treat as standard, cross-checked against
+everything built and everything already flagged here — found 5 genuinely new gaps (cycle
+counting, 3PL/client billing, Vendor/Supplier master data, Kitting/Assembly logic, a QC/Inspection
+workflow), now recorded in the Deferred section below. **Task Interleaving got a different
+treatment** — flagged high-priority for whenever Picking starts, not lumped in as low-priority,
+per your own direct call ("sounds very smart"). Also added a ready-to-paste kickoff prompt on the
+FMS×ABC candidate item below, since you want to think that one through yourself before the next
+session rather than have it designed unprompted.
+
 ## Session note (2026-09-06, same session — Plan View "Rows 1-N" row-position summary)
 Closes the loose end flagged at the end of the Topic 2 note below — the very first ask from earlier
 this same session, picked back up once both ABC topics concluded: "we need to have start row number
@@ -721,7 +731,7 @@ Returns → Analytics
 | **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). (2026-09-06) **Ground/Floor Putaway built end to end** — its own independent `suggestGroundBin()` (not shared with Rack's `suggestRackBin()`, a deliberate ask), a column-lifecycle rule feeding the still-unbuilt reslotting engine, per-class `respectsColumnBoundariesA/B/C/D` toggles, plus a real editor for the previously-dead `maxSkusClassA/B/C` field. Still open: **Stillage's own version of the multi-position logic** (the only storage type with none at all now), a cancel path, correcting an already-completed mis-putaway, ASRS's own bin-suggestion strategy, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), and Pick Face for Drive-in/ASRS/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
-| Picking | ⬜ Not started |
+| Picking | ⬜ Not started — **when this starts: Task Interleaving is a high-priority item, not a deferred one** (2026-09-07, from the top-WMS gap check — see the Deferred section for why) |
 | Dispatch | ⬜ Not started |
 | Returns | ⬜ Not started |
 | **Analytics** | 🟨 Started (2026-09-02) — the real module, distinct from the earlier one-off **Insights** page (which still only has Storage Utilization by ABC Class). First report: operator productivity at the Pallet level — marrying time and putaway time per operator (always split, never blended), plus abandoned Putaway claims flagged against the operator who claimed and never completed them. No new schema, entirely derived from existing Pallet/Putaway data. (2026-09-05) Gained a fourth, separately-reported metric — Pick Face trip time per operator, grouped by task rather than pallet. |
@@ -906,7 +916,8 @@ Pick one — these are the live options on the table, not a forced order:
    since Topic 1 — the actual detect-a-misplaced-SKU/suggest-a-target-bin algorithm and its daily job
    still need designing and building.
 2. **FMS classification combined with ABC, for exact material putaway** (2026-09-06, new) — **your
-   own stated pick for the next session**. "go in
+   own stated pick for the next session — you want to think it through yourself before this session
+   starts, not have it designed unprompted.** "go in
    depth for FMS model of inventory as well, looking at the combo of abc and fms we need to make a
    logic of exact material putaway." FMS (Fast/Medium/Slow-moving, ranked by movement *frequency*)
    is a different axis than ABC (ranked by dispatched quantity/value) — a combined ABC×FMS matrix is
@@ -914,6 +925,14 @@ Pick one — these are the live options on the table, not a forced order:
    above. Nothing designed yet — see the new section in the `wms-abc-velocity-design` memory for the
    real open questions to raise first (what drives FMS, how many tiers, how the combined matrix
    actually changes `suggestBin()` beyond what ABC + dock-proximity already do).
+
+   > **Next-session kickoff prompt (paste this in first):**
+   > "Let's design the ABC×FMS combined classification logic for exact material putaway. I've had
+   > time to think about it since last session — here's what I want for [what drives FMS / how many
+   > tiers / how the combined matrix should change suggestBin()]. Let's discuss before any
+   > schema/code, same as we did for Topics 1 and 2." (Fill in your own thinking on the open
+   > questions above before pasting — if you haven't decided yet, just say so and we'll work through
+   > them together like the other topics.)
 3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
    it. Even a read-only view would close a real, felt gap. Next in the stated module build order.
@@ -939,6 +958,38 @@ storage type left with none), a cancel/exception path for a task that can't be c
 an already-completed mis-putaway, and real queue-ordering/aging-based task prioritization.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
+
+**From the 2026-09-07 top-WMS gap check** (comparing everything built so far against what
+Blue Yonder/Manhattan Associates/general industry checklists treat as standard — see that
+session's own conversation for the full research and sourcing) — six real gaps, none designed:
+
+- **Task Interleaving — flagged HIGH PRIORITY for whenever Picking starts, not just "someday."**
+  Unlike the rest of this list, this one isn't "don't build unprompted" — it's "raise it yourself
+  the moment Picking is on the table." Top WMS platforms treat this as a headline feature:
+  automatically combining a putaway trip and a pick trip into one path to cut travel time, instead
+  of sending an operator on two single-purpose trips. This project deliberately chose NOT to build
+  it so far (letting operators work however they naturally do, with Analytics comparing patterns
+  to decide later which approach wins is the standing 2026-08-28/2026-09-02 design) — worth
+  revisiting that call specifically once Picking exists and there are two live task queues
+  (Putaway + Picking) to actually interleave between, since that's the point at which
+  interleaving starts to matter.
+- **Cycle counting / physical inventory reconciliation** — never once discussed anywhere in this
+  project. `StockMovement.ADJUSTMENT` exists in schema, but there's no workflow to create one, and
+  no real cycle-count program (count sheets, variance approval, recount) at all. Every major WMS
+  treats this as core inventory-accuracy functionality; revisit once Inventory (the on-hand view)
+  exists, since a count needs something to count against.
+- **3PL / client billing (storage, handling, transaction fees)** — a real gap relative to this
+  project's own stated multi-company SaaS goal, not just a generic industry checklist item.
+  Detention *cost* is already computed per vehicle, but nothing rolls up into an actual client
+  invoice — no rate cards, no per-pallet/per-transaction charges, no monthly bill. Standard in
+  every 3PL-facing WMS.
+- **Vendor/Supplier master data** — no `Vendor`/`Supplier` entity anywhere in the schema.
+  Receiving is tied to a `Vehicle`, not to *who the goods came from* — no vendor scorecarding, and
+  nothing for a future ASN to attach to on the supply side.
+- **Kitting/Assembly logic** — `SkuRelationship` (kits/combos) has sat schema-only since the
+  original schema design, with zero logic ever built or even discussed as a real topic.
+- **Quality Control / Inspection workflow** — `QC_HOLD` is a zone type and physical-condition
+  capture exists at the gate, but there's no formal hold → inspect → release/reject/scrap module.
 
 - **Putaway's self-exclusion cap bug** (`suggestBin()`, 2026-08-29) — a SKU already occupying a
   multi-SKU lane can get wrongly blocked from its own lane's last empty depth once the lane hits its
