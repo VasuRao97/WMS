@@ -92,10 +92,26 @@ function buildBoxesForAisle(rows: Location[]): BoxSpec[] {
 
   const place = (locs: Location[], sign: 1 | -1) => {
     const positions = uniqSorted(locs.map(posOf));
+    // z accumulates rather than a flat `posIndex * POSITION_SPACING` — real
+    // client catch (2026-09-07, right after the per-column grid fix
+    // shipped): "why do we have aisle left after each pallet column?"
+    // POSITION_SPACING was tuned for genuinely separate structures (one
+    // Rack bay's own frame gap, one Stillage stack apart from the next) —
+    // fine there, wrong applied between two COLUMNS of the SAME Ground bin,
+    // which sit physically flush against each other with no walking gap at
+    // all. Only Ground gets the flush treatment, and only between columns
+    // that share the same `block` — a genuinely new block (or a Rack bay,
+    // or a Stillage stack) still gets the normal POSITION_SPACING gap.
+    let z = 0;
+    let prevGroundBlock: string | undefined;
     positions.forEach((posVal, posIndex) => {
-      const z = posIndex * POSITION_SPACING;
       const atPos = locs.filter((r) => posOf(r) === posVal);
       const storageType = atPos[0].storageType;
+      const groundBlock = storageType === 'GROUND_FLOOR' ? (atPos[0].block ?? undefined) : undefined;
+      if (posIndex > 0) {
+        z += storageType === 'GROUND_FLOOR' && groundBlock != null && groundBlock === prevGroundBlock ? GROUND_UNIT : POSITION_SPACING;
+      }
+      prevGroundBlock = groundBlock;
 
       if (RACK_STORAGE_TYPES.includes(storageType)) {
         const depthKey = (r: Location) => (r.depth != null ? String(r.depth) : '1');
