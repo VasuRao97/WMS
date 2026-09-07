@@ -351,6 +351,25 @@ function AisleFootprint({ layout, onSelect }: { layout: AisleLayout; onSelect: (
   );
 }
 
+// The Aisle-code label an unselected aisle gets for free from
+// `AisleFootprint` above — once an aisle is checked into full per-bin
+// detail, that footprint mesh (and its Html label) stops rendering
+// entirely, so the aisle's own identity disappeared from the scene with
+// nothing replacing it (2026-09-07 — "can we name the row, aisle? i dont
+// see any numbering," caught looking at a drilled-in aisle in 3D). This
+// renders the identical "Aisle {code}" label, positioned the same way
+// (just above the tallest box in the aisle, using the same `footprint`
+// bounding box every layout already carries) but with no mesh/click
+// handler around it — the detail view's own boxes already handle clicks.
+function AisleDetailLabel({ layout }: { layout: AisleLayout }) {
+  const { footprint } = layout;
+  return (
+    <Html center position={[footprint.x, footprint.y + footprint.h / 2 + 0.4, footprint.z]} style={{ pointerEvents: 'none', fontSize: 12, fontFamily: 'sans-serif', background: '#fff', padding: '2px 6px', borderRadius: 4, border: '1px solid #ccc', whiteSpace: 'nowrap' }}>
+      Aisle {layout.aisleCode}
+    </Html>
+  );
+}
+
 // Camera auto-focus (2026-09-05 "upgrade mode" backlog, item 4) — checking
 // an aisle into detail used to leave the camera exactly where it was (a
 // fixed whole-warehouse overview computed once on mount), so finding what
@@ -620,6 +639,7 @@ function Locations3DView({
           {layouts.map((layout) =>
             selectedAisles.has(layout.aisleCode) ? (
               <group key={layout.aisleCode}>
+                <AisleDetailLabel layout={layout} />
                 {layout.boxes.map((box) => (
                   <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} />
                 ))}
