@@ -4645,6 +4645,22 @@ exact expected z sequence — flush (`z=1.1`), flush (`z=2.2`), a real aisle jum
 (`z=5.5`), flush (`z=6.6`) — landing the cross-aisle exactly between position 3 and 4, matching
 "after N bins you give an aisle" precisely. Throwaway company cleaned up afterward.
 
+**Immediate follow-up, same day: each Ground bin needed its own visible border.** Now that columns
+sit flush against each other and a cross-aisle only appears periodically, a bin's own boundary
+isn't visually obvious on its own anymore — client's ask: "in ground storage, just highligh each
+bin (just give a border)." New `computeGroundBinOutlines()` in `Locations3DView.tsx` groups every
+Ground/Floor box in a selected aisle by `(flankNumber, block)` — not `block` alone, since a
+mirrored layout can legitimately reuse the same block number on both flanks, and those are two
+physically distinct bins — and computes each group's real bounding box across all its column×depth
+positions. New `GroundBinOutline` component renders one bold, dark-orange wireframe box per bin at
+that exact extent (a darker shade of Ground/Floor's own stroke color, clearly heavier than each
+individual position's own thin cell edge) with an invisible fill and `raycast={() => null}` so it
+stays purely decorative, never intercepting clicks meant for the real per-position boxes
+underneath. Rack/Stillage untouched — the ask was Ground-specific. Verified live (throwaway
+warehouse, 2 real 4×4 Ground bins on one aisle): confirmed two clearly distinct bold outlines, one
+around each bin's own 4×4 grid, with the boundary between the two bins visible even with no
+cross-aisle currently separating them. `tsc -b` clean. Throwaway company cleaned up afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
