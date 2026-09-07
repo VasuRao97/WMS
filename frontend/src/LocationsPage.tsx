@@ -183,8 +183,6 @@ function LocationsPage() {
   const [genSection, setGenSection] = useState('');
   const [genAisle, setGenAisle] = useState('');
   const [genRackRange, setGenRackRange] = useState('');
-  const [genRackRange2, setGenRackRange2] = useState('');
-  const [genMirrorRack, setGenMirrorRack] = useState(false);
   const [genLevelRange, setGenLevelRange] = useState('');
   const [genBinRange, setGenBinRange] = useState('');
   // Bin Range only applies to small-parts shelving (multiple bins per
@@ -194,16 +192,9 @@ function LocationsPage() {
   const [genShowBinRange, setGenShowBinRange] = useState(false);
   const [genDepthRange, setGenDepthRange] = useState('');
   const [genBlockRange, setGenBlockRange] = useState('');
-  const [genBlockRange2, setGenBlockRange2] = useState('');
-  const [genMirrorBlock, setGenMirrorBlock] = useState(false);
   const [genStackRange, setGenStackRange] = useState('');
   const [genDepth, setGenDepth] = useState('');
   const [genWidth, setGenWidth] = useState('');
-  // Ground/Floor only (2026-09-07) — how many bins stack back-to-back in
-  // the depth direction on ONE side before reaching the aisle; blank means
-  // 1 (today's behavior, unchanged). See schema.prisma's own comment on
-  // Location.depthTier for the full design.
-  const [genDepthTiers, setGenDepthTiers] = useState('');
   const [genHeight, setGenHeight] = useState('');
 
   // --- Excel import state ---
@@ -430,20 +421,15 @@ function LocationsPage() {
     setGenSection('');
     setGenAisle('');
     setGenRackRange('');
-    setGenRackRange2('');
-    setGenMirrorRack(false);
     setGenLevelRange('');
     setGenBinRange('');
     setGenShowBinRange(false);
     setGenDepthRange('');
     setGenBlockRange('');
-    setGenBlockRange2('');
-    setGenMirrorBlock(false);
     setGenStackRange('');
     setGenDepth('');
     setGenWidth('');
     setGenHeight('');
-    setGenDepthTiers('');
   };
 
   const handleGenerate = async (e: React.FormEvent) => {
@@ -460,21 +446,29 @@ function LocationsPage() {
       section: genSection || undefined,
       aisle: genAisle,
       rackRange: genRackRange || undefined,
-      // "Mirror" checkbox: reuse the primary Rack Range's own numbers for the
-      // second flank instead of whatever's typed in the Second Rack Range box
-      // — the backend tags these rows side:'B' and appends a letter to their
-      // code so they stay unique despite reusing the same rack numbers.
-      rackRange2: genMirrorRack ? genRackRange || undefined : genRackRange2 || undefined,
+      // 2026-09-07 — no second-range/mirror concept for ANY storage type
+      // any more: "always build it on one side of aisle only... no need
+      // to mirror it. for all types of storage, so that we can give an
+      // easy instructions to the team who is using it." One call always
+      // builds exactly one flank now, for every type — a genuinely
+      // double-sided real aisle is a second, separate call (its own Aisle
+      // number), not a second input on this same form. `rackRange2`/
+      // `blockRange2` stay accepted by the backend (unused by this form
+      // now) purely so a direct API caller isn't newly blocked from using
+      // them — nothing here ever sends them.
       levelRange: genLevelRange || undefined,
       binRange: genShowBinRange ? genBinRange || undefined : undefined,
       depthRange: genDepthRange || undefined,
       blockRange: genBlockRange || undefined,
-      blockRange2: genMirrorBlock ? genBlockRange || undefined : genBlockRange2 || undefined,
       stackRange: genStackRange || undefined,
       depth: genDepth || undefined,
       width: genWidth || undefined,
       height: genHeight || undefined,
-      depthTiers: genIsGround ? genDepthTiers || undefined : undefined,
+      // Ground/Floor's Depth Tiers is always 2, no user choice — same
+      // "easy instructions" simplification, the one exception where a
+      // fixed non-1 default is actually wanted rather than just "no second
+      // side."
+      depthTiers: genIsGround ? 2 : undefined,
     };
     const res = await fetch('http://localhost:3000/locations/generate', {
       method: 'POST',
@@ -670,18 +664,15 @@ function LocationsPage() {
 
               {genIsRack && (
                 <>
+                  {/* 2026-09-07 — no Second Rack Range/Mirror checkbox any
+                      more: "always build it on one side of aisle only...
+                      no need to mirror it. for all types of storage, so
+                      that we can give an easy instructions to the team who
+                      is using it." One call always builds exactly one
+                      flank now — a genuinely double-sided real aisle is a
+                      second, separate call (its own Aisle number), not a
+                      second input on this same form. */}
                   <input placeholder="Rack Range * (e.g. 01-20)" value={genRackRange} onChange={(e) => setGenRackRange(e.target.value)} required style={{ width: 170 }} />
-                  <input
-                    placeholder="+ Second Rack Range (other side of aisle)"
-                    value={genRackRange2}
-                    onChange={(e) => setGenRackRange2(e.target.value)}
-                    disabled={genMirrorRack}
-                    style={{ width: 250 }}
-                  />
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
-                    <input type="checkbox" checked={genMirrorRack} onChange={(e) => setGenMirrorRack(e.target.checked)} />
-                    Mirror same numbers on other side
-                  </label>
                   <input placeholder="Level Range * (e.g. 01-04)" value={genLevelRange} onChange={(e) => setGenLevelRange(e.target.value)} required style={{ width: 170 }} />
                   <input placeholder="Depth = lane depth (e.g. 2 → positions 1-2)" value={genDepthRange} onChange={(e) => setGenDepthRange(e.target.value)} style={{ width: 260 }} />
                   <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, width: '100%' }}>
@@ -697,26 +688,8 @@ function LocationsPage() {
               {genIsGround && (
                 <>
                   <input placeholder="Block Range * (e.g. 01-10)" value={genBlockRange} onChange={(e) => setGenBlockRange(e.target.value)} required style={{ width: 170 }} />
-                  <input
-                    placeholder="+ Second Block Range (other side of aisle)"
-                    value={genBlockRange2}
-                    onChange={(e) => setGenBlockRange2(e.target.value)}
-                    disabled={genMirrorBlock}
-                    style={{ width: 260 }}
-                  />
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
-                    <input type="checkbox" checked={genMirrorBlock} onChange={(e) => setGenMirrorBlock(e.target.checked)} />
-                    Mirror same numbers on other side
-                  </label>
                   <input placeholder="Width (columns in this bin) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 190 }} />
                   <input placeholder="Depth (pallets deep per column) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 220 }} />
-                  <input
-                    placeholder="+ Depth Tiers (bins stacked back-to-back, default 1)"
-                    value={genDepthTiers}
-                    onChange={(e) => setGenDepthTiers(e.target.value)}
-                    title="How many bins stack back-to-back going away from the aisle on this one side, before reaching it. Each tier is its own separate bin (own depth 1..N, own code) — leave blank for the usual single bin."
-                    style={{ width: 300 }}
-                  />
                   {/* 2026-09-06 Ground/Floor redesign — no Height input here
                       any more: this now generates one real row per pallet
                       position (Width columns x Depth deep each), and
@@ -724,7 +697,15 @@ function LocationsPage() {
                       confirmed explicitly) — Height is always fixed to 1
                       server-side regardless of any input, so showing a
                       field for it would just mislead staff into thinking
-                      it does something. See wms-putaway-design memory. */}
+                      it does something. See wms-putaway-design memory.
+                      2026-09-07 — no Second Block Range/Mirror checkbox or
+                      Depth Tiers input either any more: "lets keep it
+                      simple, dont confuse people to mirror etc, second
+                      block range is confusing and keep the depth tier
+                      always fixed @ 2" — Ground now ALWAYS generates both
+                      sides of the aisle (same block numbers mirrored) and
+                      always 2 Depth Tiers, with no choice to make. See the
+                      payload comment above where this is actually sent. */}
                 </>
               )}
 
@@ -741,23 +722,21 @@ function LocationsPage() {
             {genIsRack && (
               <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
                 e.g. Aisle <strong>A01</strong>, Rack Range <strong>01-20</strong>, Level Range <strong>01-04</strong> → creates 80
-                locations (<code>A01-R01-L01-B1</code> … <code>A01-R20-L04-B1</code>) in one go. Fill{' '}
-                <strong>Second Rack Range</strong> too (e.g. <strong>21-40</strong>) to generate the racking on the *other* side of
-                this same aisle in the same call — same Aisle, same Depth, just a non-overlapping set of rack numbers. Depth means
+                locations (<code>A01-R01-L01-B1</code> … <code>A01-R20-L04-B1</code>) in one go, one side of the aisle. Depth means
                 the lane's full depth: entering <strong>2</strong> creates *both* the front and back pallet position for a 2-deep
                 Drive-in lane (not just the back one) — use an explicit range like <strong>3-5</strong> only to add specific
-                positions to a lane that's already partly built.
+                positions to a lane that's already partly built. Need racking on the other side of this same aisle too? Run this
+                same form again with the same Aisle and a different Rack Range.
               </p>
             )}
             {genIsGround && (
               <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
                 e.g. Aisle <strong>GA1</strong>, Block Range <strong>01-10</strong>, Depth <strong>4</strong>, Width <strong>4</strong> →
-                creates 10 blocks (<code>GF-GA1-BLK01</code> … <code>GF-GA1-BLK10</code>), each capacity 16. Fill{' '}
-                <strong>Second Block Range</strong> too (e.g. <strong>11-20</strong>) to generate the blocks on the other side of
-                this same aisle in the same call, same Depth/Width/Height for both sides. Fill{' '}
-                <strong>Depth Tiers</strong> (e.g. <strong>2</strong>) to stack that many bins back-to-back going away from the
-                aisle on each side, before reaching it — each tier is its own separate bin (<code>...-C1-T1-D1</code>,{' '}
-                <code>...-C1-T2-D1</code>, etc.), not a single deeper bin.
+                creates 10 blocks (<code>GF-GA1-BLK01</code> … <code>GF-GA1-BLK10</code>) on one side of the aisle, each with 2 bins
+                stacked back-to-back going away from the aisle (<code>...-C1-T1-D1</code>..<code>D4</code>, then{' '}
+                <code>...-C1-T2-D1</code>..<code>D4</code>) — 8 real positions deep per column, always, no choice to make. Need
+                blocks on the other side of this same aisle too? Run this same form again with the same Aisle and a different
+                Block Range.
               </p>
             )}
             {genIsStillage && (

@@ -82,10 +82,6 @@ function SimulationPage() {
   const [levels, setLevels] = useState('3');
   const [depth, setDepth] = useState('1');
   const [racks, setRacks] = useState('3');
-  // Ground/Floor only (2026-09-07) — how many bins stack back-to-back in
-  // the depth direction on ONE side before reaching the aisle. See
-  // schema.prisma's own comment on Location.depthTier for the full design.
-  const [depthTiers, setDepthTiers] = useState('1');
   const isGround = storageType === 'GROUND_FLOOR';
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<SimStep[]>([]);
@@ -157,7 +153,10 @@ function SimulationPage() {
         levels: Number(levels) || 3,
         depth: Number(depth) || 1,
         racks: Number(racks) || 3,
-        depthTiers: isGround ? Number(depthTiers) || 1 : undefined,
+        // Always 2 for Ground, no user choice (2026-09-07 — "keep it
+        // simple... keep the depth tier always fixed @ 2", same
+        // simplification as the real Locations generator).
+        depthTiers: isGround ? 2 : undefined,
       }),
     });
     const data = await res.json();
@@ -275,14 +274,10 @@ function SimulationPage() {
             <input type="number" min={1} max={10} value={levels} onChange={(e) => setLevels(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
             <label style={{ fontSize: 13 }}>Depth:</label>
             <input type="number" min={1} max={6} value={depth} onChange={(e) => setDepth(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
-            {isGround && (
-              <>
-                <label style={{ fontSize: 13 }} title="How many bins stack back-to-back going away from the aisle on each side, before reaching it. Each tier is its own separate bin.">
-                  Depth Tiers:
-                </label>
-                <input type="number" min={1} max={4} value={depthTiers} onChange={(e) => setDepthTiers(e.target.value)} disabled={running} style={{ width: 60, padding: 6 }} />
-              </>
-            )}
+            {/* No Depth Tiers input — 2026-09-07, "keep the depth tier
+                always fixed @ 2," no user choice, same simplification as
+                the real Locations generator's own form. Always sent as 2
+                for Ground in handleRun's own request body below. */}
             <label style={{ fontSize: 13 }}>Units to simulate:</label>
             <input type="number" min={1} max={200} value={unitCount} onChange={(e) => setUnitCount(e.target.value)} style={{ width: 70, padding: 6 }} />
             <button type="button" onClick={handleRun} disabled={running}>{running ? 'Running...' : 'Run Simulation'}</button>
