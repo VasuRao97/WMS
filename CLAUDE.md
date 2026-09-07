@@ -4661,6 +4661,29 @@ warehouse, 2 real 4×4 Ground bins on one aisle): confirmed two clearly distinct
 around each bin's own 4×4 grid, with the boundary between the two bins visible even with no
 cross-aisle currently separating them. `tsc -b` clean. Throwaway company cleaned up afterward.
 
+**Immediate follow-up, same day: the camera itself needed real UX work.** Client's own complaint:
+"whats with this camera, not very user friendly what else can we do about it." The 3D view was
+running on completely default `OrbitControls` — no damping (orbit/zoom/pan stopped dead instantly
+on mouse release, reading as jerky), no way back to a sane framing once manually dragged/zoomed
+somewhere awkward. Presented as a short menu of independent, concrete options (damping + Reset
+View, zoom/rotation limits, preset view angles, click-to-center) rather than guessing which one
+mattered — client picked damping + Reset View for this pass. `<OrbitControls enableDamping
+dampingFactor={0.12}>` gives user-driven camera motion real inertia; doesn't interact with
+`CameraRig`'s own direct target/position writes during the aisle-selection auto-focus animation,
+since those apply immediately either way. New "Reset View" button (top-left of the canvas)
+re-triggers `CameraRig`'s smooth animation back to the CURRENT focus framing even when the computed
+`camPos`/`target` value hasn't changed — the real case this covers is a viewer who's manually
+orbited away from an already-correct auto-fit without touching aisle selection, which the existing
+key-comparison check alone can't detect. `CameraRig` gained a `resetSignal` prop (a plain
+incrementing nonce, not a boolean, so clicking Reset twice in a row still registers as two fresh
+requests) threaded alongside its existing camPos/target key check. Verified live (throwaway
+warehouse): confirmed Reset View renders correctly, manually dragged the camera to a clearly
+different angle (confirming damping doesn't break normal orbiting), then confirmed clicking Reset
+View smoothly animated the camera back to the exact original default framing. No console
+warnings/errors from either change. Throwaway company cleaned up afterward. **Still open, not
+built this pass**: zoom/rotation limits, preset view angles, click-to-center a bin — flagged as
+real options if the camera still isn't comfortable enough, not decided against.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
