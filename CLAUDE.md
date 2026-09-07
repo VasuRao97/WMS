@@ -4583,6 +4583,25 @@ boxes; confirmed clicking an individual 3D box resolves to its own real Location
 direct API check that exactly 16 real positions exist for the bin, matching the rendered box count
 one-to-one. Throwaway company cleaned up afterward.
 
+**Immediate follow-up, same day: the new grid still had a real spacing bug in 3D.** The client saw
+it live and caught it right away: "why do we have aisle left after each pallet column?" 3D's z-axis
+row spacing (`POSITION_SPACING`) was tuned for genuinely separate structures — a Rack bay's own
+frame gap, a Stillage stack apart from the next — and got applied uniformly to every Ground row too,
+including between two COLUMNS of the exact same physical bin, which sit flush against each other in
+reality with no walking gap at all. Fixed in `Locations3DView.tsx`: `buildBoxesForAisle()`'s z
+computation changed from a flat `posIndex * POSITION_SPACING` to a stateful accumulator — two
+consecutive Ground rows sharing the same `block` advance z by just `GROUND_UNIT` (flush), everything
+else (a new block, a Rack bay, a Stillage stack) still gets the normal `POSITION_SPACING` gap. 2D's
+own row gap was deliberately left as-is — its 6px `ROW_GAP` is proportionally small (10% of a 60px
+row) and was already a uniform separator style for every row type, not something flagged as reading
+like an aisle; fixing it properly would also need a bigger restructure since 2D's rows are
+index-paired across both flanks (see the file's own "rows pair by position" rule) — flagged, not
+silently decided against, revisit if it's wanted too. Verified live (throwaway warehouse, 2 blocks ×
+4 columns × 2 deep): confirmed via click-to-inspect that columns within one block render flush with
+no visible gap, while the real boundary between two different blocks (`BLK01`'s last column →
+`BLK02`'s first column) shows the normal gap — exactly the intended "aisle only between real bins"
+pattern. `tsc -b` clean. Throwaway company cleaned up afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
