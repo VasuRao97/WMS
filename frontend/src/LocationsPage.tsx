@@ -31,6 +31,10 @@ export type Location = {
   depth?: number;
   width?: number;
   height?: number;
+  // Ground/Floor only — which stacked bin (going away from the aisle) this
+  // row belongs to; 1/unset for the common single-tier case. See
+  // schema.prisma's own comment on Location.depthTier.
+  depthTier?: number;
   capacity?: number;
   isActive: boolean;
 };
@@ -195,6 +199,11 @@ function LocationsPage() {
   const [genStackRange, setGenStackRange] = useState('');
   const [genDepth, setGenDepth] = useState('');
   const [genWidth, setGenWidth] = useState('');
+  // Ground/Floor only (2026-09-07) — how many bins stack back-to-back in
+  // the depth direction on ONE side before reaching the aisle; blank means
+  // 1 (today's behavior, unchanged). See schema.prisma's own comment on
+  // Location.depthTier for the full design.
+  const [genDepthTiers, setGenDepthTiers] = useState('');
   const [genHeight, setGenHeight] = useState('');
 
   // --- Excel import state ---
@@ -434,6 +443,7 @@ function LocationsPage() {
     setGenDepth('');
     setGenWidth('');
     setGenHeight('');
+    setGenDepthTiers('');
   };
 
   const handleGenerate = async (e: React.FormEvent) => {
@@ -464,6 +474,7 @@ function LocationsPage() {
       depth: genDepth || undefined,
       width: genWidth || undefined,
       height: genHeight || undefined,
+      depthTiers: genIsGround ? genDepthTiers || undefined : undefined,
     };
     const res = await fetch('http://localhost:3000/locations/generate', {
       method: 'POST',
@@ -699,6 +710,13 @@ function LocationsPage() {
                   </label>
                   <input placeholder="Width (columns in this bin) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 190 }} />
                   <input placeholder="Depth (pallets deep per column) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 220 }} />
+                  <input
+                    placeholder="+ Depth Tiers (bins stacked back-to-back, default 1)"
+                    value={genDepthTiers}
+                    onChange={(e) => setGenDepthTiers(e.target.value)}
+                    title="How many bins stack back-to-back going away from the aisle on this one side, before reaching it. Each tier is its own separate bin (own depth 1..N, own code) — leave blank for the usual single bin."
+                    style={{ width: 300 }}
+                  />
                   {/* 2026-09-06 Ground/Floor redesign — no Height input here
                       any more: this now generates one real row per pallet
                       position (Width columns x Depth deep each), and
@@ -736,7 +754,10 @@ function LocationsPage() {
                 e.g. Aisle <strong>GA1</strong>, Block Range <strong>01-10</strong>, Depth <strong>4</strong>, Width <strong>4</strong> →
                 creates 10 blocks (<code>GF-GA1-BLK01</code> … <code>GF-GA1-BLK10</code>), each capacity 16. Fill{' '}
                 <strong>Second Block Range</strong> too (e.g. <strong>11-20</strong>) to generate the blocks on the other side of
-                this same aisle in the same call, same Depth/Width/Height for both sides.
+                this same aisle in the same call, same Depth/Width/Height for both sides. Fill{' '}
+                <strong>Depth Tiers</strong> (e.g. <strong>2</strong>) to stack that many bins back-to-back going away from the
+                aisle on each side, before reaching it — each tier is its own separate bin (<code>...-C1-T1-D1</code>,{' '}
+                <code>...-C1-T2-D1</code>, etc.), not a single deeper bin.
               </p>
             )}
             {genIsStillage && (

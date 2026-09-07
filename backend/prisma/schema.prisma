@@ -751,6 +751,20 @@ model Location {
   width  Int?
   height Int?
 
+  // Ground/Floor only — which stacked BIN, going away from the aisle, this
+  // row belongs to (1 = nearest the walkway, unset/1 = the common single-
+  // tier case). A real client ask (2026-09-07): "when we say 4 deep, there
+  // should be 1 more 4 deep behind the first bin then the aisle" — a
+  // genuinely separate, independently-coded bin chained in the depth
+  // direction on ONE side of one aisle (its own `depth` numbering restarts
+  // at 1), not the mirrored flank of a NEIGHBORING aisle standing in for
+  // that same "2 bins back to back" appearance (which is all this model
+  // could express before this field existed — see AISLE_GAP's own comment
+  // in LocationsPlanView.tsx/Locations3DView.tsx for that still-real,
+  // still-correct cross-aisle pattern, unrelated to this one). Meaningless
+  // for Rack/Stillage — always null/1 there, no behavior change.
+  depthTier Int? @default(1)
+
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 

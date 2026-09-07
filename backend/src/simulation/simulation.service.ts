@@ -44,6 +44,13 @@ const DEFAULT_STORAGE_TYPE = 'SPR';
 const MAX_LEVELS = 10;
 const MAX_DEPTH = 6;
 const MAX_RACKS = 30;
+// Ground/Floor only (2026-09-07) — how many bins stack back-to-back in the
+// depth direction on ONE side before reaching the aisle, matching the real
+// generator's own Depth Tiers field. Default/unset means 1 (today's
+// unchanged behavior). Capped modestly — this multiplies total row count
+// by itself, same "keep the sandbox fast to render" reasoning MAX_DEPTH
+// etc. already follow.
+const MAX_DEPTH_TIERS = 4;
 const SKU_POOL_SIZE = 12;
 const MAX_UNIT_COUNT = 200;
 
@@ -59,7 +66,7 @@ const MAX_UNIT_COUNT = 200;
 // becomes how many COLUMNS each bin has (relabeled "Width" in the UI), and
 // `depth` keeps its exact same meaning — positions per column, same LIFO
 // depth concept Rack already uses it for.
-export type SandboxLayoutConfig = { storageType: string; levels: number; depth: number; racks: number };
+export type SandboxLayoutConfig = { storageType: string; levels: number; depth: number; racks: number; depthTiers: number };
 
 const SIM_STORAGE_TYPES = [...RACK_STORAGE_TYPES, 'GROUND_FLOOR'];
 
@@ -68,7 +75,12 @@ function normalizeLayoutConfig(raw: Partial<SandboxLayoutConfig> | undefined): S
   const levels = Math.max(1, Math.min(MAX_LEVELS, Math.floor(Number(raw?.levels)) || DEFAULT_LEVELS));
   const depth = Math.max(1, Math.min(MAX_DEPTH, Math.floor(Number(raw?.depth)) || DEFAULT_DEPTH));
   const racks = Math.max(1, Math.min(MAX_RACKS, Math.floor(Number(raw?.racks)) || DEFAULT_RACKS));
-  return { storageType, levels, depth, racks };
+  // Only meaningful for GROUND_FLOOR — always normalized to a real number
+  // regardless of storageType so callers never need a null-check, but a
+  // Rack/ASRS/Drive-in config just never reads it (buildRackLayout doesn't
+  // accept it at all).
+  const depthTiers = Math.max(1, Math.min(MAX_DEPTH_TIERS, Math.floor(Number(raw?.depthTiers)) || 1));
+  return { storageType, levels, depth, racks, depthTiers };
 }
 
 export type SimStep = {
@@ -135,7 +147,7 @@ export class SimulationService {
 
     const existingLocations = await this.prisma.location.findMany({
       where: { warehouseId: warehouse.id },
-      select: { storageType: true, level: true, depth: true, flankNumber: true, rack: true, block: true },
+      select: { storageType: true, level: true, depth: true, flankNumber: true, rack: true, block: true, depthTier: true },
     });
 
     if (existingLocations.length === 0) {
@@ -157,7 +169,7 @@ export class SimulationService {
   // auto-rebuild-on-mismatch path every other config change already goes
   // through, no separate migration.
   private layoutMatches(
-    locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null; rack: string | null; block: string | null }[],
+    locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null; rack: string | null; block: string | null; depthTier: number | null }[],
     config: SandboxLayoutConfig,
   ): boolean {
     if (locations.length === 0) return false;
@@ -180,14 +192,20 @@ export class SimulationService {
     return maxLevel === config.levels && maxDepth === config.depth && maxRack === config.racks;
   }
 
-  private groundLayoutMatches(locations: { depth: number | null; rack: string | null; block: string | null }[], config: SandboxLayoutConfig): boolean {
+  private groundLayoutMatches(locations: { depth: number | null; rack: string | null; block: string | null; depthTier: number | null }[], config: SandboxLayoutConfig): boolean {
     const maxColumn = Math.max(...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1));
     const maxDepth = Math.max(...locations.map((l) => l.depth ?? 1));
     const maxBin = Math.max(...locations.map((l) => parseInt(l.block ?? '1', 10) || 1));
+    const maxDepthTier = Math.max(...locations.map((l) => l.depthTier ?? 1));
     // config.racks ("Length" in the UI) = bins per flank, config.levels
     // (relabeled "Width" in the UI for Ground) = columns per bin — see
     // SandboxLayoutConfig's comment for the full field-reuse mapping.
-    return maxBin === config.racks && maxColumn === config.levels && maxDepth === config.depth;
+    // maxDepthTier check (2026-09-07) so an existing sandbox built before
+    // Depth Tiers was configurable (or with a different tier count)
+    // correctly rebuilds itself the next time Run is clicked — same
+    // auto-rebuild-on-mismatch path every other config dimension already
+    // uses.
+    return maxBin === config.racks && maxColumn === config.levels && maxDepth === config.depth && maxDepthTier === config.depthTiers;
   }
 
   // Builds the sandbox's Rack layout fresh — Aisles fixed at DEFAULT_AISLES,
@@ -305,21 +323,33 @@ export class SimulationService {
         for (let bin = 1; bin <= binsPerFlank; bin++) {
           const blockStr = String(bin).padStart(2, '0');
           for (let column = 1; column <= columnsPerBin; column++) {
-            for (let depth = 1; depth <= config.depth; depth++) {
-              rows.push({
-                warehouseId,
-                code: `GF-${aisleStr}-BLK${blockStr}${codeSuffix}-C${column}-D${depth}`,
-                zoneType: 'ACTUAL_STORAGE',
-                storageType: 'GROUND_FLOOR',
-                categoryId,
-                aisle: aisleStr,
-                block: blockStr,
-                rack: String(column), // reused as column number, same as the real generator
-                depth,
-                width: columnsPerBin, // descriptive, same value on every row of this bin
-                height: 1,
-                flankNumber,
-              });
+            // Depth Tiers (2026-09-07) — real client ask: "when we say 4
+            // deep, there should be 1 more 4 deep behind the first bin
+            // then the aisle." Each tier is its own separate bin, going
+            // further from the aisle — depth restarts at 1 per tier
+            // (matching the real generator's own Depth Tiers field
+            // exactly), and the code only gets a `-T{n}` segment when
+            // config.depthTiers > 1, so a plain single-tier sandbox stays
+            // byte-identical to before this existed.
+            for (let tier = 1; tier <= config.depthTiers; tier++) {
+              const tierSuffix = config.depthTiers > 1 ? `-T${tier}` : '';
+              for (let depth = 1; depth <= config.depth; depth++) {
+                rows.push({
+                  warehouseId,
+                  code: `GF-${aisleStr}-BLK${blockStr}${codeSuffix}-C${column}${tierSuffix}-D${depth}`,
+                  zoneType: 'ACTUAL_STORAGE',
+                  storageType: 'GROUND_FLOOR',
+                  categoryId,
+                  aisle: aisleStr,
+                  block: blockStr,
+                  rack: String(column), // reused as column number, same as the real generator
+                  depth,
+                  width: columnsPerBin, // descriptive, same value on every row of this bin
+                  height: 1,
+                  flankNumber,
+                  depthTier: config.depthTiers > 1 ? tier : undefined,
+                });
+              }
             }
           }
         }

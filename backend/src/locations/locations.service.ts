@@ -143,6 +143,22 @@ export class LocationsService {
       numField('depth', 'Depth (this pallet\'s position within its column)', true);
       numField('width', 'Width (how many columns the whole bin has)', true);
       fields.height = 1;
+      // Depth Tier (2026-09-07) — which stacked BIN, going away from the
+      // aisle, this row belongs to (1 = nearest the walkway). A real client
+      // ask: "when we say 4 deep, there should be 1 more 4 deep behind the
+      // first bin then the aisle" — genuinely separate, independently-coded
+      // bins chained in the depth direction on ONE side of one aisle, not
+      // (as this model previously only offered) the mirrored flank of a
+      // NEIGHBORING aisle standing in for that same "2 bins back to back"
+      // appearance. Optional — omitted (undefined, not defaulted to 1
+      // here) for the common single-tier case, so its own generated code
+      // stays byte-identical to before this existed (see buildCode's own
+      // `f.depthTier ? ... : null`).
+      if (data.depthTier !== undefined && data.depthTier !== null && data.depthTier !== '') {
+        const tier = Number(data.depthTier);
+        if (!Number.isInteger(tier) || tier <= 0) errors.push('Depth Tier must be a positive whole number.');
+        else fields.depthTier = tier;
+      }
     } else if (storageType === 'STILLAGE') {
       const stack = data.stack ? String(data.stack).trim() : '';
       if (!stack) errors.push('Stack is required for Stillage storage.');
@@ -175,8 +191,13 @@ export class LocationsService {
       // comment on this storageType), so the code needs to carry column
       // (`rack`, reused) and position-within-column (`depth`) to stay
       // unique per row, same reasoning Rack's own `-D{n}` suffix already
-      // has for a multi-deep lane.
-      return ['GF', f.aisle, f.block ? `BLK${f.block}${suffix}` : null, f.rack ? `C${f.rack}` : null, f.depth ? `D${f.depth}` : null].filter(Boolean).join('-');
+      // has for a multi-deep lane. `-T{n}` (2026-09-07) only appears when a
+      // row genuinely has a depthTier set (omitted for the common
+      // single-tier case) — see buildLocationFields' own comment on
+      // Depth Tier for why.
+      return ['GF', f.aisle, f.block ? `BLK${f.block}${suffix}` : null, f.rack ? `C${f.rack}` : null, f.depthTier ? `T${f.depthTier}` : null, f.depth ? `D${f.depth}` : null]
+        .filter(Boolean)
+        .join('-');
     }
     if (storageType === 'STILLAGE') {
       return ['ST', f.aisle, f.stack].filter(Boolean).join('-');
@@ -486,12 +507,26 @@ export class LocationsService {
       if (!Number.isInteger(depthNum) || depthNum <= 0) {
         throw new BadRequestException(['Depth (positions per column) must be a positive whole number.']);
       }
+      // Depth Tiers (2026-09-07, optional, default 1) — how many bins are
+      // stacked back-to-back in the depth direction on each side, before
+      // reaching the aisle. Each tier is a genuinely separate bin — its own
+      // depth numbering restarts at 1, matching the real client-confirmed
+      // picture ("Bin A depth 1-4, then Bin B depth 1-4 AGAIN, its own
+      // block code") — not a continuation to depth 5-8 of one bin. See
+      // buildLocationFields'/buildCode's own comments on Depth Tier.
+      const depthTiersInput = data.depthTiers;
+      const depthTiersNum = depthTiersInput === undefined || depthTiersInput === null || String(depthTiersInput).trim() === '' ? 1 : Number(depthTiersInput);
+      if (!Number.isInteger(depthTiersNum) || depthTiersNum <= 0) {
+        throw new BadRequestException(['Depth Tiers (how many bins stack back-to-back on one side) must be a positive whole number.']);
+      }
       const blockRanges = [data.blockRange, data.blockRange2].filter((r) => r !== undefined && r !== null && String(r).trim() !== '');
       rows = [];
       const pushBinRows = (block: string | undefined, isSecondary?: boolean) => {
         for (let column = 1; column <= widthNum; column++) {
-          for (let depth = 1; depth <= depthNum; depth++) {
-            rows.push({ block, rack: String(column), depth, width: widthNum, isSecondary });
+          for (let tier = 1; tier <= depthTiersNum; tier++) {
+            for (let depth = 1; depth <= depthNum; depth++) {
+              rows.push({ block, rack: String(column), depth, width: widthNum, isSecondary, depthTier: depthTiersNum > 1 ? tier : undefined });
+            }
           }
         }
       };

@@ -165,10 +165,18 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
         // grouping (both already reuse the exact same `rack`/`depth`
         // fields, see schema.prisma) is what actually produces a real grid
         // across many rows, not a forced Rack-ism.
-        const depthKey = (r: Location) => (r.depth != null ? String(r.depth) : '1');
+        // depthTier (2026-09-07 — "when we say 4 deep, there should be 1
+        // more 4 deep behind the first bin then the aisle") — a real bin
+        // can now be followed by MORE bins stacked back-to-back going
+        // further from the aisle, each restarting its own depth at 1. The
+        // key combines tier+depth (zero-padded, tier-major) so every real
+        // position still lands at its own, correctly-ordered X offset —
+        // depth 1 of tier 2 is a different real position from depth 1 of
+        // tier 1, plain depth alone would collide them at the same offset.
+        const depthKey = (r: Location) => `${String(r.depthTier ?? 1).padStart(4, '0')}~${String(r.depth ?? 1).padStart(4, '0')}`;
         const depths = uniqSorted(atPos.map(depthKey));
-        depths.forEach((d, depthIndex) => {
-          const atDepth = atPos.filter((r) => depthKey(r) === d);
+        depths.forEach((dKey, depthIndex) => {
+          const atDepth = atPos.filter((r) => depthKey(r) === dKey);
           const x = sign * (WALKWAY_HALF_WIDTH + GROUND_UNIT / 2 + depthIndex * GROUND_UNIT);
           const y = GROUND_UNIT / 2;
           atDepth.forEach((row) => {
@@ -269,14 +277,19 @@ function LocationBox({ box, isSelected, onSelect, color }: { box: BoxSpec; isSel
 type BinOutlineSpec = { key: string; x: number; y: number; z: number; w: number; h: number; d: number };
 
 // Groups every Ground/Floor box in one aisle's render back into its real
-// BIN (block) — now that columns render flush against each other with no
-// gap between them (2026-09-06/07 fixes), one bin's own boundary is no
-// longer visually obvious on its own, since it isn't set apart from its
-// neighbor bins until a periodic cross-aisle happens to land there. A real
-// client ask (2026-09-07): "in ground storage, just highlight each bin (
-// just give a border)." Grouped by `(flankNumber, block)`, not `block`
-// alone — a mirrored layout can genuinely reuse the same block number on
-// both flanks, and those are two physically distinct bins, not one.
+// BIN (block + depthTier) — now that columns render flush against each
+// other with no gap between them (2026-09-06/07 fixes), one bin's own
+// boundary is no longer visually obvious on its own, since it isn't set
+// apart from its neighbor bins until a periodic cross-aisle happens to
+// land there. A real client ask (2026-09-07): "in ground storage, just
+// highlight each bin (just give a border)." Grouped by `(flankNumber,
+// block, depthTier)`, not `block` alone — a mirrored layout can genuinely
+// reuse the same block number on both flanks (two physically distinct
+// bins, not one), and a bin can now be followed by MORE bins stacked
+// back-to-back in the depth direction (`Location.depthTier`, same day,
+// same client conversation — "there should be 1 more 4 deep behind the
+// first bin") — each tier is its own separate bin, needing its own
+// separate outline too, not one outline spanning the whole stack.
 // Rack/Stillage are untouched — the ask was Ground-specific, and a Rack
 // bay already reads as its own distinct unit (one box per depth position,
 // no multi-column grouping to make legible the way a Ground bin needs).
@@ -284,7 +297,7 @@ function computeGroundBinOutlines(boxes: BoxSpec[]): BinOutlineSpec[] {
   const groups = new Map<string, BoxSpec[]>();
   for (const box of boxes) {
     if (box.location.storageType !== 'GROUND_FLOOR' || box.location.block == null) continue;
-    const key = `${box.location.flankNumber ?? 'x'}~${box.location.block}`;
+    const key = `${box.location.flankNumber ?? 'x'}~${box.location.block}~${box.location.depthTier ?? 1}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(box);
   }

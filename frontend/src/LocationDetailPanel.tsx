@@ -49,7 +49,16 @@ export function DetailPanel({ location, occupancy, onClose }: { location: Locati
           <p style={{ margin: '4px 0' }}><strong>Depth position:</strong> {location.depth ?? 1}</p>
         </>
       ) : (
-        <p style={{ margin: '4px 0' }}><strong>Dimensions (D×W×H):</strong> {location.depth ?? 1}×{location.width ?? 1}×{location.height ?? 1}</p>
+        <>
+          <p style={{ margin: '4px 0' }}><strong>Dimensions (D×W×H):</strong> {location.depth ?? 1}×{location.width ?? 1}×{location.height ?? 1}</p>
+          {/* Depth Tier (2026-09-07) — only shown once it's actually in
+              play (a plain single-tier bin, the common case, stays exactly
+              as it read before this field existed) — which stacked bin,
+              going away from the aisle, this one is. */}
+          {location.storageType === 'GROUND_FLOOR' && (location.depthTier ?? 1) > 1 && (
+            <p style={{ margin: '4px 0' }}><strong>Depth Tier:</strong> {location.depthTier} (stacked back-to-back from the aisle)</p>
+          )}
+        </>
       )}
       <p style={{ margin: '4px 0' }}><strong>Status:</strong> {location.isActive ? 'Active' : 'Inactive'}</p>
       <hr style={{ margin: '8px 0', border: 'none', borderTop: '1px solid #eee' }} />

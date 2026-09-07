@@ -75,6 +75,14 @@ import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 //   ideal, we need to align separately." Unifying with Rack's own per-bay
 //   row grouping is what actually produces a real grid (many rows × several
 //   depth-boxes each), not another attempt at stretching one box.
+// - A Ground row's own depth-boxes can span more than one BIN, stacked
+//   back-to-back going away from the aisle (`Location.depthTier`,
+//   2026-09-07) — a real client ask: "when we say 4 deep, there should be
+//   1 more 4 deep behind the first bin then the aisle." Each tier is a
+//   genuinely separate bin (its own `depth` numbering restarts at 1, its
+//   own code segment), not a continuation to a deeper single bin — the
+//   depth-box sort key combines tier+depth so every real position still
+//   gets its own box, in the correct aisle-outward order.
 // - Zone Type coloring is deliberately not built yet (parked for later).
 
 const CELL_W = 110;
@@ -230,18 +238,32 @@ function buildCell(posVal: string, rows: Location[]): Cell {
     // looks like 1x4" — neither a stretched box nor text-only dimensions
     // ever actually looked like two real spatial axes, only genuinely
     // separate boxes on both axes do).
-    const depthKey = (r: Location) => (r.depth != null ? String(r.depth) : '1');
+    // depthTier (2026-09-07 — "when we say 4 deep, there should be 1 more 4
+    // deep behind the first bin then the aisle") — a real bin can now be
+    // followed by MORE bins stacked back-to-back going away from the
+    // aisle, each restarting its own depth at 1. The sort/grouping key
+    // combines tier+depth (zero-padded so it sorts tier-major, depth-minor
+    // — a plain numeric depth alone would collide across tiers, since
+    // depth 1 of tier 2 is a totally different real position from depth 1
+    // of tier 1) so every real position still gets its own box, in the
+    // correct aisle-outward order, exactly like a single-tier bin already
+    // did.
+    const depthTierOf = (r: Location) => r.depthTier ?? 1;
+    const depthKey = (r: Location) => `${String(depthTierOf(r)).padStart(4, '0')}~${String(r.depth ?? 1).padStart(4, '0')}`;
     const depths = uniqSorted(rows.map(depthKey));
+    const hasTiers = rows.some((r) => depthTierOf(r) > 1);
     const block = rows[0].block;
     const column = rows[0].rack;
-    const boxes: Box[] = depths.map((d) => {
-      const atDepth = rows.filter((r) => depthKey(r) === d);
+    const boxes: Box[] = depths.map((dKey) => {
+      const atDepth = rows.filter((r) => depthKey(r) === dKey);
+      const tier = depthTierOf(atDepth[0]);
+      const d = atDepth[0].depth ?? 1;
       // Short label — "B01-C3" — since there's no established "Rack Name"
       // equivalent for Ground (buildRackName() deliberately falls back to
       // the raw `code` for non-Rack types); block+column is the identity
       // that matters at a glance here, matching the code's own shorthand.
       const lines = [`B${block}-C${column}`];
-      if (depths.length > 1) lines.push(`D${d}`);
+      if (depths.length > 1) lines.push(hasTiers ? `T${tier}-D${d}` : `D${d}`);
       const category = atDepth[0].category?.name;
       if (category) lines.push(category);
       return { key: atDepth[0].id, lines, hasInactive: atDepth.some((r) => !r.isActive), width: CELL_W, storageType };
