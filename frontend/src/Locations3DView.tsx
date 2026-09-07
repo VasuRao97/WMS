@@ -377,7 +377,20 @@ function computeFocus(aislesToFit: AisleLayout[]): { camPos: [number, number, nu
 // fights a user who manually orbits/pans afterward. Lives inside <Canvas>
 // (useFrame only works there) as its own component purely for that reason;
 // it renders nothing.
-function CameraRig({ camPos, target, controlsRef }: { camPos: [number, number, number]; target: [number, number, number]; controlsRef: React.RefObject<any> }) {
+function CameraRig({
+  camPos,
+  target,
+  controlsRef,
+  resetSignal,
+}: {
+  camPos: [number, number, number];
+  target: [number, number, number];
+  controlsRef: React.RefObject<any>;
+  // Bumped by the "Reset View" button — see its own comment at the call
+  // site for why this needs to be a separate trigger from the camPos/target
+  // key check just below, not folded into it.
+  resetSignal: number;
+}) {
   // `focusRef` is written fresh on every render (a plain assignment, not an
   // effect) so `useFrame`'s callback — registered once, called every frame
   // by R3F's own render loop, independent of React's render cycle — always
@@ -394,9 +407,11 @@ function CameraRig({ camPos, target, controlsRef }: { camPos: [number, number, n
   focusRef.current = { camPos, target };
   const animating = useRef(true);
   const prevKey = useRef('');
+  const prevReset = useRef(resetSignal);
   const key = `${camPos.join(',')}|${target.join(',')}`;
-  if (key !== prevKey.current) {
+  if (key !== prevKey.current || resetSignal !== prevReset.current) {
     prevKey.current = key;
+    prevReset.current = resetSignal;
     animating.current = true;
   }
 
@@ -470,6 +485,16 @@ function Locations3DView({
   // Called unconditionally, alongside the other hooks above — the empty-
   // state early return below must never skip a hook call between renders.
   const controlsRef = useRef<any>(null);
+  // "Reset View" (2026-09-07 — "whats with this camera, not very user
+  // friendly"): a plain incrementing nonce, not a boolean, since clicking
+  // Reset twice in a row with nothing else changing in between still needs
+  // to register as a fresh request each time. CameraRig's own re-animate
+  // check already keys off whether `camPos`/`target` CHANGED — which they
+  // won't here, since checked aisles aren't changing, only the user's own
+  // manual orbit/zoom/pan drifted away from that same framing — so this
+  // nonce is threaded through as a second, independent trigger alongside
+  // that key check.
+  const [resetSignal, setResetSignal] = useState(0);
 
   const layouts = useMemo(
     () => buildWarehouseLayout(locations, rackBaysPerCrossAisle ?? null, groundBinsPerCrossAisle ?? null),
@@ -558,8 +583,15 @@ function Locations3DView({
       </div>
 
       <div style={{ position: 'relative', border: '1px solid #ddd', borderRadius: 8, height: 520 }}>
+        <button
+          type="button"
+          onClick={() => setResetSignal((n) => n + 1)}
+          style={{ position: 'absolute', top: 12, left: 12, zIndex: 1, padding: '5px 10px', fontSize: 12, background: '#fff', border: '1px solid #ccc', borderRadius: 4, cursor: 'pointer' }}
+        >
+          Reset View
+        </button>
         <Canvas camera={{ position: focus.camPos, fov: 50 }} onPointerMissed={() => setSelected(null)}>
-          <CameraRig camPos={focus.camPos} target={focus.target} controlsRef={controlsRef} />
+          <CameraRig camPos={focus.camPos} target={focus.target} controlsRef={controlsRef} resetSignal={resetSignal} />
           <ambientLight intensity={0.7} />
           <directionalLight position={[10, 15, 10]} intensity={0.8} />
           {/* Solid floor beneath the grid lines — without this the "ground"
@@ -588,8 +620,15 @@ function Locations3DView({
           )}
           {/* No `target` prop here — CameraRig above owns the target
               imperatively (smoothly nudging it every frame), a static prop
-              here would fight that. */}
-          <OrbitControls ref={controlsRef} makeDefault />
+              here would fight that. Damping (2026-09-07 — "whats with this
+              camera, not very user friendly") only smooths USER-driven
+              orbit/zoom/pan (an inertial glide instead of stopping dead the
+              instant the mouse is released) — it doesn't touch CameraRig's
+              own direct `target`/camera-position writes above, which apply
+              immediately either way, so the two systems don't fight each
+              other. drei's OrbitControls already calls `.update()` every
+              frame regardless, which damping needs to actually animate. */}
+          <OrbitControls ref={controlsRef} makeDefault enableDamping dampingFactor={0.12} />
         </Canvas>
         <p style={{ position: 'absolute', bottom: 8, left: 12, fontSize: 11, color: '#888', margin: 0 }}>
           Drag to orbit, scroll to zoom, right-drag to pan. Click an aisle block (or check it above) to see its bins; click a bin for details.
