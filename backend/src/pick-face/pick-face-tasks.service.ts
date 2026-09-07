@@ -97,12 +97,12 @@ export class PickFaceTasksService {
     const task = trip.task as any;
     const trimmed = locationCode != null ? String(locationCode).trim().toUpperCase() : '';
     const scannedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
-    const rackName = buildRackName(scannedLocation as any);
+    const rackName = buildRackName(scannedLocation);
     const matches = !!scannedLocation && (scannedLocation.code.toUpperCase() === trimmed || (rackName != null && rackName.toUpperCase() === trimmed));
     if (!matches) {
       throw new BadRequestException(`Wrong location — this must be placed at the assigned bin, not "${trimmed}".`);
     }
-    const targetLocation = scannedLocation!;
+    const targetLocation = scannedLocation;
 
     return this.prisma.$transaction(async (tx) => {
       const updatedTrip = await tx.pickFaceTrip.update({

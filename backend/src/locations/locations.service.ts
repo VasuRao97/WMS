@@ -654,7 +654,7 @@ export class LocationsService {
         await this.prisma.location.create({
           data: {
             warehouse: { connect: { id: prepared.warehouseId } },
-            code: prepared.code!,
+            code: prepared.code,
             zone: row.zone ? String(row.zone).trim() : undefined,
             zoneType: prepared.zoneType as any,
             storageType: prepared.storageType!,

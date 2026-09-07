@@ -890,7 +890,7 @@ export class GateEntriesService {
         const maxWeightKg = Number(maxTonnage) * 1000;
         if (invoiceWeightKg > maxWeightKg) {
           errors.push(
-            `This vehicle is OVERWEIGHT — invoice weight ${invoiceWeightKg} kg exceeds "${existing.vehicle.vehicleNumber}"'s registered max capacity of ${maxWeightKg} kg (${maxTonnage} Ton). Gate Out is blocked.`,
+            `This vehicle is OVERWEIGHT — invoice weight ${invoiceWeightKg} kg exceeds "${existing.vehicle.vehicleNumber}"'s registered max capacity of ${maxWeightKg} kg (${Number(maxTonnage)} Ton). Gate Out is blocked.`,
           );
         }
       }

@@ -1203,7 +1203,7 @@ export class PutawayTasksService {
     // raw code, so whatever's displayed must be exactly what completes
     // the trip when typed/scanned back.
     const assignedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
-    const assignedRackName = buildRackName(assignedLocation as any);
+    const assignedRackName = buildRackName(assignedLocation);
     const matchesAssigned = !!assignedLocation && (assignedLocation.code.toUpperCase() === trimmed || (assignedRackName != null && assignedRackName.toUpperCase() === trimmed));
 
     let targetLocation = assignedLocation;
@@ -1453,7 +1453,7 @@ export class PutawayTasksService {
 
     return {
       priorityTask: priorityTask
-        ? { skuCode: priorityTask.sku.code, locationCode: displayCode(priorityTask.fromLocation as any), waitingSince: priorityTask.createdAt }
+        ? { skuCode: priorityTask.sku.code, locationCode: displayCode(priorityTask.fromLocation), waitingSince: priorityTask.createdAt }
         : null,
       recommendedOperator: recommendedOperator ? { id: recommendedOperator.id, name: recommendedOperator.name, freeSince: recommendedOperator.effectiveRankTime } : null,
     };

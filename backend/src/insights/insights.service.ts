@@ -89,7 +89,7 @@ export class InsightsService {
 
       const lanes = new Map<string, typeof locations>();
       for (const loc of locations) {
-        const key = laneKeyOf(loc as any);
+        const key = laneKeyOf(loc);
         if (!lanes.has(key)) lanes.set(key, []);
         lanes.get(key)!.push(loc);
       }
