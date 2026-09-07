@@ -4602,6 +4602,49 @@ no visible gap, while the real boundary between two different blocks (`BLK01`'s 
 `BLK02`'s first column) shows the normal gap — exactly the intended "aisle only between real bins"
 pattern. `tsc -b` clean. Throwaway company cleaned up afterward.
 
+**Immediate follow-up, same day: not every bin needs its own aisle either.** The client's own direct
+next ask, right after seeing the flush-column fix live: "we dont need aisle after every 4x4 bin
+also also, lets keep a entry in company toggle for both racks and ground but keep default in both
+as 10, ie after 10 bins you give an aisle." A real warehouse doesn't need a walking cross-aisle
+between every single Rack bay or Ground bin either — only periodically (fire code/equipment
+access), the same real pattern a long rack run or floor-storage row gets in practice.
+
+**Schema**: `Company.rackBaysPerCrossAisle`/`groundBinsPerCrossAisle` (`Int?`, DB default 10 —
+every existing company gets it automatically, no backfill needed). Migration
+`20260907070000_company_cross_aisle_settings`.
+
+**Backend**: `CompaniesService.getSettings()`/`updateSettings()` extended with the two fields
+(`COMPANY_ADMIN`-only edit, same "blank clears to null" convention as the detention fields — null
+means "never insert one, always flush"). New `CompaniesService.getLayoutSettings()` +
+`GET /companies/layout-settings` — deliberately NOT `COMPANY_ADMIN`-gated like the rest of this
+module, since the two numbers are a rendering input for the Locations 3D Plan View that every
+`MASTER_DATA_READ_ROLES` tier can view, not just the tier that can edit them; keeping the real
+settings endpoint admin-only (it also carries the ERP API key and detention costs) while adding a
+narrow, broadly-readable sibling endpoint rather than loosening the existing one.
+
+**Frontend**: `Locations3DView.tsx`'s `buildBoxesForAisle()` replaces the previous fix's flat "same
+block = flush, anything else = full gap" rule with a `binsSinceAisle` counter per flank — a Ground
+column staying within the same block still always counts as zero (never a boundary, per the
+earlier fix); crossing into a genuinely NEW bin (a new Rack bay, a new Ground block, or a Stillage
+stack) counts as one boundary, and only inserts the real `POSITION_SPACING` aisle gap once the
+count reaches the company's configured threshold — otherwise it's flush too, same as a same-block
+Ground column. `LocationsPage.tsx`/`SimulationPage.tsx` both fetch `/companies/layout-settings`
+once on mount and pass the two values down as props (both default to 10 via the component's own
+prop defaults while the fetch hasn't resolved yet — `undefined` deliberately distinct from a real
+persisted `null`, so a company that explicitly cleared a value never gets silently upgraded back to
+10 mid-load). `CompanySettingsPage.tsx` gained a new "Locations Plan View" section with the two
+number inputs, inside the same big settings form as everything else on that page.
+
+Verified: `tsc --noEmit`(backend)/`tsc -b`(frontend) clean. Live end-to-end (throwaway company):
+confirmed a fresh company reads `10`/`10` by default with no settings ever touched; confirmed via
+the actual Company Settings form that changing and saving the two fields persists across a full
+page reload (read from the live DOM input values, not just in-memory state); confirmed via direct
+numeric instrumentation of the real rendering code (not just a screenshot, which struggled to show
+the effect clearly at this scale) that a 6-bay Rack aisle with the threshold set to 3 produces the
+exact expected z sequence — flush (`z=1.1`), flush (`z=2.2`), a real aisle jump (`z=4.4`), flush
+(`z=5.5`), flush (`z=6.6`) — landing the cross-aisle exactly between position 3 and 4, matching
+"after N bins you give an aisle" precisely. Throwaway company cleaned up afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
