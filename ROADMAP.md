@@ -2,11 +2,24 @@
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
 is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-06, next session: **the
+what to pick up next. Updated as priorities shift — last updated 2026-09-07, next session: **the
 FMS×ABC combined-classification study** (see "Immediate candidates" below) — the client's own
-stated next topic once Ground/Floor Putaway was fully aligned. Most recently, same day: the client
-saw the Ground box-width-scaling fix live and correctly pushed back — "how is this 4x4? looks like
-1x4... dont keep your rack as ideal, we need to align separately." **Ground/Floor's Plan View was
+stated next topic once Ground/Floor Putaway was fully aligned (this Plan View/camera/depth-model
+detour ran long, but is now fully closed out). Most recently: **Ground/Floor bins can now stack
+back-to-back in the depth direction, on ONE side of an aisle** — "when we say 4 deep, there should
+be 1 more 4 deep behind the first bin then the aisle... but we need it in one side of the aisle."
+A genuine new physical-model capability (`Location.depthTier`), not a rendering fix — investigated
+the existing cross-aisle back-to-back pattern first (proved it with real numbers before concluding
+anything), then built the real thing once the client's own correction made clear that wasn't what
+was wanted. See CLAUDE.md's "Ground/Floor: multiple bins stacked back-to-back in the depth
+direction" section for the full detail. Before that, same day: the client asked "whats with this
+camera, not very user friendly" — added smooth damping + a Reset View button to the 3D Plan View
+(zoom/rotation limits, preset angles, click-to-center all flagged as further options, not built
+this pass). Before that, same day: "in ground storage, just highligh each bin (just give a
+border)" — each Ground bin now gets its own bold outline in 3D, distinct from each individual
+position's thin cell border. Before that, same day: the client saw the Ground box-width-scaling fix
+live and correctly pushed back — "how is this 4x4? looks like 1x4... dont keep your rack as ideal,
+we need to align separately." **Ground/Floor's Plan View was
 properly rebuilt as a result**: each COLUMN now renders as its own row (exactly like a Rack bay
 already does — not a shortcut, but the real physical equivalence Ground's own schema was built
 around, since `Location.rack` is deliberately reused as the column number sharing the same LIFO

@@ -4684,6 +4684,59 @@ warnings/errors from either change. Throwaway company cleaned up afterward. **St
 built this pass**: zoom/rotation limits, preset view angles, click-to-center a bin — flagged as
 real options if the camera still isn't comfortable enough, not decided against.
 
+### Ground/Floor: multiple bins stacked back-to-back in the depth direction (2026-09-07)
+A genuine new physical-model capability, not a rendering fix — a real, direct client correction
+after discussing the existing back-to-back structure. The client's own worked example: "when we
+say 4 deep, there should be 1 more 4 deep behind the first bin then the aisle right? ... i dont see
+that in ground." Investigated first rather than assumed: computed the actual geometry from real
+generated data and confirmed a "2 bins, 4 deep each, back-to-back" pattern DID already exist —
+but only ACROSS two neighboring aisles' mirrored flanks (`AISLE_GAP`, a thin seam between Aisle N's
+primary flank and Aisle N+1's secondary flank — proved with real numbers: gap = 10.0 − 9.6 = 0.4,
+exactly `AISLE_GAP`). The client's follow-up correction: "but we need it in one side of the aisle"
+— that pattern needs to exist on ONE flank alone, independent of any neighboring aisle. Confirmed
+concretely before building anything: on one flank, going away from the walkway, Bin A (depth 1-4)
+should be immediately followed by Bin B (depth 1-4 AGAIN, its own separate block/code) — 8 real
+positions on that one side.
+
+**Schema**: `Location.depthTier` (`Int?`, default 1) — which stacked bin, going away from the
+aisle, a Ground/Floor row belongs to. Optional/omitted for the common single-tier case so nothing
+about existing data or already-generated codes changes. Migration
+`20260907080000_location_ground_depth_tier`.
+
+**Backend** (`LocationsService`): `buildLocationFields`'s `GROUND_FLOOR` branch accepts an optional
+per-row `depthTier`; `generate()`'s `pushBinRows()` gained a new `depthTiers` loop (nested inside
+column, outside depth) — each tier restarts `depth` at 1, matching the confirmed picture exactly
+(NOT a continuation to depth 5-8 of one bigger bin). `buildCode()` gained a `-T{n}` code segment,
+only when `depthTiers > 1` — a plain single-tier generation stays byte-identical to before this
+existed. New optional generator input `depthTiers` (validated as a positive whole number when
+given). **Simulation sandbox** (`SimulationService`/`Controller`) got the identical dial —
+`SandboxLayoutConfig.depthTiers` (default 1, capped at `MAX_DEPTH_TIERS = 4`), threaded through
+`buildGroundLayout()`, `groundLayoutMatches()` (so an existing sandbox correctly rebuilds when Depth
+Tiers changes — same auto-rebuild-on-mismatch pattern every other config dimension already uses),
+and the run/`ensureSandbox` request shape.
+
+**Frontend**: `LocationsPlanView.tsx` (2D) and `Locations3DView.tsx` (3D) both changed their Ground
+depth-ordering key from plain `depth` to a tier+depth composite (zero-padded, tier-major) — depth 1
+of tier 2 is a genuinely different real position from depth 1 of tier 1, a plain-depth key would
+collide them at the same offset. Box labels show `T{n}-D{d}` instead of just `D{d}` once tiers are
+actually in play (a plain single-tier bin's label is completely unchanged). `computeGroundBinOutlines()`
+(the per-bin border feature from earlier the same day) now groups by `(flankNumber, block,
+depthTier)` instead of `(flankNumber, block)` — each tier gets its own separate outline, not one
+spanning the whole stack. `LocationDetailPanel.tsx` gained a "Depth Tier" line, shown only when it's
+actually `> 1`. `LocationsPage.tsx`'s manual generator and `SimulationPage.tsx`'s config UI both
+gained a "Depth Tiers" input, Ground-only.
+
+Verified two ways. Backend: a throwaway warehouse with width=2/depth=4/depthTiers=2 produced exactly
+16 rows with the exact expected codes (`...-C1-T1-D1`..`D4`, `...-C1-T2-D1`..`D4`, etc.), and a
+control generation with no `depthTiers` produced byte-identical codes to before this existed. Live
+end-to-end (throwaway warehouse, width=3/depth=4/depthTiers=2): confirmed via the real rendered UI
+that 2D shows one continuous row of 8 boxes per column reading `T1-D1`..`D4` then `T2-D1`..`D4`,
+flush; confirmed 3D renders the same structure with a visible bin-outline seam exactly at the T1/T2
+boundary; confirmed clicking the last Tier-1 box vs. the first Tier-2 box resolves to
+`GF-1-BLK01-C3-T1-D4` and `GF-1-BLK01-C3-T2-D1` respectively, with the detail panel correctly
+showing "Depth Tier: 2" only for the tier-2 box. `tsc --noEmit`(backend)/`tsc -b`(frontend) both
+clean. Throwaway company cleaned up afterward.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
