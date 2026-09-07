@@ -39,6 +39,8 @@ type Settings = {
   abcClassBPercent?: number | string;
   abcClassCPercent?: number | string;
   abcAssessmentWindowMonths?: number | string;
+  rackBaysPerCrossAisle?: number | string | null;
+  groundBinsPerCrossAisle?: number | string | null;
 };
 
 // Aging Methodology (2026-08-29) is warehouse-scoped, not company-scoped —
@@ -103,6 +105,15 @@ function CompanySettingsPage() {
   const [abcClassBPercent, setAbcClassBPercent] = useState('15');
   const [abcClassCPercent, setAbcClassCPercent] = useState('10');
   const [abcAssessmentWindowMonths, setAbcAssessmentWindowMonths] = useState('3');
+  // 3D Plan View cross-aisle spacing (2026-09-07) — "we dont need aisle
+  // after every 4x4 bin also... lets keep a entry in company toggle for
+  // both racks and ground but keep default in both as 10." Blank clears to
+  // null server-side ("never insert one, always flush"), same convention
+  // as the detention fields — not the "no unconfigured state" shape
+  // putawayAssignmentGraceMinutes uses, since a real off-switch is wanted
+  // here.
+  const [rackBaysPerCrossAisle, setRackBaysPerCrossAisle] = useState('10');
+  const [groundBinsPerCrossAisle, setGroundBinsPerCrossAisle] = useState('10');
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [keyError, setKeyError] = useState('');
@@ -170,6 +181,14 @@ function CompanySettingsPage() {
         setAbcClassBPercent(data.abcClassBPercent != null ? String(data.abcClassBPercent) : '15');
         setAbcClassCPercent(data.abcClassCPercent != null ? String(data.abcClassCPercent) : '10');
         setAbcAssessmentWindowMonths(data.abcAssessmentWindowMonths != null ? String(data.abcAssessmentWindowMonths) : '3');
+        // Blank (not a fallback number) genuinely means null here — unlike
+        // the ABC percentages above (no real "unconfigured" state, always
+        // a number), these two DO have one: a company that explicitly
+        // cleared it wants "never insert a cross-aisle," which has to read
+        // back as blank, not silently show the placeholder 10 as if it
+        // were still saved.
+        setRackBaysPerCrossAisle(data.rackBaysPerCrossAisle != null ? String(data.rackBaysPerCrossAisle) : '');
+        setGroundBinsPerCrossAisle(data.groundBinsPerCrossAisle != null ? String(data.groundBinsPerCrossAisle) : '');
       });
     fetch('http://localhost:3000/warehouses', { headers: authHeaders() })
       .then((res) => (res.status === 401 ? null : res.json()))
@@ -385,6 +404,8 @@ function CompanySettingsPage() {
         abcClassBPercent,
         abcClassCPercent,
         abcAssessmentWindowMonths,
+        rackBaysPerCrossAisle: rackBaysPerCrossAisle === '' ? null : rackBaysPerCrossAisle,
+        groundBinsPerCrossAisle: groundBinsPerCrossAisle === '' ? null : groundBinsPerCrossAisle,
       }),
     });
     const data = await res.json();
@@ -724,6 +745,36 @@ function CompanySettingsPage() {
               SKU into a real 4th class, D (dead stock).
             </p>
             <input value={abcAssessmentWindowMonths} onChange={(e) => setAbcAssessmentWindowMonths(e.target.value)} style={{ width: 100, padding: 6 }} />
+          </div>
+
+          <h3 style={{ marginTop: 0 }}>Locations Plan View</h3>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>3D Cross-Aisle Spacing</label>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#888' }}>
+              A real cross-aisle isn't needed after every single bay/bin — only periodically. Bays/bins are packed
+              flush against each other in the 3D view until this many have been placed, then a real aisle appears.
+              Leave blank to never insert one.
+            </p>
+            <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+              <span style={{ fontSize: 12 }}>
+                Rack bays:{' '}
+                <input
+                  value={rackBaysPerCrossAisle}
+                  onChange={(e) => setRackBaysPerCrossAisle(e.target.value)}
+                  placeholder="10"
+                  style={{ width: 60, padding: 6 }}
+                />
+              </span>
+              <span style={{ fontSize: 12 }}>
+                Ground bins:{' '}
+                <input
+                  value={groundBinsPerCrossAisle}
+                  onChange={(e) => setGroundBinsPerCrossAisle(e.target.value)}
+                  placeholder="10"
+                  style={{ width: 60, padding: 6 }}
+                />
+              </span>
+            </div>
           </div>
 
           {error && <p style={{ color: 'crimson' }}>{error}</p>}

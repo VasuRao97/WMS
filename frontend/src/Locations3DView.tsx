@@ -82,7 +82,7 @@ type BoxSpec = { key: string; location: Location; x: number; y: number; z: numbe
 // aisle's OWN centerline (0) — the caller shifts every box by the aisle's
 // global offset afterward, so this function never needs to know where
 // other aisles sit.
-function buildBoxesForAisle(rows: Location[]): BoxSpec[] {
+function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | null, groundBinsPerCrossAisle: number | null): BoxSpec[] {
   const distinctFlanks = Array.from(new Set(rows.map((l) => l.flankNumber).filter((f): f is number => f != null))).sort((a, b) => a - b);
   const [primaryFlank, secondaryFlank] = distinctFlanks;
   const primaryLocs = rows.filter((l) => l.flankNumber == null || l.flankNumber === primaryFlank);
@@ -92,24 +92,49 @@ function buildBoxesForAisle(rows: Location[]): BoxSpec[] {
 
   const place = (locs: Location[], sign: 1 | -1) => {
     const positions = uniqSorted(locs.map(posOf));
-    // z accumulates rather than a flat `posIndex * POSITION_SPACING` — real
-    // client catch (2026-09-07, right after the per-column grid fix
-    // shipped): "why do we have aisle left after each pallet column?"
-    // POSITION_SPACING was tuned for genuinely separate structures (one
-    // Rack bay's own frame gap, one Stillage stack apart from the next) —
-    // fine there, wrong applied between two COLUMNS of the SAME Ground bin,
-    // which sit physically flush against each other with no walking gap at
-    // all. Only Ground gets the flush treatment, and only between columns
-    // that share the same `block` — a genuinely new block (or a Rack bay,
-    // or a Stillage stack) still gets the normal POSITION_SPACING gap.
+    // z accumulates rather than a flat `posIndex * POSITION_SPACING` — a
+    // real, direct client correction in two rounds (2026-09-07). Round 1:
+    // "why do we have aisle left after each pallet column?" — Ground
+    // columns of the SAME bin now sit flush (no gap at all). Round 2, right
+    // after: "we dont need aisle after every 4x4 bin also... after 10 bins
+    // you give an aisle" — a real cross-aisle (walking access through a
+    // long rack run or floor-storage row) only needs to appear
+    // PERIODICALLY, not after every single bay/bin. `binsSinceAisle` counts
+    // real bin BOUNDARIES crossed since the last cross-aisle (or the start
+    // of this flank) — a Ground column staying within the SAME block never
+    // counts as a boundary at all (still always flush, per round 1); moving
+    // to a genuinely new bin (a new Rack bay, a new Ground block, or a
+    // Stillage stack) counts as one, and only inserts the real
+    // POSITION_SPACING gap once that count reaches the company's own
+    // configured threshold (`rackBaysPerCrossAisle`/
+    // `groundBinsPerCrossAisle`, `Company` fields, default 10, editable on
+    // Company Settings) — otherwise it's flush too, same as a same-block
+    // Ground column. A null threshold means "never insert one" (all
+    // flush). Threshold applies to Stillage using the Rack number too — the
+    // client's ask named only "racks and ground," Stillage stays a minor,
+    // still-deferred type elsewhere in this file, not worth a third dial.
     let z = 0;
     let prevGroundBlock: string | undefined;
+    let binsSinceAisle = 0;
     positions.forEach((posVal, posIndex) => {
       const atPos = locs.filter((r) => posOf(r) === posVal);
       const storageType = atPos[0].storageType;
       const groundBlock = storageType === 'GROUND_FLOOR' ? (atPos[0].block ?? undefined) : undefined;
+      const sameGroundBlockAsPrev = storageType === 'GROUND_FLOOR' && groundBlock != null && groundBlock === prevGroundBlock;
+      const flushStep = storageType === 'GROUND_FLOOR' ? GROUND_UNIT : RACK_BOX_SIZE;
       if (posIndex > 0) {
-        z += storageType === 'GROUND_FLOOR' && groundBlock != null && groundBlock === prevGroundBlock ? GROUND_UNIT : POSITION_SPACING;
+        if (sameGroundBlockAsPrev) {
+          z += flushStep;
+        } else {
+          binsSinceAisle += 1;
+          const threshold = storageType === 'GROUND_FLOOR' ? groundBinsPerCrossAisle : rackBaysPerCrossAisle;
+          if (threshold != null && binsSinceAisle >= threshold) {
+            z += POSITION_SPACING;
+            binsSinceAisle = 0;
+          } else {
+            z += flushStep;
+          }
+        }
       }
       prevGroundBlock = groundBlock;
 
@@ -182,7 +207,7 @@ type AisleLayout = { aisleCode: string; boxes: BoxSpec[]; footprint: Footprint; 
 // by side along a global X axis — Aisle 1 (lowest code) first, each next
 // aisle's footprint starting where the previous one's ends plus AISLE_GAP.
 // A location with no Aisle set is skipped entirely, same as 2D.
-function buildWarehouseLayout(locations: Location[]): AisleLayout[] {
+function buildWarehouseLayout(locations: Location[], rackBaysPerCrossAisle: number | null, groundBinsPerCrossAisle: number | null): AisleLayout[] {
   const withAisle = locations.filter((l) => l.aisle);
   const byAisle = new Map<string, Location[]>();
   for (const l of withAisle) {
@@ -196,7 +221,7 @@ function buildWarehouseLayout(locations: Location[]): AisleLayout[] {
   let cursorX = 0;
   for (const aisleCode of aisleCodes) {
     const rows = byAisle.get(aisleCode)!;
-    const localBoxes = buildBoxesForAisle(rows);
+    const localBoxes = buildBoxesForAisle(rows, rackBaysPerCrossAisle, groundBinsPerCrossAisle);
     if (localBoxes.length === 0) continue;
 
     const minX = Math.min(...localBoxes.map((b) => b.x - b.w / 2));
@@ -373,14 +398,32 @@ function CameraRig({ camPos, target, controlsRef }: { camPos: [number, number, n
   return null;
 }
 
-function Locations3DView({ locations, colorMode, occupancy }: { locations: Location[]; colorMode: ColorMode; occupancy: Occupancy[] }) {
+function Locations3DView({
+  locations,
+  colorMode,
+  occupancy,
+  rackBaysPerCrossAisle = 10,
+  groundBinsPerCrossAisle = 10,
+}: {
+  locations: Location[];
+  colorMode: ColorMode;
+  occupancy: Occupancy[];
+  // Company-configured 3D cross-aisle spacing (2026-09-07) — optional so
+  // callers that don't fetch Company Settings (or haven't loaded them yet)
+  // still get a sensible default, matching the schema's own DB default.
+  rackBaysPerCrossAisle?: number | null;
+  groundBinsPerCrossAisle?: number | null;
+}) {
   const [selected, setSelected] = useState<Location | null>(null);
   const [selectedAisles, setSelectedAisles] = useState<Set<string>>(new Set());
   // Called unconditionally, alongside the other hooks above — the empty-
   // state early return below must never skip a hook call between renders.
   const controlsRef = useRef<any>(null);
 
-  const layouts = useMemo(() => buildWarehouseLayout(locations), [locations]);
+  const layouts = useMemo(
+    () => buildWarehouseLayout(locations, rackBaysPerCrossAisle ?? null, groundBinsPerCrossAisle ?? null),
+    [locations, rackBaysPerCrossAisle, groundBinsPerCrossAisle],
+  );
 
   if (layouts.length === 0) {
     return <p style={{ marginTop: 16, color: '#666' }}>No locations with an Aisle set in this warehouse — nothing to render in 3D.</p>;

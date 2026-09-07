@@ -91,6 +91,15 @@ function SimulationPage() {
   const [planMode, setPlanMode] = useState<'2d' | '3d'>('2d');
   const [colorMode, setColorMode] = useState<ColorMode>('class'); // Class, not Category, is the informative default here — every sim SKU shares the one auto-generated "Simulation" category, so Category mode would just paint everything one color.
   const [resetting, setResetting] = useState(false);
+  // 3D cross-aisle spacing (2026-09-07) — same real company-configured
+  // rendering input LocationsPage.tsx fetches, via the same broadly-
+  // readable endpoint (not the COMPANY_ADMIN-only /companies/settings).
+  // The sandbox is a fake warehouse, but the viewer's real company setting
+  // still applies — same convention as every other real Company Settings
+  // field this feature already reuses unchanged (occupancy overlay colors,
+  // etc.).
+  const [rackBaysPerCrossAisle, setRackBaysPerCrossAisle] = useState<number | null | undefined>(undefined);
+  const [groundBinsPerCrossAisle, setGroundBinsPerCrossAisle] = useState<number | null | undefined>(undefined);
 
   // Plain fetch-and-set, no `loading` flag — reused after Run, which can
   // rebuild the sandbox's layout server-side (different Location rows
@@ -122,6 +131,13 @@ function SimulationPage() {
 
   useEffect(() => {
     loadSandbox();
+    fetch('http://localhost:3000/companies/layout-settings', { headers: authHeaders() })
+      .then((res) => (res.status === 401 || res.status === 403 ? null : res.json()))
+      .then((data) => {
+        if (!data) return;
+        setRackBaysPerCrossAisle(data.rackBaysPerCrossAisle ?? null);
+        setGroundBinsPerCrossAisle(data.groundBinsPerCrossAisle ?? null);
+      });
   }, []);
 
   const handleRun = async () => {
@@ -298,7 +314,13 @@ function SimulationPage() {
             <LocationsPlanView locations={locations} warehouseLabel="Simulation Sandbox" colorMode={colorMode} occupancy={occupancy} />
           ) : (
             <Suspense fallback={<p style={{ marginTop: 16, color: '#666' }}>Loading 3D view…</p>}>
-              <Locations3DView locations={locations} colorMode={colorMode} occupancy={occupancy} />
+              <Locations3DView
+                locations={locations}
+                colorMode={colorMode}
+                occupancy={occupancy}
+                rackBaysPerCrossAisle={rackBaysPerCrossAisle}
+                groundBinsPerCrossAisle={groundBinsPerCrossAisle}
+              />
             </Suspense>
           )}
         </>

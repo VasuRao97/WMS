@@ -246,6 +246,21 @@ model Company {
   // own number, but a real per-company dial like every other assessment
   // input on this page.
   abcAssessmentWindowMonths Int @default(3)
+
+  // 3D Plan View rendering preference only — a real warehouse doesn't need
+  // a walking cross-aisle between every single Rack bay or Ground bin, only
+  // periodically (fire code/equipment access), same real-world pattern as
+  // a long rack run or floor-storage row getting a cross-aisle every so
+  // many bays. Confirmed 2026-09-07: "we dont need aisle after every 4x4
+  // bin also... lets keep a entry in company toggle for both racks and
+  // ground but keep default in both as 10." Two independent dials since
+  // Rack bays and Ground bins are visually/physically different units, not
+  // one shared number. Nullable — null means "never insert one, always
+  // flush" (an explicit opt-out, not the default). Purely a rendering
+  // input for Locations3DView.tsx/SimulationPage.tsx — nothing in Putaway's
+  // actual bin-suggestion logic reads either field.
+  rackBaysPerCrossAisle   Int? @default(10)
+  groundBinsPerCrossAisle Int? @default(10)
 }
 
 enum AgingGranularity {

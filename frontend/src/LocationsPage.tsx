@@ -227,6 +227,18 @@ function LocationsPage() {
   const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class'>('structural');
   const [occupancy, setOccupancy] = useState<import('./occupancyColors').Occupancy[]>([]);
   const [occupancyLoading, setOccupancyLoading] = useState(false);
+  // 3D cross-aisle spacing (2026-09-07) — a rendering input for
+  // Locations3DView, fetched once via the broadly-readable
+  // /companies/layout-settings endpoint (not the COMPANY_ADMIN-only
+  // /companies/settings one — every role that can view this page at all
+  // should see its own company's real spacing, only editing it is
+  // admin-gated, on Company Settings). `undefined` (not yet loaded) is
+  // deliberately distinct from `null` (loaded, company explicitly cleared
+  // it to "never insert one") — only `undefined` should fall through to
+  // Locations3DView's own default-10 props; a real `null` must NOT get
+  // silently upgraded to 10 while this is loading.
+  const [rackBaysPerCrossAisle, setRackBaysPerCrossAisle] = useState<number | null | undefined>(undefined);
+  const [groundBinsPerCrossAisle, setGroundBinsPerCrossAisle] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
     if (colorMode === 'structural' || !planWarehouseId) return;
@@ -262,10 +274,21 @@ function LocationsPage() {
       .then((data) => setCategories(Array.isArray(data) ? data : []));
   };
 
+  const loadLayoutSettings = () => {
+    fetch('http://localhost:3000/companies/layout-settings', { headers: authHeaders() })
+      .then((res) => (res.status === 401 || res.status === 403 ? null : res.json()))
+      .then((data) => {
+        if (!data) return;
+        setRackBaysPerCrossAisle(data.rackBaysPerCrossAisle ?? null);
+        setGroundBinsPerCrossAisle(data.groundBinsPerCrossAisle ?? null);
+      });
+  };
+
   useEffect(() => {
     loadLocations();
     loadWarehouses();
     loadCategories();
+    loadLayoutSettings();
   }, []);
 
   const resetForm = () => {
@@ -999,7 +1022,13 @@ function LocationsPage() {
             />
           ) : (
             <Suspense fallback={<p style={{ marginTop: 16, color: '#666' }}>Loading 3D view…</p>}>
-              <Locations3DView locations={locations.filter((l) => l.warehouseId === planWarehouseId)} colorMode={colorMode} occupancy={occupancy} />
+              <Locations3DView
+                locations={locations.filter((l) => l.warehouseId === planWarehouseId)}
+                colorMode={colorMode}
+                occupancy={occupancy}
+                rackBaysPerCrossAisle={rackBaysPerCrossAisle}
+                groundBinsPerCrossAisle={groundBinsPerCrossAisle}
+              />
             </Suspense>
           )}
         </div>

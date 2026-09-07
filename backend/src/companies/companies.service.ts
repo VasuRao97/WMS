@@ -44,7 +44,24 @@ export class CompaniesService {
         abcClassBPercent: true,
         abcClassCPercent: true,
         abcAssessmentWindowMonths: true,
+        rackBaysPerCrossAisle: true,
+        groundBinsPerCrossAisle: true,
       },
+    });
+  }
+
+  // Read-only, deliberately NOT COMPANY_ADMIN-gated like the rest of this
+  // module (2026-09-07) — the two cross-aisle numbers are a rendering input
+  // for the Locations 3D Plan View, which every MASTER_DATA_READ_ROLES tier
+  // (not just Company Admin) can view; only editing them stays admin-only.
+  // A separate, narrow endpoint rather than loosening the real settings one
+  // — that one carries the ERP API key and detention costs, genuinely
+  // admin-only data, so it can't just get a broader role gate.
+  async getLayoutSettings(user: any) {
+    const companyId = this.requireCompany(user);
+    return this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { rackBaysPerCrossAisle: true, groundBinsPerCrossAisle: true },
     });
   }
 
@@ -108,6 +125,20 @@ export class CompaniesService {
       const n = Number(data.abcAssessmentWindowMonths);
       if (!Number.isInteger(n) || n <= 0) errors.push('ABC Assessment Window (months) must be a positive whole number.');
     }
+    // 3D Plan View cross-aisle spacing (2026-09-07) — null is a legitimate
+    // explicit clear ("never insert a periodic aisle, always flush"), same
+    // convention as the detention fields; anything else must be a real
+    // positive whole number of bins/bays.
+    for (const [field, label] of [
+      ['rackBaysPerCrossAisle', 'Rack Bays per Aisle'],
+      ['groundBinsPerCrossAisle', 'Ground Bins per Aisle'],
+    ] as const) {
+      const v = data[field];
+      if (v !== undefined && v !== null && v !== '') {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n <= 0) errors.push(`${label} must be a positive whole number when given.`);
+      }
+    }
     if (errors.length > 0) throw new BadRequestException(errors);
 
     return this.prisma.company.update({
@@ -150,6 +181,8 @@ export class CompaniesService {
         abcClassBPercent: data.abcClassBPercent !== undefined && data.abcClassBPercent !== null && data.abcClassBPercent !== '' ? Number(data.abcClassBPercent) : undefined,
         abcClassCPercent: data.abcClassCPercent !== undefined && data.abcClassCPercent !== null && data.abcClassCPercent !== '' ? Number(data.abcClassCPercent) : undefined,
         abcAssessmentWindowMonths: data.abcAssessmentWindowMonths !== undefined && data.abcAssessmentWindowMonths !== null && data.abcAssessmentWindowMonths !== '' ? Number(data.abcAssessmentWindowMonths) : undefined,
+        rackBaysPerCrossAisle: data.rackBaysPerCrossAisle === undefined ? undefined : data.rackBaysPerCrossAisle === null || data.rackBaysPerCrossAisle === '' ? null : Number(data.rackBaysPerCrossAisle),
+        groundBinsPerCrossAisle: data.groundBinsPerCrossAisle === undefined ? undefined : data.groundBinsPerCrossAisle === null || data.groundBinsPerCrossAisle === '' ? null : Number(data.groundBinsPerCrossAisle),
       },
       select: {
         id: true,
@@ -170,6 +203,8 @@ export class CompaniesService {
         abcClassBPercent: true,
         abcClassCPercent: true,
         abcAssessmentWindowMonths: true,
+        rackBaysPerCrossAisle: true,
+        groundBinsPerCrossAisle: true,
       },
     });
   }
