@@ -314,7 +314,11 @@ fixed value" for a bare input, which is exactly correct there (a bare "05" for R
 rack 05," not "racks 1 through 5").
 
 **"Second range" fields generate both flanks of one aisle in a single call** (follow-up feature,
-2026-08-24) — real warehouses put racking or floor blocks on *both* sides of one aisle, and both
+2026-08-24 — **the frontend generator form's own Second Range/Mirror checkbox for this was removed
+2026-09-07, see "Locations generator UI simplification: no mirror anywhere, single-sided always"
+further down; the backend fields described in this section remain fully supported for a direct API
+caller, just no longer offered on the manual form**) — real warehouses put racking or floor blocks
+on *both* sides of one aisle, and both
 sides always share the same Depth (confirmed, not left open). `rackRange2` / `blockRange2` are
 optional companions to the primary `rackRange` / `blockRange`: give one and the generator builds
 both sides under the *same* Aisle, same Depth/Width/Height, in one call — e.g. Rack Range 01-10 +
@@ -4736,6 +4740,50 @@ boundary; confirmed clicking the last Tier-1 box vs. the first Tier-2 box resolv
 `GF-1-BLK01-C3-T1-D4` and `GF-1-BLK01-C3-T2-D1` respectively, with the detail panel correctly
 showing "Depth Tier: 2" only for the tier-2 box. `tsc --noEmit`(backend)/`tsc -b`(frontend) both
 clean. Throwaway company cleaned up afterward.
+
+### Locations generator UI simplification: no mirror anywhere, single-sided always (2026-09-07, same day, immediate correction)
+A real, direct correction to the manual generator FORM built immediately above — a genuine
+misread of the client's own instruction, caught and fixed the same day. Seeing the Ground
+generator's "Second Block Range"/"Mirror same numbers"/"Depth Tiers" inputs, the client said "lets
+keep it simple, dont confuse people to mirror etc, second block range is confusing and keep the
+depth tier always fixed @ 2." First pass wrongly read this as "auto-mirror both sides always,
+removing the CHOICE but keeping the two-sided RESULT" — began wiring the payload to silently send
+`blockRange2 = blockRange` so a submission always built both flanks with no checkbox. **The
+client's immediate, explicit correction**: "NO! i mean, always build it on one side of aisle only
+with depth tier 2 always! no need to mirror it. for all types of storage, so that we can give an
+easy instructions to the team who is using it." The actual ask is the opposite of what got
+half-built — never two-sided automatically, always exactly ONE flank per call, for BOTH Rack and
+Ground (the original screenshot only showed Ground, but the same simplification applies to Rack's
+own pre-existing Second Rack Range/Mirror inputs too, which the client's "for all types of storage"
+made explicit).
+
+**The corrected shape, `LocationsPage.tsx`**: removed `genRackRange2`/`genMirrorRack` (Rack) and
+`genBlockRange2`/`genMirrorBlock`/`genDepthTiers` (Ground) state and JSX entirely — the Rack section
+is now just Rack Range/Level Range/Depth Range/Bin Range, the Ground section just Block
+Range/Width/Depth. The generate payload never sends `rackRange2` or `blockRange2` for any storage
+type; Ground's `depthTiers` is hardcoded to `2` in the payload (`genIsGround ? 2 : undefined`) —
+matching depth-tier stacking above, no user choice about it, so "keep the depth tier always fixed
+@ 2" landed correctly this time, just without the mirroring that came bundled with the first
+(wrong) reading. A genuinely double-sided real aisle is now a second, separate generator submission
+— same Aisle number, a different Rack/Block Range — not a checkbox to learn; both storage types'
+helper paragraphs were reworded to say exactly this. The backend's `generate()` still accepts
+`rackRange2`/`blockRange2`/`isSecondary` (untouched, unused by this form now) purely so a direct
+API caller isn't newly blocked by a frontend-only simplification. `SimulationPage.tsx` got the
+matching correction — its own Depth Tiers input/state was removed for the identical reason,
+`handleRun()`'s request body always sends `depthTiers: isGround ? 2 : undefined`.
+
+Verified via a throwaway-company API script, 6/6: a Rack generate call (no `rackRange2` sent)
+produced exactly one `flankNumber` across all 10 created rows; a Ground generate call (no
+`blockRange2` sent, `depthTiers: 2` implicit) produced exactly one `flankNumber` with both depth
+tiers 1 and 2 present, `-T{n}` code suffixes on every row, and the exact expected row count (8 = 2
+blocks × 1 width × 2 depth × 2 tiers). Then re-verified live through the actual rendered UI:
+confirmed the Rack section shows only Rack Range/Level Range/Depth Range (no Second Rack Range, no
+Mirror checkbox anywhere in the page text); confirmed the Ground section shows only Block
+Range/Width/Depth (no Second Block Range, no Mirror checkbox, no Depth Tiers input); submitted a
+real Ground generation through the real form (Aisle 9, Block Range 01-02, Width 1, Depth 2) and
+confirmed via a direct API check that it produced exactly one `flankNumber` with both depth tiers
+present — the real UI submission matches the corrected design, not just the source code. `tsc -b`
+clean on both files. All throwaway companies cleaned up afterward.
 
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
