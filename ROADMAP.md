@@ -1,159 +1,81 @@
 # WMS Roadmap
 
 A forward-looking plan — what's shipped, what's next, and what's deliberately parked. `CLAUDE.md`
-is the detailed build log (what got built, how, and why); this is the plan-level view for deciding
-what to pick up next. Updated as priorities shift — last updated 2026-09-07, next session: **the
-FMS×ABC combined-classification study** (see "Immediate candidates" below) — the client's own
-stated next topic once Ground/Floor Putaway was fully aligned (this Plan View/camera/depth-model
-detour ran long, but is now fully closed out). Most recently: **the Locations manual generator form
-had its Second Range/Mirror UI removed entirely, for both Rack and Ground** — a same-day correction
-to the depth-tier feature just below: the client's first "keep it simple" note got misread as
-"auto-mirror both sides always," then explicitly corrected — "always build it on one side of aisle
-only... no need to mirror it. for all types of storage, so that we can give an easy instructions to
-the team who is using it." Every generate() call from the form now always builds exactly one flank;
-a genuinely double-sided real aisle just means running the form again with the same Aisle and a
-different Rack/Block Range. See CLAUDE.md's "Locations generator UI simplification: no mirror
-anywhere, single-sided always" section for full detail. Before that, same day: **Ground/Floor bins
-can now stack
-back-to-back in the depth direction, on ONE side of an aisle** — "when we say 4 deep, there should
-be 1 more 4 deep behind the first bin then the aisle... but we need it in one side of the aisle."
-A genuine new physical-model capability (`Location.depthTier`), not a rendering fix — investigated
-the existing cross-aisle back-to-back pattern first (proved it with real numbers before concluding
-anything), then built the real thing once the client's own correction made clear that wasn't what
-was wanted. See CLAUDE.md's "Ground/Floor: multiple bins stacked back-to-back in the depth
-direction" section for the full detail. Before that, same day: the client asked "whats with this
-camera, not very user friendly" — added smooth damping + a Reset View button to the 3D Plan View
-(zoom/rotation limits, preset angles, click-to-center all flagged as further options, not built
-this pass). Before that, same day: "in ground storage, just highligh each bin (just give a
-border)" — each Ground bin now gets its own bold outline in 3D, distinct from each individual
-position's thin cell border. Before that, same day: the client saw the Ground box-width-scaling fix
-live and correctly pushed back — "how is this 4x4? looks like 1x4... dont keep your rack as ideal,
-we need to align separately." **Ground/Floor's Plan View was
-properly rebuilt as a result**: each COLUMN now renders as its own row (exactly like a Rack bay
-already does — not a shortcut, but the real physical equivalence Ground's own schema was built
-around, since `Location.rack` is deliberately reused as the column number sharing the same LIFO
-meaning `depth` already has with Rack), with Depth splitting into real side-by-side boxes within
-each row the same way Rack's own multi-deep lanes already do. A 4×4 bin now genuinely renders as a
-4-row×4-box grid (16 individually visible, individually clickable positions) in both 2D and 3D,
-instead of one stretched or width-scaled box. See CLAUDE.md's "Locations/Bins: a real flankNumber
-collision bug, Ground box size parity, and a hard guard rail" section (the same-day follow-up
-subsection) for the full detail. Before that, same day: a real client bug report ("generated ground
-storage locations in tnr8, can't find them") traced to SPR and Ground/Floor both being generated
-under Aisle "1" by mistake, which corrupted their flankNumbers — fixed the generator bug,
-**backfilled `TNR8`'s ~480 already-corrupted Ground rows to fresh, non-colliding flank numbers
-(client's explicit go-ahead)**, and — the client's own direct follow-up question, "should we say NO
-if someone tries to superimpose 2 storage types?" — added a real hard guard rail:
-`create()`/`generate()`/`bulkImport()`/`update()` now all refuse to write a Location into an Aisle a
-conflicting storage-type family already occupies (same Rack sub-types still freely mix, only a
-genuine cross-family clash like Rack vs. Ground/Floor is blocked), with existing rows whose Aisle
-isn't changing correctly grandfathered so this can't break `TNR8`'s own now-legitimate coexistence.
-Before that, same day: **the
-Putaway Simulation sandbox now supports Ground/Floor as a selectable storage type** — "can we have a
-simulator now for ground?" — closing the last gap in the sandbox's storage-type coverage
-(SPR/Drive-in/ASRS already worked). Investigating this surfaced and fixed two real, pre-existing
-Plan View bugs left over from the 2026-08-24 Ground rewrite (one row per real column×depth position,
-not one aggregate row per block) — a stale 2D box label reading one arbitrary row's own depth
-instead of the whole block's, and a genuine 3D overlapping-boxes bug (every position in one Ground
-block used to render stacked exactly on top of each other). Both fixes live in the shared Plan View
-components, so the real Locations page benefits too, not just Simulation. See CLAUDE.md's "Putaway
-Simulation" section (the Ground/Floor follow-up subsection) for the full build/verification detail.
-This closes out the Ground/Floor Putaway build entirely, simulator included. Earlier the same day:
-**Ground/Floor Putaway — real logic built and verified**, kept deliberately separate from Rack's own
-(`suggestRackBin()`/`suggestGroundBin()` are two independent methods, not one shared function with
-storageType branches — your own explicit ask mid-build: "keep all logic for different storage type
-separate, like ground is sep, rack is sep"). Picked ahead of Inventory and the FMS×ABC study on a
-real argument (Inventory's gap is a missing convenience since on-hand data is already derivable
-elsewhere; Ground/Floor's is a missing *capability* — `suggestBin()` returned `NEEDS_BIN`
-unconditionally for that storage type, no workaround, and the gap had been independently re-flagged
-three separate times before finally getting tackled). A full design conversation settled the
-physical model (a bin subdivides into single-file LIFO "columns," mechanically identical to a Rack
-lane just laid flat), a genuinely new column-lifecycle rule (closed to new putaway once picking
-starts on it, until fully empty — feeding the still-unbuilt reslotting engine), and per-class
-`respectsColumnBoundariesA/B/C/D` toggles (the client's own explicit ask — "give the flexibility to
-A B C D"). Also closed a real, unrelated gap discovered along the way: `WarehouseStorageType.
-maxSkusClassA/B/C` had been completely dead (no UI ever set it) since 2026-08-24 — now has a real
-Company Settings mini-editor covering BOTH Rack and Ground/Floor, the first UI either family has
-ever had for it. **Ground/Floor Putaway is now fully built end to end** — schema (`dd05b81a`), logic
-(`68c1edbd`), and the settings UI (`949ff4d9`) all shipped and verified the same day. Verified via a
-throwaway-company script (21/21) for the logic, catching and fixing one real bug along the way
-(free-mixing mode was checking "no stock of this SKU" instead of "no occupant at all," which would
-have let two SKUs collide on the same position), plus a full live-browser pass for the settings UI
-(warehouse + storage-type-row pickers, save, reload, direct API check — all confirmed persisting
-correctly). Full design and verification trail in the `wms-putaway-design` memory. **Next: the
-FMS×ABC combined-classification study**
-(candidate #2 below) — the client's own stated next topic, and Ground's own bin-selection logic is
-deliberately shipping with a placeholder pending that exact study. Before this, same day: a
-deliberate **hardening pass** (line-by-line correctness/performance review, not a new module) —
-`suggestBin()` rebuilt to avoid several full-map rescans on its hottest path, two real race
-conditions closed (Simulation's SKU pool, Pallet's scan-time load resolution), 9 missing DB indexes
-added across the tables that grow fastest, and the frontend bundle split so a login no longer
-downloads all 17 pages (plus Three.js) in one ~1.4MB chunk. See the git history / commit
-`e1744b7d` for the full detail — nothing to build further here, this was cleanup, not scope. Same
-day: a new to-do was raised, not yet designed — **combining ABC classification with a new FMS
-(Fast/Medium/Slow-moving) axis for exact material putaway logic** — added to the "Immediate
-candidates" list below and to the `wms-abc-velocity-design` memory. Just before the hardening pass,
-same day: **the "Rows 1-N"
-row-position summary is built** — closes a loose end from earlier the same session (Simulation's
-Plan View: "1 being the start and last number being the last"). Each flank's existing `R{n}` callout
-now has a second, smaller line under it counting positions the same way this view already pairs
-rows (by position, not raw stored number) — shows on the real Locations Plan View too, since it's
-the same shared component Simulation reuses. See CLAUDE.md's "Plan View: 'Rows 1-N' row-position
-summary" section. Just before that, same day: **dock-relative Putaway
-placement (Topic 2) is built and verified**, right after Topic 1 — a new `WarehouseDockZone` config
-(0-2 zones per warehouse, capturing which end of the aisle order sits near an Inbound/Outbound/Both
-dock) now drives `suggestBin()`'s placement of fast (A/B) vs. slow (C/D) movers, replacing today's
-arbitrary flank-number-only proxy the moment a warehouse configures it, with a proven fallback to
-the old behavior when it doesn't — live-verified to genuinely flip direction between a U-shape and
-I-shape configuration. Also wires Topic 1's computed `SkuWarehouseClass` into real placement
-decisions for the first time (overriding a stale manual/imported class). New Company Settings "Dock
-Configuration" mini-editor. See CLAUDE.md's "Dock-relative Putaway placement — Topic 2" section and
-the `wms-abc-velocity-design` memory for the full detail. Just before that, same day: **ABC velocity
-reassessment (Topic 1) built and verified** — a real monthly job re-derives each SKU's A/B/C/D class PER
-WAREHOUSE (not company-wide) from its own actual trailing dispatch quantity, replacing blind trust in
-a manually-typed/imported class. A new standalone "ABC Classification" nav page plus a Company Settings
-section (enable toggle, configurable A/B/C cutoffs, assessment window) round it out. See CLAUDE.md's "ABC
-velocity reassessment" section for the full detail. Earlier
-the same day: **Plan View backlog items 2 and 3 are done** — a per-company "Allow Putaway location override" toggle (Company Settings)
-lets an operator complete a trip at a different real, active bin instead of today's hard block, and
-any such mismatch now surfaces as a discrepancy — a `⚠` flag on the task queue row, plus a dedicated
-Supervisor+ "Discrepancies" list with a Mark Reviewed action. Only backlog items 1 (Yard spatial
-schema) and 4 (Docks/Staging visual) remain. See CLAUDE.md's "Putaway location override +
-discrepancy highlighting" section for the full build/verification detail. Earlier the same day: **a
-Putaway Simulation sandbox is now built and verified** — a dedicated sandbox warehouse running the real, unmodified
-`suggestBin()` algorithm against auto-generated synthetic SKUs, replayed as a speed-adjustable
-step-by-step animation through the existing 2D/3D Plan View. A tangent off the Plan View backlog
-below, not one of its numbered items. Caught and fixed a real race condition in the sandbox's lazy
-first-time setup along the way (see CLAUDE.md — `upsert`/`skipDuplicates` beat `findFirst`-then-
-`create` once two callers can race, and React StrictMode is a real source of that race in dev). Pick
-Face re-slotting simulation (the same sandbox idea applied to the other algorithm) is the deferred
-next phase. Previously, 2026-09-05: **3D's Plan View gained
-camera auto-focus** (backlog item 4) — checking an aisle now smoothly flies the camera to fit
-whichever aisle(s) are selected, back to the full warehouse when none are. Caught and fixed a real
-`useFrame` stale-closure bug along the way (see CLAUDE.md for the full story — a ref updated during
-render, not an effect, is the fix). Same day, earlier: **2D's Plan View gained a Level toggle**
-(backlog item 3) — narrows the view to exactly one real Level instead of the usual collapsed
-level-range box, by filtering which rows feed the existing box-builder (no new rendering path). Same
-day, earlier still: **2D's Plan View gained click-to-inspect** (backlog item 2, 3D
-already had it) — a shared `DetailPanel` component now used by both views. Same day, earlier still:
-**the Locations/Bins Plan View gained an occupancy overlay** — two new color modes, By Category and By A/B/C Class, both
-driven from real `StockMovement` data (a new `GET /locations/occupancy` endpoint), applied to both
-the 2D and 3D views alongside today's default storageType coloring. First item off a real "upgrade
-mode" backlog for the Plan View. Same day, earlier: **the Locations/Bins Plan View gained a real 3D
-mode** — a real WebGL camera via Three.js/React Three Fiber, showing the WHOLE warehouse by default
-as simplified per-aisle footprint blocks, with a checkbox "slicer" to swap one or more aisles into
-full per-bin detail in place (unselected aisles stay visible for spatial context), plus
-click-to-inspect — alongside the existing top-down 2D view. The first genuinely visual/3D feature
-and the first new rendering dependency in this codebase. 2026-09-02:
-**Putaway now has a
-real operator-assignment fairness layer** (live "who goes next" recommendation + Supervisor/Manager
-escalation, oldest-staged-stock priority signal) — **the real Analytics module has begun**
-(operator productivity at the Pallet level, split per operator, plus abandoned-claim flagging) —
-and **Drive-in bin suggestion now has its own strategy, split from SPR/ASRS** (whole-column absolute
-single-SKU, deepest-tier-first/bottom-up fill). See the session notes below. 2026-09-01: Pallet
-consolidation ("marrying" loose cases onto a pallet before
-Putaway) built and live-verified, from the closed design the 2026-08-31 session further down left
-ready. See CLAUDE.md's matching sections for full build detail and the `wms-putaway-design` memory
-for the complete design-to-build trail.
+is the detailed build log (what got built, how, and why); the dated `## Session note` sections
+below are this file's own reverse-chronological plan-level history. **This top block only ever
+holds a short current-state pointer — don't grow it into a run-on paragraph again** (it had
+ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
+full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
+
+**Last updated 2026-09-07.** Most recent work, same day: a correction to the Locations manual
+generator (single-sided always, no Mirror/Second-Range UI for either storage type), a real
+camera-zoom bug fix + genuine per-row bin numbering + a walkway/neighbor-overlap fix in the 3D Plan
+View, a backend lint-driven cleanup (a handful of genuinely unnecessary type assertions), and a
+cleanup of ~13 stray `ProductCategory` rows that had leaked into the client's own real dropdown
+from many past throwaway-test sessions (see CLAUDE.md's "Testing notes" for the standing convention
+this added, and `wms-category-pollution-incident` in memory for the full incident). See the
+2026-09-07 session note just below for detail on all of it.
+
+**Next session: the FMS×ABC combined-classification study** (see "Immediate candidates" below) —
+the client's own stated next topic once Ground/Floor Putaway was fully aligned. See the 2026-09-06
+session notes further down for that whole day's work (Ground/Floor Putaway logic + settings UI,
+the hardening/performance pass, ABC velocity Topic 1, dock-relative placement Topic 2, the
+"Rows 1-N" summary) — today's own session ran long on the 3D Plan View/camera/depth-model detour
+instead, now fully closed out.
+
+## Session note (2026-09-07 — Ground depth-tier stacking, generator simplification, 3D camera/numbering fixes, ProductCategory cleanup)
+
+**Ground/Floor bins can now stack back-to-back in the depth direction, on ONE side of an aisle** —
+"when we say 4 deep, there should be 1 more 4 deep behind the first bin then the aisle... but we
+need it in one side of the aisle." A genuine new physical-model capability (`Location.depthTier`),
+investigated against the existing cross-aisle back-to-back pattern first (proved correct with real
+numbers) before confirming this needed to be a new, different mechanism. See CLAUDE.md's
+"Ground/Floor: multiple bins stacked back-to-back in the depth direction" section.
+
+**The Locations manual generator form had its Second Range/Mirror UI removed entirely, for both
+Rack and Ground** — a same-day correction to the feature just above: a first pass misread "keep it
+simple" as "auto-mirror both sides always," then the client explicitly corrected it — "always build
+it on one side of aisle only... no need to mirror it. for all types of storage, so that we can give
+an easy instructions to the team who is using it." Every `generate()` call from the form now always
+builds exactly one flank; a genuinely double-sided aisle means running the form again with the same
+Aisle and a different Rack/Block Range. See CLAUDE.md's "Locations generator UI simplification: no
+mirror anywhere, single-sided always" section.
+
+**3D Plan View: a real camera-zoom bug fixed, plus genuine per-row bin numbering.** "camera is
+again buggy... i want bin numbering in this 3d! i dont know where is the start where is the end."
+`computeFocus()`'s old `span = Math.max(dx, dz, dy, 4)` meant checking one aisle vs. all of them
+produced the identical zoom level whenever row-depth (dz) dominated aisle-width (dx) — the ordinary
+case. Replaced with a real bounding-sphere fit so every axis genuinely contributes. Added a crisp
+(WebGL `<Text>`, not blurry DOM `<Html>`) number running 1..N down each detailed aisle's own row —
+then caught and fixed a second real bug the same day: the first version anchored numbers to an
+aisle's virtual "local x=0" origin, which for a single-sided aisle can sit before its own boxes
+even start, routinely landing INSIDE a neighboring aisle's real boxes once `AISLE_GAP` got small
+("how can aisle be in middle of bins?"). Fixed by anchoring to `footprint.x` — the center of that
+aisle's own already-placed box extent, which can never leave its own reserved space. See CLAUDE.md's
+"Locations generator UI simplification" and the two 3D-fix commits (`a27d9d1`, `ffc4206`) for detail.
+
+**`ProductCategory` global-pollution cleanup, plus a standing convention to stop it recurring.**
+The client spotted ~13 fake-looking categories in their own real dropdown ("what are these diff
+things, i havent added these") — traced to `ProductCategory` having no `companyId` (deliberately
+shared platform-wide), so throwaway test companies from roughly a dozen past sessions had each left
+a category behind, visible everywhere. Deleted 7 companies confirmed as automated test artifacts
+(fingerprinted by auto-generated emails/timestamps, not by name alone) plus their now-orphaned
+categories; for 2 more companies with real human logins that still used 6 of the fake category
+names, re-pointed just those specific Sku/WarehouseStorageType/Location rows to "Uncategorized"
+instead of touching anything else belonging to them. `GET /product-categories` now returns only
+"Uncategorized," verified live. CLAUDE.md's "Testing notes" section and the new
+`wms-category-pollution-incident` memory now carry the standing rule: any future throwaway-company
+cleanup must also delete its own `ProductCategory` rows (and check other no-`companyId` reference
+tables), not just the company.
+
+**Daily code-health pass**: a read-only `npx eslint` sweep on both sides (never `npm run lint` on
+this backend — it auto-fixes) filtered down to genuine findings past this codebase's own accepted
+noise (typed-`any`/no-DTO convention, prettier style, React Three Fiber's `useFrame`-ref pattern
+misread by newer `react-hooks` rules as a violation) — found and fixed 6 truly-unnecessary type
+assertions and one `Decimal`-in-template-string nit across 5 backend files, zero behavior change,
+`tsc` clean throughout. No dead code/unused-vars findings on either side.
+
+All of the above merged to `main` and pushed (`1ee0bdc6`, `66cf0daa`) — no outstanding branches.
 
 ## Session note (2026-09-06, same session — Plan View "Rows 1-N" row-position summary)
 Closes the loose end flagged at the end of the Topic 2 note below — the very first ask from earlier
@@ -796,7 +718,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). Still open: Ground/Stillage's own version of the multi-position logic, a cancel path, correcting an already-completed mis-putaway, ASRS's own bin-suggestion strategy, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), and Pick Face for Drive-in/ASRS/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). (2026-09-06) **Ground/Floor Putaway built end to end** — its own independent `suggestGroundBin()` (not shared with Rack's `suggestRackBin()`, a deliberate ask), a column-lifecycle rule feeding the still-unbuilt reslotting engine, per-class `respectsColumnBoundariesA/B/C/D` toggles, plus a real editor for the previously-dead `maxSkusClassA/B/C` field. Still open: **Stillage's own version of the multi-position logic** (the only storage type with none at all now), a cancel path, correcting an already-completed mis-putaway, ASRS's own bin-suggestion strategy, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), and Pick Face for Drive-in/ASRS/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started |
@@ -983,7 +905,8 @@ Pick one — these are the live options on the table, not a forced order:
    was waiting on are built. `ReslottingSuggestion`/`ReslottingSuggestionSource` schema has sat ready
    since Topic 1 — the actual detect-a-misplaced-SKU/suggest-a-target-bin algorithm and its daily job
    still need designing and building.
-2. **FMS classification combined with ABC, for exact material putaway** (2026-09-06, new) — "go in
+2. **FMS classification combined with ABC, for exact material putaway** (2026-09-06, new) — **your
+   own stated pick for the next session**. "go in
    depth for FMS model of inventory as well, looking at the combo of abc and fms we need to make a
    logic of exact material putaway." FMS (Fast/Medium/Slow-moving, ranked by movement *frequency*)
    is a different axis than ABC (ranked by dispatched quantity/value) — a combined ABC×FMS matrix is
@@ -1010,10 +933,10 @@ Pick one — these are the live options on the table, not a forced order:
    (wrong vehicle typed, never gated out) — today that needs a manual Gate Out to clear. Flagged,
    not designed.
 
-Also genuinely still open within Putaway itself, not a separate module: Ground/Stillage's own
-version of the multi-position bin logic (racked came first, on purpose), a cancel/exception path for
-a task that can't be completed, correcting an already-completed mis-putaway, and real queue-
-ordering/aging-based task prioritization.
+Also genuinely still open within Putaway itself, not a separate module: **Stillage's own** version
+of the multi-position bin logic (Rack and now Ground/Floor are both done — Stillage is the only
+storage type left with none), a cancel/exception path for a task that can't be completed, correcting
+an already-completed mis-putaway, and real queue-ordering/aging-based task prioritization.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 
