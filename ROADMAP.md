@@ -926,13 +926,44 @@ Pick one — these are the live options on the table, not a forced order:
    real open questions to raise first (what drives FMS, how many tiers, how the combined matrix
    actually changes `suggestBin()` beyond what ABC + dock-proximity already do).
 
-   > **Next-session kickoff prompt (paste this in first):**
-   > "Let's design the ABC×FMS combined classification logic for exact material putaway. I've had
-   > time to think about it since last session — here's what I want for [what drives FMS / how many
-   > tiers / how the combined matrix should change suggestBin()]. Let's discuss before any
-   > schema/code, same as we did for Topics 1 and 2." (Fill in your own thinking on the open
-   > questions above before pasting — if you haven't decided yet, just say so and we'll work through
-   > them together like the other topics.)
+   > **Next-session kickoff prompt — paste this in as-is to start:**
+   >
+   > I want to design the FMS × ABC combined classification logic for exact material Putaway.
+   >
+   > **Where this picks up from**: `SkuWarehouseClass` (Topic 1) already re-derives each SKU's
+   > A/B/C/D class per warehouse every month from real trailing dispatch *quantity*.
+   > `WarehouseDockZone` (Topic 2) already places A/B near the Outbound-facing end of a warehouse
+   > and C/D far from it. FMS is a genuinely different axis on top of both — Fast/Medium/Slow,
+   > ranked by movement *frequency* (how often a SKU moves), not by how much moves each time. A
+   > high-value SKU that moves rarely and a low-value SKU that moves constantly currently land in
+   > very different ABC classes, but neither is well served by today's single-axis placement rule.
+   >
+   > **Before any schema or code, let's discuss and settle these — same align-before-coding
+   > approach as Topics 1 and 2, don't design or build ahead of this conversation**:
+   > 1. What should actually drive the FMS signal? The cheap option is reusing the same
+   >    trailing-window dispatch data Topic 1 already tracks, just counting *movements/orders*
+   >    instead of *quantity* — no new data pipeline needed. Is that the right signal, or does FMS
+   >    need something else entirely (e.g. a different time window, a different event type)?
+   > 2. How many FMS tiers — F/M/S matching ABC's three-tier shape, or something coarser/finer?
+   > 3. How does the *combined* ABC×FMS matrix (e.g. AF/AM/AS through CF/CM/CS) actually change
+   >    `suggestBin()`'s placement decision, concretely, beyond what ABC + dock-proximity already
+   >    do today? Does FMS override ABC's outbound-proximity ranking, act as a secondary tiebreak
+   >    underneath it, or drive a genuinely different rule — e.g. preferring the shortest *total
+   >    travel distance over the SKU's lifetime* for something moved constantly, vs. pure one-time
+   >    proximity for something moved rarely but in bulk?
+   > 4. Is this also the moment to revisit `DockLocationDistance` (real measured meters, currently
+   >    schema-only with zero data-entry tooling) and Equipment loaded/unloaded speed fields — using
+   >    real distance/travel-time instead of the current flat Level-based proximity rule? "Exact
+   >    material putaway" is exactly the kind of precision that was always meant to eventually use
+   >    real distances, not just aisle-order proximity.
+   >
+   > I may already have my own answers to some of these by the time we talk — I'll say which ones
+   > up front. For anything I haven't decided, let's work through it together with a concrete
+   > worked example first, the same way we did for Topics 1 and 2, before touching `schema.prisma`.
+   >
+   > *(Full background: CLAUDE.md's "ABC velocity reassessment" and "Dock-relative Putaway
+   > placement" sections, and the `wms-abc-velocity-design` memory's "Flagged, not started: FMS
+   > classification combined with ABC" section.)*
 3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
    it. Even a read-only view would close a real, felt gap. Next in the stated module build order.
