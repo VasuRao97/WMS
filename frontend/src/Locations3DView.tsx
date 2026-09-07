@@ -225,7 +225,7 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
 }
 
 type Footprint = { x: number; y: number; z: number; w: number; h: number; d: number };
-type AisleLayout = { aisleCode: string; boxes: BoxSpec[]; footprint: Footprint; storageTypes: string[]; rowMarkers: RowMarker[]; walkwayX: number };
+type AisleLayout = { aisleCode: string; boxes: BoxSpec[]; footprint: Footprint; storageTypes: string[]; rowMarkers: RowMarker[] };
 
 // Groups every location by Aisle, computes each aisle's own box layout
 // independently (relative to its own centerline), then places aisles side
@@ -268,16 +268,7 @@ function buildWarehouseLayout(locations: Location[], rackBaysPerCrossAisle: numb
     };
     const storageTypes = Array.from(new Set(rows.map((r) => r.storageType)));
 
-    // The aisle's own walkway centerline (local x=0, before the +offsetX
-    // shift every box already got above) — NOT the same as footprint.x
-    // (the bounding-box center), now that a single-sided aisle (the
-    // default since 2026-09-07's generator simplification) has all its
-    // boxes on ONE side, pulling the bounding-box center off the actual
-    // walkway. Row-number markers anchor to this instead, so the "1..N"
-    // sequence always reads down the true aisle spine.
-    const walkwayX = offsetX;
-
-    layouts.push({ aisleCode, boxes: shiftedBoxes, footprint, storageTypes, rowMarkers, walkwayX });
+    layouts.push({ aisleCode, boxes: shiftedBoxes, footprint, storageTypes, rowMarkers });
     cursorX += width + AISLE_GAP;
   }
   return layouts;
@@ -417,18 +408,29 @@ function AisleDetailLabel({ layout }: { layout: AisleLayout }) {
 
 // Bin/row numbering (2026-09-07 — "i want bin numbering in this 3d! i dont
 // know where is the start where is the end") — one number per real row
-// position, down the aisle's own walkway centerline, matching the exact
-// same "position 1 nearest the corner, N farthest, paired by index not
-// raw stored number" convention LocationsPlanView.tsx's own "Rows 1-N"
-// summary already established for 2D. Floor-level (not floating above the
-// boxes, where it would collide with the Aisle-code label) so it reads
-// like a row of distance markers running down the aisle, visible from
-// either flank.
+// position, matching the exact same "position 1 nearest the corner, N
+// farthest, paired by index not raw stored number" convention
+// LocationsPlanView.tsx's own "Rows 1-N" summary already established for
+// 2D. Floats just above each row's own boxes, laterally centered on this
+// aisle's own bounding box (`footprint.x`) — a REAL correction, not a
+// styling choice (2026-09-07, caught live: "how can aisle be in middle of
+// bins?"): an earlier version anchored these to the aisle's "local x=0"
+// math origin, which for a single-sided aisle sits BEFORE its own boxes
+// even start — a purely virtual reference point that was never actually
+// reserved as empty space in `buildWarehouseLayout`'s own cursor
+// accounting. With `AISLE_GAP` now tiny (a real back-to-back seam, not a
+// walkway), that virtual point routinely landed INSIDE the PREVIOUS
+// aisle's real boxes, which used to be an invisible, harmless coordinate
+// overlap (nothing was ever drawn there) until this feature made it a
+// visible one. `footprint.x` is provably safe instead — it's the center
+// of THIS aisle's own already-shifted box extent, so it can never spill
+// into a neighbor no matter how tight `AISLE_GAP` gets.
 function RowNumberMarkers({ layout }: { layout: AisleLayout }) {
+  const { footprint } = layout;
   return (
     <>
       {layout.rowMarkers.map((marker) => (
-        <Label3D key={marker.z} position={[layout.walkwayX, 0.18, marker.z]} text={marker.label} fontSize={0.3} color="#9a3412" />
+        <Label3D key={marker.z} position={[footprint.x, footprint.y + footprint.h / 2 + 0.15, marker.z]} text={marker.label} fontSize={0.3} color="#9a3412" />
       ))}
     </>
   );
