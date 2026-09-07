@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber';
-import { OrbitControls, Edges, Grid, Html } from '@react-three/drei';
+import { OrbitControls, Edges, Grid, Billboard, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { RACK_STORAGE_TYPES, type Location } from './LocationsPage';
 import { STORAGE_TYPE_COLORS, DEFAULT_BOX_COLOR } from './LocationsPlanView';
@@ -72,6 +72,7 @@ const GROUND_UNIT = 0.9;
 const AISLE_GAP = 0.4;
 
 type BoxSpec = { key: string; location: Location; x: number; y: number; z: number; w: number; h: number; d: number };
+type RowMarker = { z: number; label: string };
 
 // Same flank-split / position-pairing / depth-splitting rules as
 // LocationsPlanView.tsx's buildLayout()/buildCell() — see that file's own
@@ -82,7 +83,7 @@ type BoxSpec = { key: string; location: Location; x: number; y: number; z: numbe
 // aisle's OWN centerline (0) — the caller shifts every box by the aisle's
 // global offset afterward, so this function never needs to know where
 // other aisles sit.
-function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | null, groundBinsPerCrossAisle: number | null): BoxSpec[] {
+function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | null, groundBinsPerCrossAisle: number | null): { boxes: BoxSpec[]; rowMarkers: RowMarker[] } {
   const distinctFlanks = Array.from(new Set(rows.map((l) => l.flankNumber).filter((f): f is number => f != null))).sort((a, b) => a - b);
   const [primaryFlank, secondaryFlank] = distinctFlanks;
   const primaryLocs = rows.filter((l) => l.flankNumber == null || l.flankNumber === primaryFlank);
@@ -90,8 +91,20 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
 
   const boxes: BoxSpec[] = [];
 
-  const place = (locs: Location[], sign: 1 | -1) => {
+  // One Z value per real row position (2026-09-07 — "I want bin numbering
+  // in this 3d! I dont know where is the start where is the end") —
+  // captured from whichever flank actually has rows (the primary/right
+  // flank when both exist, matching the same "primary is the canonical
+  // reference" convention `flankNumber` itself already established) so a
+  // single "Row 1..N" sequence can be labeled down the aisle's own
+  // centerline, the same position-by-INDEX pairing 2D's own "Rows 1-N"
+  // summary already uses — not the raw stored rack/block number, which a
+  // mirrored aisle can reuse on both flanks.
+  const rowZsByFlank: number[][] = [];
+
+  const place = (locs: Location[], sign: 1 | -1): number[] => {
     const positions = uniqSorted(locs.map(posOf));
+    const rowZs: number[] = [];
     // z accumulates rather than a flat `posIndex * POSITION_SPACING` — a
     // real, direct client correction in two rounds (2026-09-07). Round 1:
     // "why do we have aisle left after each pallet column?" — Ground
@@ -137,6 +150,7 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
         }
       }
       prevGroundBlock = groundBlock;
+      rowZs.push(z);
 
       if (RACK_STORAGE_TYPES.includes(storageType)) {
         const depthKey = (r: Location) => (r.depth != null ? String(r.depth) : '1');
@@ -200,15 +214,18 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
         });
       }
     });
+    return rowZs;
   };
 
-  place(primaryLocs, 1);
-  place(secondaryLocs, -1);
-  return boxes;
+  rowZsByFlank.push(place(primaryLocs, 1));
+  rowZsByFlank.push(place(secondaryLocs, -1));
+  const rowZs = rowZsByFlank.find((zs) => zs.length > 0) ?? [];
+  const rowMarkers: RowMarker[] = rowZs.map((z, i) => ({ z, label: String(i + 1) }));
+  return { boxes, rowMarkers };
 }
 
 type Footprint = { x: number; y: number; z: number; w: number; h: number; d: number };
-type AisleLayout = { aisleCode: string; boxes: BoxSpec[]; footprint: Footprint; storageTypes: string[] };
+type AisleLayout = { aisleCode: string; boxes: BoxSpec[]; footprint: Footprint; storageTypes: string[]; rowMarkers: RowMarker[] };
 
 // Groups every location by Aisle, computes each aisle's own box layout
 // independently (relative to its own centerline), then places aisles side
@@ -229,7 +246,7 @@ function buildWarehouseLayout(locations: Location[], rackBaysPerCrossAisle: numb
   let cursorX = 0;
   for (const aisleCode of aisleCodes) {
     const rows = byAisle.get(aisleCode)!;
-    const localBoxes = buildBoxesForAisle(rows, rackBaysPerCrossAisle, groundBinsPerCrossAisle);
+    const { boxes: localBoxes, rowMarkers } = buildBoxesForAisle(rows, rackBaysPerCrossAisle, groundBinsPerCrossAisle);
     if (localBoxes.length === 0) continue;
 
     const minX = Math.min(...localBoxes.map((b) => b.x - b.w / 2));
@@ -251,7 +268,7 @@ function buildWarehouseLayout(locations: Location[], rackBaysPerCrossAisle: numb
     };
     const storageTypes = Array.from(new Set(rows.map((r) => r.storageType)));
 
-    layouts.push({ aisleCode, boxes: shiftedBoxes, footprint, storageTypes });
+    layouts.push({ aisleCode, boxes: shiftedBoxes, footprint, storageTypes, rowMarkers });
     cursorX += width + AISLE_GAP;
   }
   return layouts;
@@ -330,12 +347,37 @@ function GroundBinOutline({ outline }: { outline: BinOutlineSpec }) {
   );
 }
 
+// A crisp, GPU-rendered label that always faces the camera (2026-09-07 —
+// "lets not keep anything blurry, lets show all properly from start").
+// Replaces every drei <Html> text label this view used to have: <Html>
+// renders a real DOM element positioned via a 3D CSS transform matrix,
+// which the browser anti-aliases poorly — especially visible while the
+// camera is moving/zooming (exactly what a viewer is doing right after
+// checking an aisle into detail). <Text> is real WebGL text
+// (troika-three-text, already a transitive dependency of drei's own
+// <Text>) with none of that DOM-in-3D artifacting, and <Billboard>
+// keeps it facing the camera from any orbit angle the same way the old
+// screen-space Html label always effectively did.
+function Label3D({ position, text, fontSize = 0.34, color = '#1f2937' }: { position: [number, number, number]; text: string; fontSize?: number; color?: string }) {
+  return (
+    <Billboard position={position}>
+      <mesh>
+        <planeGeometry args={[text.length * fontSize * 0.62 + fontSize * 0.6, fontSize * 1.6]} />
+        <meshBasicMaterial color="#ffffff" opacity={0.85} transparent depthTest={false} />
+      </mesh>
+      <Text fontSize={fontSize} color={color} anchorX="center" anchorY="middle" renderOrder={1}>
+        {text}
+      </Text>
+    </Billboard>
+  );
+}
+
 // The simplified stand-in for an unselected aisle — one translucent box
 // spanning its whole real footprint (not individual bins), labeled with its
-// Aisle code via drei's <Html> (cheap here — at most a handful of these
-// exist per warehouse, unlike the hundreds of real bins it stands in for).
-// Clicking it is a second way to select the same aisle the checkbox slicer
-// does — either path leads to the same full-detail render.
+// Aisle code (cheap here — at most a handful of these exist per warehouse,
+// unlike the hundreds of real bins it stands in for). Clicking it is a
+// second way to select the same aisle the checkbox slicer does — either
+// path leads to the same full-detail render.
 function AisleFootprint({ layout, onSelect }: { layout: AisleLayout; onSelect: (aisleCode: string) => void }) {
   const color = STORAGE_TYPE_COLORS[layout.storageTypes[0]] || DEFAULT_BOX_COLOR;
   const { footprint } = layout;
@@ -344,10 +386,53 @@ function AisleFootprint({ layout, onSelect }: { layout: AisleLayout; onSelect: (
       <boxGeometry args={[footprint.w, footprint.h, footprint.d]} />
       <meshStandardMaterial color={color.fill} transparent opacity={0.35} />
       <Edges color={color.stroke} />
-      <Html center position={[0, footprint.h / 2 + 0.4, 0]} style={{ pointerEvents: 'none', fontSize: 12, fontFamily: 'sans-serif', background: '#fff', padding: '2px 6px', borderRadius: 4, border: '1px solid #ccc', whiteSpace: 'nowrap' }}>
-        Aisle {layout.aisleCode}
-      </Html>
+      <Label3D position={[0, footprint.h / 2 + 0.4, 0]} text={`Aisle ${layout.aisleCode}`} fontSize={0.4} />
     </mesh>
+  );
+}
+
+// The Aisle-code label an unselected aisle gets for free from
+// `AisleFootprint` above — once an aisle is checked into full per-bin
+// detail, that footprint mesh stops rendering entirely, so the aisle's own
+// identity disappeared from the scene with nothing replacing it
+// (2026-09-07 — "can we name the row, aisle? i dont see any numbering,"
+// caught looking at a drilled-in aisle in 3D). This renders the identical
+// "Aisle {code}" label, positioned the same way (just above the tallest
+// box in the aisle, using the same `footprint` bounding box every layout
+// already carries) but with no mesh/click handler around it — the detail
+// view's own boxes already handle clicks.
+function AisleDetailLabel({ layout }: { layout: AisleLayout }) {
+  const { footprint } = layout;
+  return <Label3D position={[footprint.x, footprint.y + footprint.h / 2 + 0.4, footprint.z]} text={`Aisle ${layout.aisleCode}`} fontSize={0.4} />;
+}
+
+// Bin/row numbering (2026-09-07 — "i want bin numbering in this 3d! i dont
+// know where is the start where is the end") — one number per real row
+// position, matching the exact same "position 1 nearest the corner, N
+// farthest, paired by index not raw stored number" convention
+// LocationsPlanView.tsx's own "Rows 1-N" summary already established for
+// 2D. Floats just above each row's own boxes, laterally centered on this
+// aisle's own bounding box (`footprint.x`) — a REAL correction, not a
+// styling choice (2026-09-07, caught live: "how can aisle be in middle of
+// bins?"): an earlier version anchored these to the aisle's "local x=0"
+// math origin, which for a single-sided aisle sits BEFORE its own boxes
+// even start — a purely virtual reference point that was never actually
+// reserved as empty space in `buildWarehouseLayout`'s own cursor
+// accounting. With `AISLE_GAP` now tiny (a real back-to-back seam, not a
+// walkway), that virtual point routinely landed INSIDE the PREVIOUS
+// aisle's real boxes, which used to be an invisible, harmless coordinate
+// overlap (nothing was ever drawn there) until this feature made it a
+// visible one. `footprint.x` is provably safe instead — it's the center
+// of THIS aisle's own already-shifted box extent, so it can never spill
+// into a neighbor no matter how tight `AISLE_GAP` gets.
+function RowNumberMarkers({ layout }: { layout: AisleLayout }) {
+  const { footprint } = layout;
+  return (
+    <>
+      {layout.rowMarkers.map((marker) => (
+        <Label3D key={marker.z} position={[footprint.x, footprint.y + footprint.h / 2 + 0.15, marker.z]} text={marker.label} fontSize={0.3} color="#9a3412" />
+      ))}
+    </>
   );
 }
 
@@ -367,19 +452,35 @@ function computeFocus(aislesToFit: AisleLayout[]): { camPos: [number, number, nu
   const minX = Math.min(...aislesToFit.map((l) => l.footprint.x - l.footprint.w / 2));
   const maxX = Math.max(...aislesToFit.map((l) => l.footprint.x + l.footprint.w / 2));
   const maxZ = Math.max(...aislesToFit.map((l) => l.footprint.z + l.footprint.d / 2));
-  // Top edge of the tallest footprint being fit — factored into both the
-  // camera's height and the pull-back distance (2026-09-06, caught live
-  // once the Simulation's own Levels became configurable: a 5-level layout
-  // could start the camera below/inside the stack, since this used to size
-  // the view purely off the X/Z footprint and never looked at how TALL
-  // anything actually was). Degrades to the original framing for a typical
-  // short (2-3 level) layout — `maxY` stays small enough there that it
-  // never becomes the binding term in either `Math.max`.
   const maxY = Math.max(...aislesToFit.map((l) => l.footprint.y + l.footprint.h / 2));
   const centerX = (minX + maxX) / 2;
-  const span = Math.max(maxX - minX, maxZ, maxY, 4); // a floor so a single small aisle doesn't zoom in absurdly close
+  const dx = maxX - minX;
+
+  // Real bounding-sphere fit, replacing a real bug (2026-09-07 — "camera is
+  // again buggy," caught because checking ONE aisle vs. all of them
+  // produced the exact same zoom level). The old `span = Math.max(dx, dz,
+  // dy, 4)` conflated all three axes into a single number — for the
+  // ordinary case where a row is much LONGER (dz, many rack positions)
+  // than it is WIDE (dx, a handful of aisles side by side), dz always won
+  // that Math.max regardless of dx, so shrinking the selection down to one
+  // aisle changed dx but never moved the number the camera distance was
+  // actually computed from. Fixed with the standard "fit the bounding
+  // sphere in the FOV" calculation instead: the true 3D diagonal of the
+  // box being fit determines distance, so EVERY axis genuinely
+  // contributes — a smaller selection (smaller dx) always yields a
+  // smaller diagonal, always yields a real, visible difference.
+  const diagonal = Math.sqrt(dx * dx + maxY * maxY + maxZ * maxZ);
+  const radius = Math.max(diagonal / 2, 1.5);
+  const fovRad = (50 * Math.PI) / 180;
+  const distance = (radius / Math.sin(fovRad / 2)) * 1.3; // padding so boxes never touch the frame edge
+  // Same "above and slightly behind" viewing angle as before — a fixed
+  // elevation in the Y-Z plane (X stays centered on the selection), just
+  // now scaled by the real `distance` above instead of the old `span`.
+  const elevation = Math.PI / 5; // ~36 degrees above horizontal
+  const camY = Math.max(maxY / 2 + distance * Math.sin(elevation), 3);
+  const camZ = maxZ / 2 + distance * Math.cos(elevation);
   return {
-    camPos: [centerX, Math.max(6, span / 2.5, maxY + 4), maxZ + span * 0.6 + 4],
+    camPos: [centerX, camY, camZ],
     target: [centerX, maxY / 2, maxZ / 2],
   };
 }
@@ -620,6 +721,8 @@ function Locations3DView({
           {layouts.map((layout) =>
             selectedAisles.has(layout.aisleCode) ? (
               <group key={layout.aisleCode}>
+                <AisleDetailLabel layout={layout} />
+                <RowNumberMarkers layout={layout} />
                 {layout.boxes.map((box) => (
                   <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} />
                 ))}
