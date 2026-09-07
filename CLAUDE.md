@@ -5111,6 +5111,33 @@ operator, grouped by task rather than pallet since a `PickFaceTask` has no `pall
 API testing is done with Thunder Client, but its free tier can't send file uploads — so Excel
 import features must be exercised through the actual frontend, not Thunder Client.
 
+**Throwaway-company cleanup must also cover `ProductCategory` — and anything else platform-
+level/global — not just the company's own scoped tables.** `ProductCategory` has no `companyId`
+(deliberately — see "Platform-managed reference data" above, so a SKU's category and a
+warehouse's storage-type category always resolve against the same shared list). This means a
+throwaway test company that creates a category (typed into a manual form, or auto-created by a
+feature like the Simulation sandbox's own `ensureSkuPool`/`ensureSandbox`) leaves that category
+visible in *every* company's dropdown forever, not just its own — a real, repeated leak (flagged
+once already in the Pick Face section above: "a throwaway-company script that crashes mid-run
+before reaching its own cleanup step leaves real orphaned rows, which then surfaced as a leftover
+`ProductCategory` option in a completely unrelated live UI session"; it recurred and accumulated
+across many more sessions afterward, caught 2026-09-07 when 13 stray categories — `2W tyres`,
+`ABC UI Category`, `Carbonated`, `Car Tyres`, `GroundCheckCategory`, `INS-Cat-mtecccif`,
+`Non-Carbonated`, `Override Test/UI Category`, `Simulation`, `Truck Tyres-Bias/Radial`, `Water` —
+had piled up in the client's own real dropdown from roughly a dozen different past sessions' test
+companies). **Any cleanup script — including one that only crashes partway — must delete the
+`ProductCategory` rows it created (or would have created) as part of its own teardown, checked by
+name, not assumed to be covered by deleting the company itself.** Before deleting a category,
+confirm via a real query (`Sku`/`WarehouseStorageType`/`Location`/`CategoryPackSpec` counts) that
+nothing else — especially a company that ISN'T obviously a throwaway script artifact — still
+references it; a category still in real use elsewhere needs its referencing rows re-pointed to
+`Uncategorized` instead of being deleted outright (see the 2026-09-07 cleanup for the exact
+pattern: `Sku`/`WarehouseStorageType`/`Location`'s required, non-nullable `categoryId` can't just
+be nulled out, but re-pointing to `Uncategorized` preserves the real record while still removing
+the fake category name from every dropdown). The same "this table has no `companyId`" caution
+applies to any other platform-level reference data a future diagnostic script might touch —
+`VehicleType`, `EquipmentType`, etc. — check before assuming a company-scoped cleanup is complete.
+
 ## Windows/environment gotchas
 - `prisma generate` file-lock errors: close every running terminal (`start:dev`, `prisma
   studio`, etc.), check Task Manager for leftover `node.exe`, delete `node_modules\.prisma`,
