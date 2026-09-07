@@ -266,6 +266,57 @@ function LocationBox({ box, isSelected, onSelect, color }: { box: BoxSpec; isSel
   );
 }
 
+type BinOutlineSpec = { key: string; x: number; y: number; z: number; w: number; h: number; d: number };
+
+// Groups every Ground/Floor box in one aisle's render back into its real
+// BIN (block) — now that columns render flush against each other with no
+// gap between them (2026-09-06/07 fixes), one bin's own boundary is no
+// longer visually obvious on its own, since it isn't set apart from its
+// neighbor bins until a periodic cross-aisle happens to land there. A real
+// client ask (2026-09-07): "in ground storage, just highlight each bin (
+// just give a border)." Grouped by `(flankNumber, block)`, not `block`
+// alone — a mirrored layout can genuinely reuse the same block number on
+// both flanks, and those are two physically distinct bins, not one.
+// Rack/Stillage are untouched — the ask was Ground-specific, and a Rack
+// bay already reads as its own distinct unit (one box per depth position,
+// no multi-column grouping to make legible the way a Ground bin needs).
+function computeGroundBinOutlines(boxes: BoxSpec[]): BinOutlineSpec[] {
+  const groups = new Map<string, BoxSpec[]>();
+  for (const box of boxes) {
+    if (box.location.storageType !== 'GROUND_FLOOR' || box.location.block == null) continue;
+    const key = `${box.location.flankNumber ?? 'x'}~${box.location.block}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(box);
+  }
+  return Array.from(groups.entries()).map(([key, group]) => {
+    const minX = Math.min(...group.map((b) => b.x - b.w / 2));
+    const maxX = Math.max(...group.map((b) => b.x + b.w / 2));
+    const minY = Math.min(...group.map((b) => b.y - b.h / 2));
+    const maxY = Math.max(...group.map((b) => b.y + b.h / 2));
+    const minZ = Math.min(...group.map((b) => b.z - b.d / 2));
+    const maxZ = Math.max(...group.map((b) => b.z + b.d / 2));
+    return { key, x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2, w: maxX - minX, h: maxY - minY, d: maxZ - minZ };
+  });
+}
+
+// A darker shade of Ground/Floor's own orange stroke (not an unrelated
+// color) — bold enough to read as a distinct GROUPING border, one level up
+// from each individual position's own thin cell edge, while still visually
+// belonging to the same storage-type family. `raycast={() => null}`
+// (a standard R3F "click-through" override) keeps this purely decorative —
+// without it, this outline box would compete with the real per-position
+// boxes underneath for click-to-inspect, since it deliberately shares
+// almost the same volume as the bin's own boxes combined.
+function GroundBinOutline({ outline }: { outline: BinOutlineSpec }) {
+  return (
+    <mesh position={[outline.x, outline.y, outline.z]} raycast={() => null}>
+      <boxGeometry args={[outline.w, outline.h, outline.d]} />
+      <meshBasicMaterial visible={false} />
+      <Edges color="#9a3412" linewidth={2} />
+    </mesh>
+  );
+}
+
 // The simplified stand-in for an unselected aisle — one translucent box
 // spanning its whole real footprint (not individual bins), labeled with its
 // Aisle code via drei's <Html> (cheap here — at most a handful of these
@@ -522,11 +573,18 @@ function Locations3DView({
           </mesh>
           <Grid args={[Math.max(totalWidth, totalDepth) + 20, Math.max(totalWidth, totalDepth) + 20]} position={[totalWidth / 2, 0, totalDepth / 2]} rotation={[Math.PI / 2, 0, 0]} cellColor="#b0aea3" sectionColor="#8c8a80" fadeDistance={60} />
           {layouts.map((layout) =>
-            selectedAisles.has(layout.aisleCode)
-              ? layout.boxes.map((box) => (
+            selectedAisles.has(layout.aisleCode) ? (
+              <group key={layout.aisleCode}>
+                {layout.boxes.map((box) => (
                   <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} />
-                ))
-              : <AisleFootprint key={layout.aisleCode} layout={layout} onSelect={toggleAisle} />,
+                ))}
+                {computeGroundBinOutlines(layout.boxes).map((outline) => (
+                  <GroundBinOutline key={outline.key} outline={outline} />
+                ))}
+              </group>
+            ) : (
+              <AisleFootprint key={layout.aisleCode} layout={layout} onSelect={toggleAisle} />
+            ),
           )}
           {/* No `target` prop here — CameraRig above owns the target
               imperatively (smoothly nudging it every frame), a static prop
