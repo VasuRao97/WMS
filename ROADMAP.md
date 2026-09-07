@@ -5,7 +5,16 @@ is the detailed build log (what got built, how, and why); this is the plan-level
 what to pick up next. Updated as priorities shift — last updated 2026-09-07, next session: **the
 FMS×ABC combined-classification study** (see "Immediate candidates" below) — the client's own
 stated next topic once Ground/Floor Putaway was fully aligned (this Plan View/camera/depth-model
-detour ran long, but is now fully closed out). Most recently: **Ground/Floor bins can now stack
+detour ran long, but is now fully closed out). Most recently: **the Locations manual generator form
+had its Second Range/Mirror UI removed entirely, for both Rack and Ground** — a same-day correction
+to the depth-tier feature just below: the client's first "keep it simple" note got misread as
+"auto-mirror both sides always," then explicitly corrected — "always build it on one side of aisle
+only... no need to mirror it. for all types of storage, so that we can give an easy instructions to
+the team who is using it." Every generate() call from the form now always builds exactly one flank;
+a genuinely double-sided real aisle just means running the form again with the same Aisle and a
+different Rack/Block Range. See CLAUDE.md's "Locations generator UI simplification: no mirror
+anywhere, single-sided always" section for full detail. Before that, same day: **Ground/Floor bins
+can now stack
 back-to-back in the depth direction, on ONE side of an aisle** — "when we say 4 deep, there should
 be 1 more 4 deep behind the first bin then the aisle... but we need it in one side of the aisle."
 A genuine new physical-model capability (`Location.depthTier`), not a rendering fix — investigated
