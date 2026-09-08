@@ -7,21 +7,72 @@ holds a short current-state pointer — don't grow it into a run-on paragraph ag
 ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
 full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
 
-**Last updated 2026-09-07.** Most recent work, same day: a correction to the Locations manual
-generator (single-sided always, no Mirror/Second-Range UI for either storage type), a real
-camera-zoom bug fix + genuine per-row bin numbering + a walkway/neighbor-overlap fix in the 3D Plan
-View, a backend lint-driven cleanup (a handful of genuinely unnecessary type assertions), and a
-cleanup of ~13 stray `ProductCategory` rows that had leaked into the client's own real dropdown
-from many past throwaway-test sessions (see CLAUDE.md's "Testing notes" for the standing convention
-this added, and `wms-category-pollution-incident` in memory for the full incident). See the
-2026-09-07 session note just below for detail on all of it.
+**Last updated 2026-09-08.** Most recent work: the FMS×ABC combined-classification study — design
+settled through a real round-by-round conversation, then built and verified the same session (see
+CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section). FMS (Fast/Medium/
+Slow, ranked by dispatch order count) now rides alongside ABC on the same monthly job and the same
+`SkuWarehouseClass` row; `suggestBin()`'s aisle and level tiebreaks are now independent — ABC picks
+the aisle exactly as before, FMS now picks the rack level. FMS class is also now visible in the
+occupancy overlay (2D/3D/Simulation) and click-to-inspect detail panel, same-day follow-up. Next
+candidates: the reslotting/
+consolidation suggestion engine (now doubly unblocked — Topics 1/2 AND FMS are all in place) or
+Inventory (the next module in the build order) — see "Immediate candidates" below.
 
-**Next session: the FMS×ABC combined-classification study** (see "Immediate candidates" below) —
-the client's own stated next topic once Ground/Floor Putaway was fully aligned. See the 2026-09-06
-session notes further down for that whole day's work (Ground/Floor Putaway logic + settings UI,
-the hardening/performance pass, ABC velocity Topic 1, dock-relative placement Topic 2, the
-"Rows 1-N" summary) — today's own session ran long on the 3D Plan View/camera/depth-model detour
-instead, now fully closed out.
+See the 2026-09-06 session notes further down for that whole day's earlier work (Ground/Floor
+Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
+placement Topic 2, the "Rows 1-N" summary), and 2026-09-07 for the 3D Plan View/camera/depth-model
+work and the ProductCategory cleanup.
+
+## Session note (2026-09-08 — FMS×ABC combined classification: designed, then built)
+
+Picked up via the ready-to-paste kickoff prompt left on this item — a real round-by-round design
+conversation (one question at a time, each grounded in the actual current code first, worked
+examples requested and given before locking anything in) settled all four original open questions,
+then — on explicit go-ahead — got built and verified the same session. See CLAUDE.md's "FMS×ABC
+combined classification — the placement matrix" section for the full technical detail; this is the
+summary.
+
+**Settled**: FMS signal = distinct dispatch order count (not raw movement-row count, not quantity)
+— Vasudev's own call, "no of times that SKU is in the total scheme of dispatch." F/M/S tiers, same
+cumulative-% mechanism as ABC, its own separate Company cutoffs (default 75/15/10). Placement:
+**independent axes** — ABC keeps picking the aisle, FMS now picks the rack level — not a hand-ranked
+9-cell score (considered and rejected: an arbitrary aisle-vs-level weighting with no warehouse-floor
+basis). **D = CS** — no separate "even further" tier, no FMS lookup for a D-class SKU. `DockLocationDistance`/
+Equipment travel-time revisit deferred again, not decided against.
+
+**Built**: `Company.fmsClassFPercent/M/S`, `SkuWarehouseClass.fmsClass`/`orderCount`,
+`HistoricalDispatchSeed.orderCount` (migration `20260908010000_fms_velocity_classification`);
+`AbcClassificationService.reassessWarehouse()` now computes FMS in the same pass as ABC;
+`suggestBin()`'s level tiebreak now reads `fmsClass` instead of `abcClass` (SPR/ASRS only, same
+scope as Topic 2's own level tiebreak); Company Settings' F/M/S cutoff inputs; ABC Classification
+page's FMS Class/Order Count columns and updated Historical Dispatch Import description.
+
+Verified via a throwaway-company diagnostic script exercising the real, unmodified
+`AbcClassificationService`/`PutawayTasksService` directly (14/14 — including the exact worked
+example from the design conversation: hydraulic-oil drums vs. retail bottles, correctly landing
+ABC=A/FMS=S and FMS=F respectively, with a deliberately-split order proving raw-row-count would
+have been wrong) plus a live UI pass (Company Settings save/reload round-trip confirmed via the
+live DOM, not just displayed text). `tsc --noEmit`/`tsc -b`/`nest build` all clean.
+
+**Still genuinely open**: the real order-count formula is correct by construction but unexercised
+against real data (no Outbound module writes DISPATCH movements yet); Ground/Stillage's own
+FMS-driven placement enhancement (flagged, not built — no `level` field exists on a Ground
+candidate to enhance); the reslotting/consolidation suggestion engine (now doubly unblocked).
+
+**Same-day follow-up: the FMS class is now visible, not just consumed internally by
+`suggestBin()`** — "can we have this rank displayed in the simulation / 3d views." A 4th occupancy-
+overlay color mode ("F/M/S Class"), shared across 2D, 3D, and Simulation via the same
+`occupancyColorFor()` lookup the existing Structural/Category/A-B-C-Class modes already use, plus an
+FMS Class row on the click-to-inspect detail panel. Also fixed a real, pre-existing gap found along
+the way: the occupancy overlay (built a day *before* `SkuWarehouseClass` existed) had never been
+updated to prefer the real computed ABC class over the stale manual one — now it does, same
+override-when-known chain `suggestBin()` already uses. Simulation's synthetic SKU pool gained a
+real, independent FMS spread (was ABC-only before) so the new mode has something to actually show
+there — caught and fixed a real bug in that spread formula along the way (two period-3 sequences
+with a fixed offset only ever trace 3 of 9 possible combinations, not a real independent spread).
+Verified 6/6 via a throwaway-company diagnostic script plus a live UI pass (ran a real 20-unit
+simulation, confirmed real FMS-class colors applied to real boxes via the live SVG, confirmed the
+detail panel matches). See CLAUDE.md's "FMS Class display" section for full detail.
 
 ## Session note (2026-09-07 — Ground depth-tier stacking, generator simplification, 3D camera/numbering fixes, ProductCategory cleanup)
 
@@ -915,55 +966,10 @@ Pick one — these are the live options on the table, not a forced order:
    was waiting on are built. `ReslottingSuggestion`/`ReslottingSuggestionSource` schema has sat ready
    since Topic 1 — the actual detect-a-misplaced-SKU/suggest-a-target-bin algorithm and its daily job
    still need designing and building.
-2. **FMS classification combined with ABC, for exact material putaway** (2026-09-06, new) — **your
-   own stated pick for the next session — you want to think it through yourself before this session
-   starts, not have it designed unprompted.** "go in
-   depth for FMS model of inventory as well, looking at the combo of abc and fms we need to make a
-   logic of exact material putaway." FMS (Fast/Medium/Slow-moving, ranked by movement *frequency*)
-   is a different axis than ABC (ranked by dispatched quantity/value) — a combined ABC×FMS matrix is
-   the natural next refinement on top of Topics 1/2's placement work, and closely related to item 1
-   above. Nothing designed yet — see the new section in the `wms-abc-velocity-design` memory for the
-   real open questions to raise first (what drives FMS, how many tiers, how the combined matrix
-   actually changes `suggestBin()` beyond what ABC + dock-proximity already do).
-
-   > **Next-session kickoff prompt — paste this in as-is to start:**
-   >
-   > I want to design the FMS × ABC combined classification logic for exact material Putaway.
-   >
-   > **Where this picks up from**: `SkuWarehouseClass` (Topic 1) already re-derives each SKU's
-   > A/B/C/D class per warehouse every month from real trailing dispatch *quantity*.
-   > `WarehouseDockZone` (Topic 2) already places A/B near the Outbound-facing end of a warehouse
-   > and C/D far from it. FMS is a genuinely different axis on top of both — Fast/Medium/Slow,
-   > ranked by movement *frequency* (how often a SKU moves), not by how much moves each time. A
-   > high-value SKU that moves rarely and a low-value SKU that moves constantly currently land in
-   > very different ABC classes, but neither is well served by today's single-axis placement rule.
-   >
-   > **Before any schema or code, let's discuss and settle these — same align-before-coding
-   > approach as Topics 1 and 2, don't design or build ahead of this conversation**:
-   > 1. What should actually drive the FMS signal? The cheap option is reusing the same
-   >    trailing-window dispatch data Topic 1 already tracks, just counting *movements/orders*
-   >    instead of *quantity* — no new data pipeline needed. Is that the right signal, or does FMS
-   >    need something else entirely (e.g. a different time window, a different event type)?
-   > 2. How many FMS tiers — F/M/S matching ABC's three-tier shape, or something coarser/finer?
-   > 3. How does the *combined* ABC×FMS matrix (e.g. AF/AM/AS through CF/CM/CS) actually change
-   >    `suggestBin()`'s placement decision, concretely, beyond what ABC + dock-proximity already
-   >    do today? Does FMS override ABC's outbound-proximity ranking, act as a secondary tiebreak
-   >    underneath it, or drive a genuinely different rule — e.g. preferring the shortest *total
-   >    travel distance over the SKU's lifetime* for something moved constantly, vs. pure one-time
-   >    proximity for something moved rarely but in bulk?
-   > 4. Is this also the moment to revisit `DockLocationDistance` (real measured meters, currently
-   >    schema-only with zero data-entry tooling) and Equipment loaded/unloaded speed fields — using
-   >    real distance/travel-time instead of the current flat Level-based proximity rule? "Exact
-   >    material putaway" is exactly the kind of precision that was always meant to eventually use
-   >    real distances, not just aisle-order proximity.
-   >
-   > I may already have my own answers to some of these by the time we talk — I'll say which ones
-   > up front. For anything I haven't decided, let's work through it together with a concrete
-   > worked example first, the same way we did for Topics 1 and 2, before touching `schema.prisma`.
-   >
-   > *(Full background: CLAUDE.md's "ABC velocity reassessment" and "Dock-relative Putaway
-   > placement" sections, and the `wms-abc-velocity-design` memory's "Flagged, not started: FMS
-   > classification combined with ABC" section.)*
+2. ~~FMS classification combined with ABC~~ — **BUILT 2026-09-08**, see the session note above and
+   CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section. Ground/Stillage's
+   own FMS-driven placement enhancement is the one genuine follow-on left (no `level` field exists on
+   a Ground candidate today to enhance — flagged, not decided against).
 3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
    it. Even a read-only view would close a real, felt gap. Next in the stated module build order.

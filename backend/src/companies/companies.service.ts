@@ -44,6 +44,9 @@ export class CompaniesService {
         abcClassBPercent: true,
         abcClassCPercent: true,
         abcAssessmentWindowMonths: true,
+        fmsClassFPercent: true,
+        fmsClassMPercent: true,
+        fmsClassSPercent: true,
         rackBaysPerCrossAisle: true,
         groundBinsPerCrossAisle: true,
       },
@@ -125,6 +128,18 @@ export class CompaniesService {
       const n = Number(data.abcAssessmentWindowMonths);
       if (!Number.isInteger(n) || n <= 0) errors.push('ABC Assessment Window (months) must be a positive whole number.');
     }
+    // FMS velocity classification (2026-09-08 — see [[wms-abc-velocity-design]])
+    // — same effective-value sum-to-100 validation as ABC's own three
+    // percentages above, its own separate set of fields (not shared with
+    // ABC's), since an order-count distribution doesn't have to shape the
+    // same way a quantity distribution does.
+    const fmsPercentFields = ['fmsClassFPercent', 'fmsClassMPercent', 'fmsClassSPercent'] as const;
+    if (fmsPercentFields.some((f) => data[f] !== undefined)) {
+      const current = await this.prisma.company.findUnique({ where: { id: companyId }, select: { fmsClassFPercent: true, fmsClassMPercent: true, fmsClassSPercent: true } });
+      const effective = fmsPercentFields.map((f) => (data[f] !== undefined && data[f] !== null && data[f] !== '' ? Number(data[f]) : Number(current![f])));
+      if (effective.some((n) => isNaN(n) || n < 0)) errors.push('FMS Class percentages must be non-negative numbers.');
+      else if (Math.round(effective.reduce((s, n) => s + n, 0) * 100) / 100 !== 100) errors.push(`FMS Class F/M/S percentages must add up to 100 (currently ${effective.reduce((s, n) => s + n, 0)}).`);
+    }
     // 3D Plan View cross-aisle spacing (2026-09-07) — null is a legitimate
     // explicit clear ("never insert a periodic aisle, always flush"), same
     // convention as the detention fields; anything else must be a real
@@ -181,6 +196,12 @@ export class CompaniesService {
         abcClassBPercent: data.abcClassBPercent !== undefined && data.abcClassBPercent !== null && data.abcClassBPercent !== '' ? Number(data.abcClassBPercent) : undefined,
         abcClassCPercent: data.abcClassCPercent !== undefined && data.abcClassCPercent !== null && data.abcClassCPercent !== '' ? Number(data.abcClassCPercent) : undefined,
         abcAssessmentWindowMonths: data.abcAssessmentWindowMonths !== undefined && data.abcAssessmentWindowMonths !== null && data.abcAssessmentWindowMonths !== '' ? Number(data.abcAssessmentWindowMonths) : undefined,
+        // FMS velocity classification (2026-09-08) — same "real DB default,
+        // omitted leaves unchanged, blank ignored rather than cleared" shape
+        // as the ABC percentages above.
+        fmsClassFPercent: data.fmsClassFPercent !== undefined && data.fmsClassFPercent !== null && data.fmsClassFPercent !== '' ? Number(data.fmsClassFPercent) : undefined,
+        fmsClassMPercent: data.fmsClassMPercent !== undefined && data.fmsClassMPercent !== null && data.fmsClassMPercent !== '' ? Number(data.fmsClassMPercent) : undefined,
+        fmsClassSPercent: data.fmsClassSPercent !== undefined && data.fmsClassSPercent !== null && data.fmsClassSPercent !== '' ? Number(data.fmsClassSPercent) : undefined,
         rackBaysPerCrossAisle: data.rackBaysPerCrossAisle === undefined ? undefined : data.rackBaysPerCrossAisle === null || data.rackBaysPerCrossAisle === '' ? null : Number(data.rackBaysPerCrossAisle),
         groundBinsPerCrossAisle: data.groundBinsPerCrossAisle === undefined ? undefined : data.groundBinsPerCrossAisle === null || data.groundBinsPerCrossAisle === '' ? null : Number(data.groundBinsPerCrossAisle),
       },
@@ -203,6 +224,9 @@ export class CompaniesService {
         abcClassBPercent: true,
         abcClassCPercent: true,
         abcAssessmentWindowMonths: true,
+        fmsClassFPercent: true,
+        fmsClassMPercent: true,
+        fmsClassSPercent: true,
         rackBaysPerCrossAisle: true,
         groundBinsPerCrossAisle: true,
       },

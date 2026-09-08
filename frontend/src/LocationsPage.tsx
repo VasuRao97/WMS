@@ -224,7 +224,7 @@ function LocationsPage() {
   // default; 'category'/'class' are fetched on demand, not on every
   // warehouse load, since most sessions will just look at the structural
   // layout.
-  const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class'>('structural');
+  const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class' | 'fmsClass'>('structural');
   const [occupancy, setOccupancy] = useState<import('./occupancyColors').Occupancy[]>([]);
   const [occupancyLoading, setOccupancyLoading] = useState(false);
   // 3D cross-aisle spacing (2026-09-07) — a rendering input for
@@ -1009,6 +1009,7 @@ function LocationsPage() {
             <button type="button" onClick={() => setColorMode('structural')} style={{ fontWeight: colorMode === 'structural' ? 'bold' : 'normal' }}>Structural</button>
             <button type="button" onClick={() => setColorMode('category')} style={{ fontWeight: colorMode === 'category' ? 'bold' : 'normal' }}>Category</button>
             <button type="button" onClick={() => setColorMode('class')} style={{ fontWeight: colorMode === 'class' ? 'bold' : 'normal' }}>A/B/C Class</button>
+            <button type="button" onClick={() => setColorMode('fmsClass')} style={{ fontWeight: colorMode === 'fmsClass' ? 'bold' : 'normal' }}>F/M/S Class</button>
             {occupancyLoading && <span style={{ fontSize: 12, color: '#888' }}>Loading occupancy...</span>}
           </div>
           {!planWarehouseId ? (

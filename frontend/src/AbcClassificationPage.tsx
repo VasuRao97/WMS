@@ -31,10 +31,16 @@ type ClassRow = {
   computedClass: string;
   manualClass: string | null;
   dispatchedQty: number;
+  fmsClass: string | null;
+  orderCount: number | null;
   computedAt: string;
 };
 
 const CLASS_COLORS: Record<string, string> = { A: '#16a34a', B: '#d97706', C: '#dc2626', D: '#6b7280' };
+// FMS (2026-09-08 — see [[wms-abc-velocity-design]] in memory) — a genuinely
+// different axis from ABC above (movement frequency, not quantity), its own
+// color scale so it's never visually confused with the ABC column next to it.
+const FMS_COLORS: Record<string, string> = { F: '#16a34a', M: '#d97706', S: '#2563eb' };
 
 function AbcClassificationPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -106,7 +112,9 @@ function AbcClassificationPage() {
       <p style={{ textAlign: 'center', color: '#888', fontSize: 13, marginTop: -8, marginBottom: 24 }}>
         Real, computed A/B/C/D classes per SKU per warehouse, derived from actual trailing dispatch quantity — never
         the same class company-wide, since the same SKU can move fast in one warehouse and barely move in another.
-        Configure the cutoffs and enable the monthly job on Company Settings.
+        Also computes an FMS (Fast/Medium/Slow) class from dispatch order count — a different axis (how often vs.
+        how much) that Putaway now uses alongside ABC. Configure the cutoffs and enable the monthly job on Company
+        Settings.
       </p>
 
       <div style={{ display: 'flex', justifyContent: 'center', gap: 8, alignItems: 'center', marginBottom: 16 }}>
@@ -131,9 +139,11 @@ function AbcClassificationPage() {
               <th style={{ padding: 8 }}>Warehouse</th>
               <th style={{ padding: 8 }}>SKU</th>
               <th style={{ padding: 8 }}>Category</th>
-              <th style={{ padding: 8 }}>Computed Class</th>
+              <th style={{ padding: 8 }}>Computed Class (ABC)</th>
               <th style={{ padding: 8 }}>SKU Master Class</th>
               <th style={{ padding: 8 }}>Dispatched Qty</th>
+              <th style={{ padding: 8 }}>FMS Class</th>
+              <th style={{ padding: 8 }}>Order Count</th>
               <th style={{ padding: 8 }}>Computed At</th>
             </tr>
           </thead>
@@ -146,11 +156,13 @@ function AbcClassificationPage() {
                 <td style={{ padding: 8, fontWeight: 'bold', color: CLASS_COLORS[r.computedClass] }}>{r.computedClass}</td>
                 <td style={{ padding: 8, color: '#888' }}>{r.manualClass || '—'}</td>
                 <td style={{ padding: 8 }}>{Number(r.dispatchedQty)}</td>
+                <td style={{ padding: 8, fontWeight: 'bold', color: r.fmsClass ? FMS_COLORS[r.fmsClass] : undefined }}>{r.fmsClass || '—'}</td>
+                <td style={{ padding: 8 }}>{r.orderCount != null ? Number(r.orderCount) : '—'}</td>
                 <td style={{ padding: 8 }}>{new Date(r.computedAt).toLocaleString()}</td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 12, color: '#888' }}>No computed classifications yet — enable the feature in Company Settings, then run it.</td></tr>
+              <tr><td colSpan={9} style={{ padding: 12, color: '#888' }}>No computed classifications yet — enable the feature in Company Settings, then run it.</td></tr>
             )}
           </tbody>
         </table>
@@ -161,7 +173,8 @@ function AbcClassificationPage() {
         <p style={{ marginTop: -4, marginBottom: 12, fontSize: 13, color: '#888' }}>
           Bootstrap real trailing-window history before it naturally accumulates — one row per SKU × Warehouse ×
           Month. Columns: <code>SKU Code</code>, <code>Warehouse Code</code>, <code>Month</code> (e.g. "2026-06"),{' '}
-          <code>Quantity</code>.
+          <code>Quantity</code>, and an optional <code>Order Count</code> (how many separate dispatches that
+          quantity came from — feeds FMS above; leave blank if only bootstrapping ABC).
         </p>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <input type="file" accept=".xlsx" onChange={(e) => setImportFile(e.target.files?.[0] || null)} />

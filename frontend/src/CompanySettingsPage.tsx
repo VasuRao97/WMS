@@ -39,6 +39,9 @@ type Settings = {
   abcClassBPercent?: number | string;
   abcClassCPercent?: number | string;
   abcAssessmentWindowMonths?: number | string;
+  fmsClassFPercent?: number | string;
+  fmsClassMPercent?: number | string;
+  fmsClassSPercent?: number | string;
   rackBaysPerCrossAisle?: number | string | null;
   groundBinsPerCrossAisle?: number | string | null;
 };
@@ -105,6 +108,9 @@ function CompanySettingsPage() {
   const [abcClassBPercent, setAbcClassBPercent] = useState('15');
   const [abcClassCPercent, setAbcClassCPercent] = useState('10');
   const [abcAssessmentWindowMonths, setAbcAssessmentWindowMonths] = useState('3');
+  const [fmsClassFPercent, setFmsClassFPercent] = useState('75');
+  const [fmsClassMPercent, setFmsClassMPercent] = useState('15');
+  const [fmsClassSPercent, setFmsClassSPercent] = useState('10');
   // 3D Plan View cross-aisle spacing (2026-09-07) — "we dont need aisle
   // after every 4x4 bin also... lets keep a entry in company toggle for
   // both racks and ground but keep default in both as 10." Blank clears to
@@ -181,6 +187,9 @@ function CompanySettingsPage() {
         setAbcClassBPercent(data.abcClassBPercent != null ? String(data.abcClassBPercent) : '15');
         setAbcClassCPercent(data.abcClassCPercent != null ? String(data.abcClassCPercent) : '10');
         setAbcAssessmentWindowMonths(data.abcAssessmentWindowMonths != null ? String(data.abcAssessmentWindowMonths) : '3');
+        setFmsClassFPercent(data.fmsClassFPercent != null ? String(data.fmsClassFPercent) : '75');
+        setFmsClassMPercent(data.fmsClassMPercent != null ? String(data.fmsClassMPercent) : '15');
+        setFmsClassSPercent(data.fmsClassSPercent != null ? String(data.fmsClassSPercent) : '10');
         // Blank (not a fallback number) genuinely means null here — unlike
         // the ABC percentages above (no real "unconfigured" state, always
         // a number), these two DO have one: a company that explicitly
@@ -404,6 +413,9 @@ function CompanySettingsPage() {
         abcClassBPercent,
         abcClassCPercent,
         abcAssessmentWindowMonths,
+        fmsClassFPercent,
+        fmsClassMPercent,
+        fmsClassSPercent,
         rackBaysPerCrossAisle: rackBaysPerCrossAisle === '' ? null : rackBaysPerCrossAisle,
         groundBinsPerCrossAisle: groundBinsPerCrossAisle === '' ? null : groundBinsPerCrossAisle,
       }),
@@ -709,8 +721,10 @@ function CompanySettingsPage() {
           A real monthly job (1st of every month, at night) re-derives each SKU's A/B/C class per warehouse from its
           own actual trailing dispatch quantity — never company-wide, since the same SKU can be a fast mover in one
           warehouse and barely move in another. Off by default; the manually-set/imported class on SKU Master stays
-          the fallback until a warehouse has enough real history. See the "ABC Classification" page to run it on
-          demand and see results.
+          the fallback until a warehouse has enough real history. The same run also computes an FMS (Fast/Medium/
+          Slow-moving) class from dispatch ORDER COUNT — a different axis (how often vs. how much) that Putaway uses
+          alongside ABC to pick both which aisle AND which rack level to suggest. See the "ABC Classification" page
+          to run it on demand and see results.
         </p>
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: 16 }}>
@@ -745,6 +759,30 @@ function CompanySettingsPage() {
               SKU into a real 4th class, D (dead stock).
             </p>
             <input value={abcAssessmentWindowMonths} onChange={(e) => setAbcAssessmentWindowMonths(e.target.value)} style={{ width: 100, padding: 6 }} />
+          </div>
+
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>
+              FMS class cutoffs (cumulative % of dispatch ORDER COUNT)
+            </label>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#888' }}>
+              A different axis from ABC above — ranked by how often a SKU is dispatched (order count), not how much
+              moves each time. Computed in the same monthly run, using the same assessment window above. Must add up
+              to 100 — its own separate setting from ABC's percentages. Only applies to A/B/C SKUs; a Class D SKU
+              (zero dispatches) gets no FMS class.
+            </p>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12 }}>F:</span>
+              <input value={fmsClassFPercent} onChange={(e) => setFmsClassFPercent(e.target.value)} style={{ width: 60, padding: 6 }} />
+              <span style={{ fontSize: 12 }}>M:</span>
+              <input value={fmsClassMPercent} onChange={(e) => setFmsClassMPercent(e.target.value)} style={{ width: 60, padding: 6 }} />
+              <span style={{ fontSize: 12 }}>S:</span>
+              <input value={fmsClassSPercent} onChange={(e) => setFmsClassSPercent(e.target.value)} style={{ width: 60, padding: 6 }} />
+              {(() => {
+                const sum = [fmsClassFPercent, fmsClassMPercent, fmsClassSPercent].reduce((s, v) => s + (Number(v) || 0), 0);
+                return <span style={{ fontSize: 12, color: sum === 100 ? '#2e7d32' : 'crimson' }}>= {sum}{sum !== 100 ? ' (must be 100)' : ''}</span>;
+              })()}
+            </div>
           </div>
 
           <h3 style={{ marginTop: 0 }}>Locations Plan View</h3>

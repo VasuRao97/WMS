@@ -101,6 +101,14 @@ export class PutawayTasksService {
     // C, unchanged — confirmed 2026-08-28.
     const warehouseClass = await tx.skuWarehouseClass.findUnique({ where: { skuId_warehouseId: { skuId, warehouseId } } });
     const abcClass = (warehouseClass?.abcClass || sku.abcClass || 'C').toUpperCase();
+    // FMS (Fast/Medium/Slow-moving) — 2026-09-08, see [[wms-abc-velocity-design]]
+    // in memory for the full design conversation. A genuinely different axis
+    // from ABC above (movement FREQUENCY, not quantity) — only ever set by
+    // the same AbcClassificationService pass that sets abcClass, so it's
+    // null until that feature is run for this warehouse, same "falls back
+    // cleanly to today's behavior when unconfigured" shape as WarehouseDockZone's
+    // outboundRanker. Not read at all for a D-class SKU — see preferHighLevel().
+    const fmsClass = warehouseClass?.fmsClass?.toUpperCase() || null;
 
     const storageTypeRows = await tx.warehouseStorageType.findMany({ where: { warehouseId, categoryId: sku.categoryId } });
     const eligibleStorageTypes: string[] = storageTypeRows.map((r: any) => r.storageType).filter((t: string) => t !== 'MIX');
@@ -268,6 +276,7 @@ export class PutawayTasksService {
     const ctx = {
       skuId,
       abcClass,
+      fmsClass,
       storageTypeRowByType,
       balanceByLocSku,
       skuBalancesByLocation,
@@ -305,6 +314,7 @@ export class PutawayTasksService {
     const {
       skuId,
       abcClass,
+      fmsClass,
       storageTypeRowByType,
       balanceByLocSku,
       skuBalancesByLocation,
@@ -477,25 +487,54 @@ export class PutawayTasksService {
     // always has ("First-available" for Drive-in falls out of this same
     // ordering — whichever eligible column sorts first by proximity/level/
     // flank simply wins, no separate reservation logic needed).
-    const preferFar = abcClass !== 'A' && abcClass !== 'B'; // C/D — same fallback bucket maxSkusForClass() already uses
+    //
+    // 2026-09-08 — FMS×ABC combined classification (see
+    // [[wms-abc-velocity-design]] in memory for the full design
+    // conversation): the aisle tiebreak (2) and the level tiebreak (3) are
+    // now driven by two INDEPENDENT signals instead of one shared boolean —
+    // ABC still decides aisle exactly as before (preferFarAisle, unchanged
+    // computation), FMS now decides level (preferHighLevel) instead of ABC.
+    // Confirmed directly as the chosen mechanism over a single hand-ranked
+    // 1-9 combined score: this is a two-line change to a sort that already
+    // works, can't misplace a SKU due to an arbitrary aisle-vs-level
+    // weighting, and matches physical reality (aisle-to-aisle walking
+    // distance is a real, much bigger cost than one shelf level's reach
+    // effort, so aisle proximity should always win a tie over level, which
+    // it still does here — sequential stages, unchanged order).
+    const preferFarAisle = abcClass !== 'A' && abcClass !== 'B'; // C/D — same fallback bucket maxSkusForClass() already uses
+    // D behaves exactly like CS (far aisle, high level) — confirmed
+    // directly ("D, you can treat to be the futherest, or want to merge
+    // with C?" → merge): no FMS lookup for a D-class SKU, no separate
+    // "even further" tier, since there's no physical lever left to express
+    // one (both axes already bottom out at C's own values). For F/M/S,
+    // only S prefers a high level — F and M both default to preferring the
+    // easy-reach low level, a deliberate judgment call (M has no strong
+    // pull either way; grouping it with F costs nothing structurally,
+    // where wrongly pushing a genuinely frequent mover to a high level
+    // would). When fmsClass hasn't been computed yet for this warehouse
+    // (feature not run, or not enabled), fall back to preferFarAisle —
+    // today's ABC-only behavior, zero regression for a company not using
+    // this yet, same "unconfigured falls back cleanly" shape as
+    // outboundRanker itself.
+    const preferHighLevel = abcClass === 'D' ? true : fmsClass ? fmsClass === 'S' : preferFarAisle;
     candidates.sort((a, b) => {
       if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
 
       if (outboundRanker) {
         const ra = a.aisle != null ? outboundRanker(a.aisle) : Number.MAX_SAFE_INTEGER;
         const rb = b.aisle != null ? outboundRanker(b.aisle) : Number.MAX_SAFE_INTEGER;
-        if (ra !== rb) return preferFar ? rb - ra : ra - rb;
+        if (ra !== rb) return preferFarAisle ? rb - ra : ra - rb;
       }
 
       if (a.storageType !== 'DRIVE_IN' && b.storageType !== 'DRIVE_IN' && a.level != null && b.level != null) {
         const la = Number(a.level) || 0;
         const lb = Number(b.level) || 0;
-        if (la !== lb) return preferFar ? lb - la : la - lb;
+        if (la !== lb) return preferHighLevel ? lb - la : la - lb;
       }
 
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
-      return preferFar ? fb - fa : fa - fb;
+      return preferFarAisle ? fb - fa : fa - fb;
     });
 
     return candidates[0].locationId;
@@ -790,13 +829,15 @@ export class PutawayTasksService {
 
     if (candidates.length === 0) return null;
 
-    // Interim cross-bin preference, until the future FMS×ABC combined-
-    // classification study (wms-abc-velocity-design memory) replaces it —
-    // the client's own explicit call: "we will make a ABC/FMS study for
-    // all ground + rack etc to find best one for putaway." Ships now with
-    // the same kind of placeholder Topic 2 already used for an
-    // unconfigured warehouse's dock zones: prefer the fullest eligible
-    // bin, then dock-relative Outbound proximity, then flank number.
+    // Interim cross-bin preference — the FMS×ABC combined-classification
+    // study (2026-09-08, see [[wms-abc-velocity-design]] in memory)
+    // deliberately built the level tiebreak for RACK (SPR/ASRS) bins only;
+    // Ground candidates here have no `level` field to enhance (no vertical
+    // rack-position concept), so there's nothing for FMS to add to THIS
+    // sort — still ABC-only, unchanged from before this pass. The client's
+    // own explicit call ("we will make a ABC/FMS study for all ground +
+    // rack etc to find best one for putaway") means Ground's own analog is
+    // still a genuinely open follow-on, not silently decided against.
     const preferFar = abcClass !== 'A' && abcClass !== 'B';
     candidates.sort((a, b) => {
       if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;

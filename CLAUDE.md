@@ -4785,6 +4785,151 @@ confirmed via a direct API check that it produced exactly one `flankNumber` with
 present — the real UI submission matches the corrected design, not just the source code. `tsc -b`
 clean on both files. All throwaway companies cleaned up afterward.
 
+### FMS×ABC combined classification — the placement matrix, built (2026-09-08)
+The topic flagged since 2026-09-06 (see [[wms-abc-velocity-design]] in memory for the full
+round-by-round design conversation, which happened entirely in chat before any code — "logics are
+imp," the client's own call to design ahead of the real Outbound data that would eventually drive
+it). FMS (Fast/Medium/Slow-moving) is a genuinely different axis from ABC — ranked by dispatch
+**order count** (how often a SKU moves), not quantity (how much moves each time). This section is
+the settled design plus what's built and verified.
+
+**Signal — real order count, not raw movement-row count.** A concrete worked example decided this:
+two SKUs with identical total quantity dispatched in a month, one shipped in a handful of large
+single-movement orders, the other in many small orders that happen to be split across scattered
+bins (an artifact of Putaway history, not real demand) — counting raw `StockMovement` rows would
+wrongly rate the second SKU as "faster." Real order count = **DISTINCT `referenceId`** among
+`DISPATCH` rows per SKU in the trailing window (`referenceId` is a required field on
+`StockMovement`, so this is correct the moment a future Outbound module starts writing real
+DISPATCH rows tagged with a real order id — contributes nothing today, since nothing writes DISPATCH
+movements yet, same bootstrap gap Topic 1 itself started in). `HistoricalDispatchSeed` (Topic 1's
+own bootstrap table) gained an optional `orderCount` column alongside its existing `quantity` — one
+row, two optional numbers, not a second table; a seed row imported for ABC alone with no order count
+supplied simply contributes 0 to FMS.
+
+**Tiers — F/M/S, same cumulative-%-before-adding-own-share mechanism as ABC**, its own separate
+`Company` fields (`fmsClassFPercent`/`M`/`S`, default 75/15/10) rather than reusing ABC's
+percentages — an order-count distribution doesn't have to shape the same way a quantity distribution
+does. Computed in the exact same monthly `AbcClassificationService.reassessWarehouse()` pass as ABC
+(same trailing window, same per-category grouping), writing straight onto the same
+`SkuWarehouseClass` row (`fmsClass`/`orderCount`, both nullable) rather than a parallel table. A SKU
+classified `D` on the ABC axis (zero dispatches — no frequency signal to measure either) gets **no**
+FMS class at all — confirmed directly ("D, you can treat to be the furthest, or want to merge with
+C?" → merge).
+
+**Placement — independent axes on `suggestBin()`'s two existing physical levers, not a hand-ranked
+9-cell score.** ABC keeps driving the aisle/outbound-proximity tiebreak exactly as Topic 2 built it
+(`preferFarAisle`, unchanged computation); FMS now drives the level tiebreak instead of ABC
+(`preferHighLevel`) — today's single `preferFar` boolean (ABC-driven, applied to both stages) split
+into two independent signals feeding the two already-existing sequential sort stages, aisle still
+always winning ties over level exactly as before. AF lands nearest-aisle + lowest-level and CS the
+opposite automatically, as the cross-product of two independent 3-tier rules — no cell needed its
+own hand-picked rank. A single blended combined score was explicitly considered and rejected in the
+design conversation: it would need an arbitrary aisle-vs-level weighting with no warehouse-floor
+basis, and could place a rarely-touched high-value SKU far from outbound purely because its level
+score was favorable — independent axes can't make that mistake, since aisle proximity (a real,
+much bigger travel cost than one shelf level's reach effort) always wins first. **D behaves exactly
+like CS** — `preferHighLevel` is forced `true` for an ABC-`D` SKU regardless of (absent) `fmsClass`,
+no separate "even further" tier, since there's no physical lever left to express one. **Only `S`
+prefers a high level** — `F` and `M` both default to the easy-reach low level, a real implementation
+judgment call (M has no strong pull either way; grouping it with F costs nothing structurally, where
+wrongly pushing a genuinely frequent mover to a high level would) flagged in the code comment, not
+silently assumed. **When `fmsClass` hasn't been computed yet** for a warehouse (feature not run, or
+company not enabled), `preferHighLevel` falls back to `preferFarAisle` — today's ABC-only behavior,
+zero regression for a company not using this yet, same "unconfigured falls back cleanly" shape
+`WarehouseDockZone`'s own `outboundRanker` already established. Scoped to RACK (SPR/ASRS) candidates
+only, same as Topic 2's own level tiebreak — Ground/Stillage's own placement sort has no `level`
+field to enhance and stays ABC-only, flagged in a code comment as a genuinely open follow-on, not
+silently decided against.
+
+**Migration** `20260908010000_fms_velocity_classification` — `Company.fmsClassFPercent`/`M`/`S`
+(Decimal, defaults 75/15/10), `SkuWarehouseClass.fmsClass`/`orderCount` (both nullable),
+`HistoricalDispatchSeed.orderCount` (nullable Int). `CompaniesService` gained the same
+effective-value sum-to-100 validation ABC's own percentages already have, its own separate field
+set. `AbcClassificationPage.tsx` gained FMS Class/Order Count columns (its own color scale, never
+confused with ABC's) and the Historical Dispatch Import form's description now documents the
+optional `Order Count` column; Company Settings' "ABC Velocity Reassessment" card gained the F/M/S
+cutoff inputs with the same live sum indicator ABC's own three fields have.
+
+Verified two ways. A throwaway-company diagnostic script invoking `AbcClassificationService`/
+`PutawayTasksService` directly against the real dev DB (14/14): the exact worked example from the
+design conversation — "210L Hydraulic Oil Drums" (3 real DISPATCH orders, one deliberately split
+across 2 movements sharing one `referenceId` to prove raw-row-count would have been wrong) correctly
+read as order count 3, not 4, landing ABC=A/FMS=S; "1L Engine Oil Bottles" (80 orders) correctly
+read as FMS=F; a `HistoricalDispatchSeed` row's `orderCount` correctly contributed to a SKU with no
+real DISPATCH history at all; a genuinely dead (zero-dispatch, full-window-aged) SKU correctly
+landed ABC=D with `fmsClass`/`orderCount` both null; and `suggestBin()`, called directly against two
+real SPR locations at different levels, correctly picked the high level for FMS=S, the low level for
+both FMS=F and FMS=M, the high level for ABC=D regardless of (absent) FMS, and correctly fell back to
+the ABC-driven level pick for a SKU with no `SkuWarehouseClass` row at all (zero regression). Then
+re-verified live through the actual rendered UI (throwaway company, registered fresh): Company
+Settings' new F/M/S inputs, live sum indicator, and Save all worked through the real form: saved
+60/25/15, confirmed persistence via a direct API check, then did a full page reload and confirmed —
+via the live DOM input values, not just displayed text — the fields correctly re-filled from the
+database; the ABC Classification page rendered the new FMS Class/Order Count columns and updated
+description text correctly. `tsc --noEmit`(backend)/`tsc -b`(frontend)/`nest build` all clean.
+
+**Genuinely still open, not part of this build**: the exact real-order-count formula (distinct
+`referenceId`) is unexercised against real data, since no Outbound module writes DISPATCH movements
+yet — correct by construction, not yet proven against a real order; Ground/Stillage's own FMS-driven
+placement enhancement (flagged above); revisiting `DockLocationDistance`/Equipment travel-time
+(deferred again, not decided against, per the original design conversation).
+
+### FMS Class display — occupancy overlay, detail panel, Simulation (2026-09-08, same day)
+Direct follow-up once FMS×ABC shipped: "can we have this rank displayed in the simulation / 3d
+views." Confirmed the scope first — showing the F/M/S class letters on a bin's occupant (cheap,
+extends what already exists) rather than a literal numeric ordinal rank (a genuinely separate
+feature, nothing computes/stores a SKU's position today) — then built the cheap version.
+
+**Extends the exact same shared pieces the 2026-09-05 occupancy overlay already built** — a 4th
+`ColorMode` (`'fmsClass'`, alongside `structural`/`category`/`class`), a new `FMS_CLASS_COLORS`
+scale in `occupancyColors.ts` (green/amber/blue — deliberately not reusing ABC's red for its own
+"slow" class, same color choice `AbcClassificationPage.tsx` already made), and `Occupancy.fmsClass`
+threaded through the one shared `occupancyColorFor()` lookup both 2D and 3D already call — so this
+shows up in 2D, 3D, *and* Simulation automatically, one function/one type, not three copies.
+`LocationDetailPanel.tsx`'s click-to-inspect gained an "FMS Class" row right under the existing
+"Class" (ABC) row — `null` renders as `—` and is a real, expected state (ABC-class D, or FMS not yet
+computed for this warehouse), not an error.
+
+**A real, pre-existing gap fixed along the way, not silently left alone**: `LocationsService.
+occupancyByWarehouse()` (built 2026-09-05, a day *before* `SkuWarehouseClass`/Topic 1 shipped) had
+only ever read `Sku.abcClass` (the manual/imported class) — it never got updated to prefer the real
+per-warehouse COMPUTED class the way `suggestBin()` itself already does. Fetching `SkuWarehouseClass`
+for `fmsClass` (which has no manual-fallback equivalent to read instead) meant the same row was
+already in hand, so the override-when-known chain was applied to `abcClass` too at zero extra
+cost — the occupancy overlay's "Class" coloring now matches what `suggestBin()` actually used to
+place the stock, not a possibly-stale manual value.
+
+**Simulation needed one more real piece to make this feature demonstrate anything at all**: its
+synthetic SKU pool (`ensureSkuPool()`) only ever set `abcClass` directly on the `Sku` row — no
+`SkuWarehouseClass` row, hence no `fmsClass`, ever existed for a sandbox SKU, which would have made
+the new "F/M/S Class" mode always render plain grey there. Added a real, independent FMS spread
+(`SkuWarehouseClass` upsert per pool SKU, `abcClass` matching the Sku row's own value so real
+placement behavior is unchanged, `fmsClass` genuinely new) — backfills EVERY pool SKU missing a row
+for the current warehouse, not just newly-created ones, so a pre-existing sandbox gets covered too.
+**A real bug caught by the diagnostic script, not assumed correct**: the first version derived
+`fmsClass` from `fmsClasses[(i+1) % 3]` against an `abcClass` sequence that was ALSO period-3
+(`classes[n % 3]`) — two period-3 sequences with any fixed relative offset can only ever trace 3 of
+the 9 possible ABC×FMS combinations, no matter which offset is chosen (confirmed by the check
+failing with only `BM, AS, CF` showing up across all 12 pool SKUs). Fixed by changing FMS only every
+3 SKUs (`fmsClasses[Math.floor(i/3) % 3]`) — decorrelates the two cycles, covering all 9 real
+combinations across the pool instead of 3. `SimStep`/`SimulationPage.tsx`'s step-log text now shows
+both together too (`"SIM-B1 (Class B/F)"`).
+
+Verified two ways. A throwaway-company diagnostic script (6/6): `occupancyByWarehouse()` correctly
+preferring a computed abcClass (A) over a stale manual one (C) and carrying the real fmsClass (S);
+the Simulation pool spreading across all 3 FMS classes; and — the check that actually caught the
+lockstep bug — the persisted pool showing genuine variety (`BF, CF, AF, BM, CM, AM, BS, CS, AS`, all
+9 combinations present across 12 SKUs) rather than only 3. Then re-verified live through the actual
+rendered UI (throwaway company, registered fresh): ran a real 20-unit simulation through the real
+"Run Simulation" button, clicked the real "F/M/S Class" toggle and confirmed the legend/description
+text updated correctly; inspected the live SVG `fill` attributes directly (not just a screenshot) and
+confirmed real FMS-class colors (`#fef3c7` amber, Class M) were actually applied to real occupied
+boxes, not just neutral grey; clicked one of those colored boxes and confirmed the detail panel read
+`Occupant SKU: SIM-C11 | Class: C | FMS Class: M` — matching the box's own rendered color exactly;
+confirmed the real Locations page's own Plan View also shows the new "F/M/S Class" toggle button
+(same shared component, not separately re-verified end-to-end there since the underlying logic is
+identical). `tsc --noEmit`/`tsc -b`/`nest build` all clean.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -5085,6 +5230,21 @@ return a plausible answer. The daily reslotting/consolidation suggestion engine 
 schema-only is now genuinely unblocked (this was the placement-rule dependency it was waiting on)
 but still not built — see `[[wms-abc-velocity-design]]` in memory for that and every other
 remaining open item from both topics.
+
+**FMS×ABC combined classification is now also built** (2026-09-08, see "FMS×ABC combined
+classification — the placement matrix" above) — a genuinely different axis from ABC (dispatch ORDER
+COUNT, not quantity), computed in the same monthly job onto the same `SkuWarehouseClass` row
+(`fmsClass`/`orderCount`, its own F/M/S cutoffs on Company Settings). `suggestBin()`'s aisle and
+level tiebreaks are now driven independently — ABC still picks the aisle exactly as Topic 2 built
+it, FMS now picks the rack level (only `S` prefers high, D behaves like CS, no FMS lookup for D) —
+replacing the old single ABC-driven boolean that used to govern both. Falls back cleanly to today's
+ABC-only level behavior for any warehouse that hasn't run FMS classification yet. **The FMS class is
+now also visible, not just consumed internally** (2026-09-08, same day, see "FMS Class display"
+above) — a 4th occupancy-overlay color mode ("F/M/S Class") alongside the existing Structural/
+Category/A-B-C-Class ones, in 2D, 3D, *and* Simulation, plus an FMS Class row on the click-to-inspect
+detail panel. The Simulation sandbox's synthetic SKU pool now carries a real, independent FMS spread
+too, so the new color mode (and the underlying level-tiebreak logic itself) has something genuine to
+demonstrate there, not just always-grey.
 
 **The "Rows 1-N" row-position summary is also done** (2026-09-06, same session, see "Plan View:
 'Rows 1-N' row-position summary" above) — closes the loose end from earlier the same session

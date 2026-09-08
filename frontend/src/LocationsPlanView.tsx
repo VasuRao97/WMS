@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
-import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
+import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, FMS_CLASS_COLORS, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
 import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
@@ -475,7 +475,9 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
           ? 'Structural layout only (no occupancy).'
           : colorMode === 'category'
             ? "Colored by each bin's current occupant Category — plain grey means empty."
-            : "Colored by each bin's current occupant's A/B/C Class — plain grey means empty."}
+            : colorMode === 'class'
+              ? "Colored by each bin's current occupant's A/B/C Class — plain grey means empty."
+              : "Colored by each bin's current occupant's F/M/S Class — plain grey means empty, or FMS not yet computed for this SKU."}
         {' '}Aisle 1 sits closest to the bottom-right corner; each further aisle is added to its left. A single-sided
         aisle draws as one flank on the right; a second flank (left) only appears when it was actually generated (a
         Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number — each
@@ -510,6 +512,13 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
           (['A', 'B', 'C'] as const).map((cls) => (
             <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 12, height: 12, borderRadius: 2, background: ABC_CLASS_COLORS[cls].fill, border: `1.5px solid ${ABC_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
+              Class {cls}
+            </span>
+          ))}
+        {colorMode === 'fmsClass' &&
+          (['F', 'M', 'S'] as const).map((cls) => (
+            <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 12, height: 12, borderRadius: 2, background: FMS_CLASS_COLORS[cls].fill, border: `1.5px solid ${FMS_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
               Class {cls}
             </span>
           ))}

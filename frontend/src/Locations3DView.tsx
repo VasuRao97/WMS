@@ -4,7 +4,7 @@ import { OrbitControls, Edges, Grid, Billboard, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { RACK_STORAGE_TYPES, type Location } from './LocationsPage';
 import { STORAGE_TYPE_COLORS, DEFAULT_BOX_COLOR } from './LocationsPlanView';
-import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
+import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, FMS_CLASS_COLORS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
 import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
@@ -655,12 +655,23 @@ function Locations3DView({
       {colorMode !== 'structural' && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8, fontSize: 12 }}>
           <span style={{ color: '#888' }}>
-            {colorMode === 'category' ? 'Colored by occupant Category (selected aisles only):' : "Colored by occupant A/B/C Class (selected aisles only):"}
+            {colorMode === 'category'
+              ? 'Colored by occupant Category (selected aisles only):'
+              : colorMode === 'class'
+                ? 'Colored by occupant A/B/C Class (selected aisles only):'
+                : 'Colored by occupant F/M/S Class (selected aisles only):'}
           </span>
           {colorMode === 'class' &&
             (['A', 'B', 'C'] as const).map((cls) => (
               <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <span style={{ width: 12, height: 12, borderRadius: 2, background: ABC_CLASS_COLORS[cls].fill, border: `1.5px solid ${ABC_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
+                Class {cls}
+              </span>
+            ))}
+          {colorMode === 'fmsClass' &&
+            (['F', 'M', 'S'] as const).map((cls) => (
+              <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 2, background: FMS_CLASS_COLORS[cls].fill, border: `1.5px solid ${FMS_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
                 Class {cls}
               </span>
             ))}

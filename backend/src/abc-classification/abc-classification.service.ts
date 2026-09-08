@@ -40,7 +40,11 @@ export class AbcClassificationService {
     return { warehousesProcessed };
   }
 
-  private async reassessWarehouse(warehouseId: string, company: { abcClassAPercent: any; abcClassBPercent: any; abcClassCPercent: any }, windowStart: Date) {
+  private async reassessWarehouse(
+    warehouseId: string,
+    company: { abcClassAPercent: any; abcClassBPercent: any; abcClassCPercent: any; fmsClassFPercent: any; fmsClassMPercent: any; fmsClassSPercent: any },
+    windowStart: Date,
+  ) {
     // In-scope SKUs — anything that has EVER had a real movement in this
     // warehouse (a broader net than "currently has stock," since a SKU
     // that's fully depleted right now is still worth classifying for the
@@ -78,6 +82,39 @@ export class AbcClassificationService {
     });
     const seedBySku = new Map(seedSums.map((s) => [s.skuId, Number(s._sum.quantity || 0)]));
 
+    // FMS (Fast/Medium/Slow-moving) order-count signal (2026-09-08 — see
+    // [[wms-abc-velocity-design]] in memory for the full design conversation).
+    // Real order count = DISTINCT dispatch referenceId per SKU, not a raw
+    // StockMovement row count — the client's own confirmed call ("no of
+    // times that SKU is in the total scheme of dispatch"), and the whole
+    // reason Option B (raw row count) was rejected: a SKU whose stock
+    // happens to be scattered across more bins would otherwise look
+    // "faster-moving" than one shipped from a single consolidated pallet,
+    // purely as an artifact of Putaway history, not real demand frequency.
+    // referenceId is a required field on StockMovement, so every real
+    // DISPATCH row already has one to group by — correct the moment a
+    // future Outbound module starts writing real DISPATCH rows tagged with
+    // a real order id; contributes nothing today, since nothing writes
+    // DISPATCH movements yet (same bootstrap-gap Topic 1 itself started in).
+    const dispatchRefRows = await this.prisma.stockMovement.findMany({
+      where: { warehouseId, movementType: 'DISPATCH', createdAt: { gte: windowStart } },
+      select: { skuId: true, referenceId: true },
+      distinct: ['skuId', 'referenceId'],
+    });
+    const orderCountBySku = new Map<string, number>();
+    for (const r of dispatchRefRows) orderCountBySku.set(r.skuId, (orderCountBySku.get(r.skuId) || 0) + 1);
+
+    // Historical order-count bootstrap — same HistoricalDispatchSeed row as
+    // the quantity seed above, just its own optional orderCount column (see
+    // that model's own schema comment). A seed row imported for ABC alone,
+    // with no orderCount ever supplied, simply contributes 0 here.
+    const seedOrderSums = await this.prisma.historicalDispatchSeed.groupBy({
+      by: ['skuId'],
+      where: { warehouseId, month: { gte: windowStart } },
+      _sum: { orderCount: true },
+    });
+    const seedOrderBySku = new Map(seedOrderSums.map((s) => [s.skuId, Number(s._sum.orderCount || 0)]));
+
     // "Has this SKU existed in this warehouse for the FULL window" — the
     // earliest of its first real movement (any type — presence, not just
     // dispatch) or its earliest historical seed month. A SKU still short
@@ -100,11 +137,14 @@ export class AbcClassificationService {
 
     const aPct = Number(company.abcClassAPercent);
     const bPct = Number(company.abcClassBPercent);
+    const fPct = Number(company.fmsClassFPercent);
+    const mPct = Number(company.fmsClassMPercent);
 
     for (const [, categorySkuIds] of byCategory) {
       const results = categorySkuIds.map((skuId) => ({
         skuId,
         qty: (dispatchBySku.get(skuId) || 0) + (seedBySku.get(skuId) || 0),
+        orders: (orderCountBySku.get(skuId) || 0) + (seedOrderBySku.get(skuId) || 0),
       }));
 
       const active = results.filter((r) => r.qty > 0);
@@ -126,24 +166,51 @@ export class AbcClassificationService {
         // as a real implementation judgment call, not an assumed-obvious
         // default.
         let cumulativeBefore = 0;
+        const abcClassBySku = new Map<string, string>();
         for (const r of active) {
           const pctBefore = (cumulativeBefore / totalActiveQty) * 100;
           const cls = pctBefore < aPct ? 'A' : pctBefore < aPct + bPct ? 'B' : 'C';
           cumulativeBefore += r.qty;
-          await this.upsertClass(r.skuId, warehouseId, cls, r.qty);
+          abcClassBySku.set(r.skuId, cls);
+        }
+
+        // FMS (Fast/Medium/Slow-moving) — 2026-09-08, same cumulative-%-
+        // before-adding-own-share ranking mechanism as ABC above, just
+        // ranked by ORDER COUNT instead of quantity, and its own separate
+        // Company cutoffs (fmsClassFPercent/M/S). Computed for every
+        // ACTIVE (non-D) SKU in this category — a SKU classified D on the
+        // ABC axis gets no FMS class at all (confirmed directly: "D, you
+        // can treat to be the futherest, or want to merge with C?" →
+        // merge; there's no frequency signal to measure on a SKU with zero
+        // dispatches either, and suggestBin() treats D as CS-equivalent
+        // regardless of any FMS lookup).
+        const byOrders = [...active].sort((a, b) => b.orders - a.orders);
+        const totalOrders = byOrders.reduce((s, r) => s + r.orders, 0);
+        let cumulativeOrdersBefore = 0;
+        const fmsClassBySku = new Map<string, string>();
+        for (const r of byOrders) {
+          const pctBefore = totalOrders > 0 ? (cumulativeOrdersBefore / totalOrders) * 100 : 100;
+          const cls = pctBefore < fPct ? 'F' : pctBefore < fPct + mPct ? 'M' : 'S';
+          cumulativeOrdersBefore += r.orders;
+          fmsClassBySku.set(r.skuId, cls);
+        }
+
+        for (const r of active) {
+          await this.upsertClass(r.skuId, warehouseId, abcClassBySku.get(r.skuId)!, r.qty, fmsClassBySku.get(r.skuId)!, r.orders);
         }
       }
       for (const r of dead) {
-        await this.upsertClass(r.skuId, warehouseId, 'D', 0);
+        // D — no FMS class, no order count (see the comment above).
+        await this.upsertClass(r.skuId, warehouseId, 'D', 0, null, null);
       }
     }
   }
 
-  private async upsertClass(skuId: string, warehouseId: string, abcClass: string, dispatchedQty: number) {
+  private async upsertClass(skuId: string, warehouseId: string, abcClass: string, dispatchedQty: number, fmsClass: string | null, orderCount: number | null) {
     await this.prisma.skuWarehouseClass.upsert({
       where: { skuId_warehouseId: { skuId, warehouseId } },
-      update: { abcClass, dispatchedQty, computedAt: new Date() },
-      create: { skuId, warehouseId, abcClass, dispatchedQty },
+      update: { abcClass, dispatchedQty, fmsClass, orderCount, computedAt: new Date() },
+      create: { skuId, warehouseId, abcClass, dispatchedQty, fmsClass, orderCount },
     });
   }
 
@@ -192,6 +259,11 @@ export class AbcClassificationService {
       computedClass: r.abcClass,
       manualClass: r.sku.abcClass,
       dispatchedQty: r.dispatchedQty,
+      // FMS (2026-09-08) — null for a D-class SKU or one computed before
+      // this feature existed (a pre-existing SkuWarehouseClass row from a
+      // prior ABC-only run), not an error state.
+      fmsClass: r.fmsClass,
+      orderCount: r.orderCount,
       computedAt: r.computedAt,
     }));
   }
@@ -216,6 +288,17 @@ export class AbcClassificationService {
       if (!warehouseCode) errors.push('Warehouse Code is required.');
       const qty = Number(r['Quantity']);
       if (!r['Quantity'] || isNaN(qty) || qty < 0) errors.push('Quantity must be a non-negative number.');
+
+      // Order Count (2026-09-08, FMS bootstrap) — optional, unlike Quantity:
+      // a company only bootstrapping ABC history isn't required to also
+      // supply this. Blank/absent is fine; a genuinely bad value isn't.
+      let orderCount: number | null = null;
+      const rawOrderCount = r['Order Count'];
+      if (rawOrderCount !== undefined && rawOrderCount !== null && rawOrderCount !== '') {
+        const n = Number(rawOrderCount);
+        if (isNaN(n) || n < 0 || !Number.isInteger(n)) errors.push('Order Count must be a non-negative whole number when given.');
+        else orderCount = n;
+      }
 
       // "Month" accepts either a real Excel date/date-string or a plain
       // "YYYY-MM" string — normalized to the 1st of that month either way,
@@ -256,8 +339,8 @@ export class AbcClassificationService {
 
       await this.prisma.historicalDispatchSeed.upsert({
         where: { skuId_warehouseId_month: { skuId: sku.id, warehouseId: warehouse.id, month: month! } },
-        update: { quantity: qty, importedById: user.userId, importedAt: new Date() },
-        create: { skuId: sku.id, warehouseId: warehouse.id, month: month!, quantity: qty, importedById: user.userId },
+        update: { quantity: qty, orderCount, importedById: user.userId, importedAt: new Date() },
+        create: { skuId: sku.id, warehouseId: warehouse.id, month: month!, quantity: qty, orderCount, importedById: user.userId },
       });
       successCount++;
       results.push({ row: i + 2, skuCode, warehouseCode, status: 'success' });

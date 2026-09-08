@@ -17,6 +17,16 @@ export type Occupancy = {
   categoryId: string | null;
   categoryName: string | null;
   abcClass: 'A' | 'B' | 'C';
+  // FMS (Fast/Medium/Slow-moving) — 2026-09-08, a genuinely different axis
+  // from abcClass above (movement frequency, not quantity/value). Unlike
+  // abcClass, which always has a value (falls back to 'C' when unclassified
+  // — see occupancyByWarehouse()'s own comment), fmsClass has no such
+  // fallback: null means either the occupant SKU is ABC-class D (no FMS
+  // lookup — suggestBin() treats D as CS regardless), or FMS classification
+  // simply hasn't been run for this warehouse yet. Both render NEUTRAL in
+  // "By FMS Class" mode, same as an empty location — there's no meaningful
+  // color to invent for "unknown."
+  fmsClass?: 'F' | 'M' | 'S' | null;
   // On-hand quantity at this location (2026-09-06 — click-to-inspect gained
   // SKU details, "I need SKU details in it also") — optional so this type
   // still fits data that predates the field (none currently does, but no
@@ -24,7 +34,7 @@ export type Occupancy = {
   quantity?: number;
 };
 
-export type ColorMode = 'structural' | 'category' | 'class';
+export type ColorMode = 'structural' | 'category' | 'class' | 'fmsClass';
 
 export const NEUTRAL_COLOR = { fill: '#f3f4f6', stroke: '#9ca3af' };
 
@@ -35,6 +45,15 @@ export const ABC_CLASS_COLORS: Record<'A' | 'B' | 'C', { fill: string; stroke: s
   A: { fill: '#dcfce7', stroke: '#16a34a' },
   B: { fill: '#fef3c7', stroke: '#d97706' },
   C: { fill: '#fee2e2', stroke: '#dc2626' },
+};
+
+// F/M/S (2026-09-08) — its own separate scale, never confused with ABC's
+// (blue for S rather than reusing ABC's red for C) — same color choice
+// AbcClassificationPage.tsx already uses for this axis.
+export const FMS_CLASS_COLORS: Record<'F' | 'M' | 'S', { fill: string; stroke: string }> = {
+  F: { fill: '#dcfce7', stroke: '#16a34a' },
+  M: { fill: '#fef3c7', stroke: '#d97706' },
+  S: { fill: '#dbeafe', stroke: '#2563eb' },
 };
 
 // Categories are open-ended (however many a company has created) — a fixed
@@ -85,6 +104,7 @@ export function occupancyColorFor(
   if (mode === 'structural') return null;
   if (!occ) return NEUTRAL_COLOR;
   if (mode === 'class') return ABC_CLASS_COLORS[occ.abcClass] || NEUTRAL_COLOR;
+  if (mode === 'fmsClass') return (occ.fmsClass && FMS_CLASS_COLORS[occ.fmsClass]) || NEUTRAL_COLOR;
   if (occ.categoryId) return categoryColors.get(occ.categoryId) || NEUTRAL_COLOR;
   return NEUTRAL_COLOR;
 }

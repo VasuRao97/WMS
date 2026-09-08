@@ -1,6 +1,6 @@
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, ZONE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
 import { posOf } from './locationBoxUtils';
-import { ABC_CLASS_COLORS, type Occupancy } from './occupancyColors';
+import { ABC_CLASS_COLORS, FMS_CLASS_COLORS, type Occupancy } from './occupancyColors';
 
 // Click-to-inspect side panel — originally built for Locations3DView.tsx
 // (2026-09-05, closing the original 2026-08-25 2D Plan View's own deferred
@@ -70,6 +70,17 @@ export function DetailPanel({ location, occupancy, onClose }: { location: Locati
             <span style={{ padding: '1px 6px', borderRadius: 4, background: ABC_CLASS_COLORS[occupancy.abcClass]?.fill, border: `1px solid ${ABC_CLASS_COLORS[occupancy.abcClass]?.stroke}` }}>
               {occupancy.abcClass}
             </span>
+          </p>
+          <p style={{ margin: '4px 0' }}>
+            {/* FMS (2026-09-08) — no manual-class fallback exists, so a null
+                value is real and expected (ABC-class D, or FMS not yet
+                computed for this warehouse), not an error. */}
+            <strong>FMS Class:</strong>{' '}
+            {occupancy.fmsClass ? (
+              <span style={{ padding: '1px 6px', borderRadius: 4, background: FMS_CLASS_COLORS[occupancy.fmsClass]?.fill, border: `1px solid ${FMS_CLASS_COLORS[occupancy.fmsClass]?.stroke}` }}>
+                {occupancy.fmsClass}
+              </span>
+            ) : '—'}
           </p>
           <p style={{ margin: '4px 0' }}><strong>Category:</strong> {occupancy.categoryName ?? '—'}</p>
           {occupancy.quantity != null && <p style={{ margin: '4px 0' }}><strong>On-hand Qty:</strong> {occupancy.quantity}</p>}

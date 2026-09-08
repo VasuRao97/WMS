@@ -247,6 +247,22 @@ model Company {
   // input on this page.
   abcAssessmentWindowMonths Int @default(3)
 
+  // FMS (Fast/Medium/Slow-moving) velocity classification (2026-09-08 — see
+  // [[wms-abc-velocity-design]] in memory for the full design conversation).
+  // A genuinely different axis from ABC above — ranked by DISPATCH ORDER
+  // COUNT (how often a SKU moves), not dispatched quantity (how much moves
+  // each time). Same cumulative-% cutoff mechanism as ABC, confirmed as its
+  // OWN separate setting rather than reusing ABC's percentages — an
+  // order-count distribution's shape doesn't have to match a quantity
+  // distribution's shape. Reuses ABC's own trailing-window infrastructure
+  // (Company.abcAssessmentWindowMonths, HistoricalDispatchSeed) rather than
+  // a second window setting — computed in the same monthly pass as ABC, onto
+  // the same SkuWarehouseClass row (see fmsClass there). 75/15/10 default,
+  // same placeholder-pending-real-client-numbers reasoning as ABC's own.
+  fmsClassFPercent Decimal @default(75)
+  fmsClassMPercent Decimal @default(15)
+  fmsClassSPercent Decimal @default(10)
+
   // 3D Plan View rendering preference only — a real warehouse doesn't need
   // a walking cross-aisle between every single Rack bay or Ground bin, only
   // periodically (fire code/equipment access), same real-world pattern as
@@ -2611,6 +2627,19 @@ model SkuWarehouseClass {
   // class — kept for audit/display (so a Supervisor can see WHY a SKU
   // landed where it did), not just the resulting letter.
   dispatchedQty Decimal
+  // FMS (Fast/Medium/Slow-moving) — 2026-09-08, see Company.fmsClassFPercent
+  // above and [[wms-abc-velocity-design]] in memory for the full design.
+  // A genuinely different axis from abcClass — ranked by dispatch ORDER
+  // COUNT within the same trailing window, not quantity. Both nullable
+  // (unlike abcClass, which is always written the moment a row exists):
+  // a SKU classified 'D' on the ABC axis (zero dispatches at all) gets NO
+  // FMS class — there's no frequency signal to measure either, and
+  // suggestBin() treats D as CS-equivalent regardless (confirmed directly:
+  // "D, you can treat to be the futherest, or want to merge with C?" →
+  // merge). orderCount is kept for the same audit/display reason
+  // dispatchedQty is.
+  fmsClass   String? // 'F' | 'M' | 'S', or null (SKU is ABC-class D, or not yet computed)
+  orderCount Decimal?
   computedAt    DateTime  @default(now())
 
   @@unique([skuId, warehouseId])
@@ -2644,6 +2673,13 @@ model HistoricalDispatchSeed {
   // genuinely all a historical total can honestly claim to know.
   month        DateTime
   quantity     Decimal
+  // Order-count bootstrap for FMS (2026-09-08) — deliberately the SAME row
+  // as the quantity above, not a second table: one flat SKU × Warehouse ×
+  // Month historical fact, just with a second optional number alongside
+  // the original. Nullable — a company only bootstrapping ABC (quantity)
+  // history isn't required to also supply an order count; that row simply
+  // contributes 0 to FMS's own real+seed sum until/unless it's filled in.
+  orderCount   Int?
   importedById String
   importedBy   User      @relation("HistoricalDispatchSeedImportedBy", fields: [importedById], references: [id])
   importedAt   DateTime  @default(now())

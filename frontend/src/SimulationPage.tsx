@@ -31,6 +31,7 @@ type SimStep = {
   skuId: string;
   skuCode: string;
   abcClass: string;
+  fmsClass: string | null;
   categoryId: string;
   categoryName: string;
   quantity: number;
@@ -225,7 +226,7 @@ function SimulationPage() {
   for (const s of steps.slice(0, revealedCount)) {
     if (!s.locationId || s.needsBin) continue;
     const priorQty = occupancyMap.get(s.locationId)?.quantity ?? 0;
-    occupancyMap.set(s.locationId, { locationId: s.locationId, skuId: s.skuId, skuCode: s.skuCode, categoryId: s.categoryId, categoryName: s.categoryName, abcClass: s.abcClass as any, quantity: priorQty + s.quantity });
+    occupancyMap.set(s.locationId, { locationId: s.locationId, skuId: s.skuId, skuCode: s.skuCode, categoryId: s.categoryId, categoryName: s.categoryName, abcClass: s.abcClass as any, fmsClass: s.fmsClass as any, quantity: priorQty + s.quantity });
   }
   const occupancy: Occupancy[] = [...occupancyMap.values()];
 
@@ -302,8 +303,8 @@ function SimulationPage() {
               <strong>Step {revealedCount} / {steps.length}</strong>
               {currentStep && (
                 currentStep.needsBin
-                  ? <span style={{ color: 'crimson' }}> — {currentStep.skuCode} (Class {currentStep.abcClass}) needed a bin, none found</span>
-                  : <span> — {currentStep.skuCode} (Class {currentStep.abcClass}), qty {currentStep.quantity} → {currentStep.rackName}</span>
+                  ? <span style={{ color: 'crimson' }}> — {currentStep.skuCode} (Class {currentStep.abcClass}/{currentStep.fmsClass ?? '—'}) needed a bin, none found</span>
+                  : <span> — {currentStep.skuCode} (Class {currentStep.abcClass}/{currentStep.fmsClass ?? '—'}), qty {currentStep.quantity} → {currentStep.rackName}</span>
               )}
               {needsBinCount > 0 && <span style={{ color: 'crimson' }}> ({needsBinCount} unit(s) so far needed a bin with none found)</span>}
             </div>
@@ -316,6 +317,7 @@ function SimulationPage() {
             <button type="button" onClick={() => setColorMode('structural')} style={{ fontWeight: colorMode === 'structural' ? 'bold' : 'normal' }}>Structural</button>
             <button type="button" onClick={() => setColorMode('category')} style={{ fontWeight: colorMode === 'category' ? 'bold' : 'normal' }}>Category</button>
             <button type="button" onClick={() => setColorMode('class')} style={{ fontWeight: colorMode === 'class' ? 'bold' : 'normal' }}>A/B/C Class</button>
+            <button type="button" onClick={() => setColorMode('fmsClass')} style={{ fontWeight: colorMode === 'fmsClass' ? 'bold' : 'normal' }}>F/M/S Class</button>
           </div>
 
           {planMode === '2d' ? (

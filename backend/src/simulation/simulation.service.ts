@@ -88,6 +88,11 @@ export type SimStep = {
   skuId: string;
   skuCode: string;
   abcClass: string;
+  // FMS (2026-09-08) — null when the pool SKU somehow has no
+  // SkuWarehouseClass row for this warehouse (shouldn't happen once
+  // ensureSkuPool's own backfill runs, but the type stays honest either
+  // way, same as the real occupancy overlay's own fmsClass field).
+  fmsClass: string | null;
   categoryId: string;
   categoryName: string;
   quantity: number;
@@ -395,7 +400,7 @@ export class SimulationService {
   // from one run to the next while you compare results). An even spread of
   // A/B/C classes, all under the one Simulation category so every one of
   // them is eligible for the sandbox's own WarehouseStorageType row.
-  private async ensureSkuPool(user: any, categoryId: string) {
+  private async ensureSkuPool(user: any, categoryId: string, warehouseId: string) {
     const existing = await this.prisma.sku.findMany({
       where: { companyId: user.companyId, code: { startsWith: SIM_SKU_PREFIX } },
       select: { id: true, code: true, abcClass: true },
@@ -430,9 +435,55 @@ export class SimulationService {
       });
       existing.push({ id: sku.id, code: sku.code, abcClass: sku.abcClass });
     }
+
+    // FMS (2026-09-08) — the ONLY place fmsClass can live is a
+    // SkuWarehouseClass row (no manual/imported field for it the way
+    // Sku.abcClass exists for ABC). Spread independently of each SKU's own
+    // ABC class (offset mod-3 index) so the pool covers real combinations
+    // (an A-class SKU that's also Fast, another A-class SKU that's Slow,
+    // etc.) — the whole point of the FMS×ABC study was that the two axes
+    // are independent, so the sandbox should actually demonstrate that, not
+    // just always move in lockstep. Backfills EVERY pool SKU that's still
+    // missing a row for this warehouse, not just ones created just now — a
+    // sandbox that already existed before this feature (or before this
+    // warehouse's current layout was built) would otherwise show blank FMS
+    // colors forever, since the create-loop above only ever runs for
+    // genuinely new SKUs. abcClass here matches the Sku row's own class,
+    // deliberately — suggestBin() prefers a SkuWarehouseClass.abcClass when
+    // present, so this keeps the sandbox's real placement behavior (which
+    // class governs the aisle) unchanged; only fmsClass is new information.
+    // dispatchedQty/orderCount are placeholders (0) — nothing here derives
+    // from them, only abcClass/fmsClass matter to suggestBin().
+    const fmsClasses = ['F', 'M', 'S'] as const;
+    const currentClasses = await this.prisma.skuWarehouseClass.findMany({
+      where: { warehouseId, skuId: { in: existing.map((s) => s.id) } },
+      select: { skuId: true },
+    });
+    const alreadyHasClass = new Set(currentClasses.map((c) => c.skuId));
+    for (let i = 0; i < existing.length; i++) {
+      const sku = existing[i];
+      if (alreadyHasClass.has(sku.id)) continue;
+      // abcClass cycles every SKU (classes[n%3], n=i+1 at creation time); a
+      // plain fmsClasses[(i+1)%3] would share that exact period-3 cadence
+      // with a constant phase offset, which always locks onto only 3 of the
+      // 9 possible ABC×FMS pairs no matter which offset is picked (two
+      // period-3 sequences with a fixed relative phase can only ever trace
+      // 3 distinct combinations — caught by the diagnostic script's own
+      // "real ABC×FMS combinations" check, which failed the first version
+      // of this formula). Changing FMS only every 3 SKUs (period 9 overall)
+      // decorrelates it from ABC's own period-3 cadence, covering all 9
+      // real combinations across the 12-SKU pool instead of just 3.
+      const fmsCls = fmsClasses[Math.floor(i / 3) % 3];
+      await this.prisma.skuWarehouseClass.upsert({
+        where: { skuId_warehouseId: { skuId: sku.id, warehouseId } },
+        update: {},
+        create: { skuId: sku.id, warehouseId, abcClass: sku.abcClass || 'C', dispatchedQty: 0, fmsClass: fmsCls, orderCount: 0 },
+      });
+    }
+
     return this.prisma.sku.findMany({
       where: { companyId: user.companyId, code: { startsWith: SIM_SKU_PREFIX } },
-      include: { category: { select: { name: true } } },
+      include: { category: { select: { name: true } }, warehouseClasses: { where: { warehouseId }, select: { fmsClass: true } } },
     });
   }
 
@@ -463,7 +514,7 @@ export class SimulationService {
     const unitCount = Math.max(1, Math.min(MAX_UNIT_COUNT, Math.floor(Number(unitCountRaw) || 0) || 1));
     const warehouse = await this.ensureSandbox(user, layoutConfig);
     const category = await this.prisma.productCategory.findFirst({ where: { name: SIM_CATEGORY_NAME } });
-    const pool = await this.ensureSkuPool(user, category!.id);
+    const pool = await this.ensureSkuPool(user, category!.id, warehouse.id);
 
     const steps: SimStep[] = [];
     let lastSkuIndex = -1;
@@ -514,6 +565,7 @@ export class SimulationService {
         skuId: sku.id,
         skuCode: sku.code,
         abcClass: (sku.abcClass || 'C').toUpperCase(),
+        fmsClass: (sku as any).warehouseClasses?.[0]?.fmsClass ? (sku as any).warehouseClasses[0].fmsClass.toUpperCase() : null,
         categoryId: category!.id,
         categoryName: (sku as any).category?.name || SIM_CATEGORY_NAME,
         quantity,

@@ -742,9 +742,23 @@ export class LocationsService {
       select: { id: true, code: true, abcClass: true, category: { select: { id: true, name: true } } },
     });
     const skuById = new Map(skus.map((s) => [s.id, s]));
+    // FMS×ABC (2026-09-08) — the per-warehouse COMPUTED classification
+    // (SkuWarehouseClass, real trailing-dispatch-derived) is fetched here
+    // too, same override-when-known/fall-back-to-manual chain suggestBin()
+    // itself already uses — this occupancy overlay predates SkuWarehouseClass
+    // (built 2026-09-05, a day before Topic 1 shipped) and had never been
+    // updated to prefer it for abcClass; doing so now costs nothing extra,
+    // since the same row has to be fetched for fmsClass anyway (fmsClass has
+    // no manual-fallback equivalent at all — it's purely a computed fact).
+    const warehouseClasses = await this.prisma.skuWarehouseClass.findMany({
+      where: { warehouseId, skuId: { in: skuIds } },
+      select: { skuId: true, abcClass: true, fmsClass: true },
+    });
+    const warehouseClassBySku = new Map(warehouseClasses.map((w) => [w.skuId, w]));
 
     return [...occupantSkuIdByLocation.entries()].map(([locationId, skuId]) => {
       const sku = skuById.get(skuId);
+      const warehouseClass = warehouseClassBySku.get(skuId);
       return {
         locationId,
         skuId,
@@ -753,7 +767,11 @@ export class LocationsService {
         // already use, confirmed 2026-08-28.
         categoryId: sku?.category?.id ?? null,
         categoryName: sku?.category?.name ?? null,
-        abcClass: (sku?.abcClass || 'C').toUpperCase(),
+        abcClass: (warehouseClass?.abcClass || sku?.abcClass || 'C').toUpperCase(),
+        // No manual-class equivalent to fall back to — null means either the
+        // occupant is ABC-class D (no FMS lookup, treated as CS regardless)
+        // or FMS classification hasn't been run for this warehouse yet.
+        fmsClass: warehouseClass?.fmsClass ? warehouseClass.fmsClass.toUpperCase() : null,
         // On-hand quantity at this location, for the click-to-inspect panel
         // (2026-09-06 — "I need SKU details in it also") — the exact same
         // positive balance already computed above, just carried through
