@@ -7,16 +7,23 @@ holds a short current-state pointer — don't grow it into a run-on paragraph ag
 ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
 full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
 
-**Last updated 2026-09-08.** Most recent work: the FMS×ABC combined-classification study — design
-settled through a real round-by-round conversation, then built and verified the same session (see
-CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section). FMS (Fast/Medium/
-Slow, ranked by dispatch order count) now rides alongside ABC on the same monthly job and the same
-`SkuWarehouseClass` row; `suggestBin()`'s aisle and level tiebreaks are now independent — ABC picks
-the aisle exactly as before, FMS now picks the rack level. FMS class is also now visible in the
-occupancy overlay (2D/3D/Simulation) and click-to-inspect detail panel, same-day follow-up. Next
-candidates: the reslotting/
-consolidation suggestion engine (now doubly unblocked — Topics 1/2 AND FMS are all in place) or
-Inventory (the next module in the build order) — see "Immediate candidates" below.
+**Last updated 2026-09-09.** Most recent work: the FMS×ABC combined-classification study (design
+settled through a real round-by-round conversation, then built 2026-09-08 — see CLAUDE.md's
+"FMS×ABC combined classification" section), its same-day display follow-up (a 4th occupancy-overlay
+color mode, "F/M/S Class," in 2D/3D/Simulation), Ground/Floor's own FMS×ABC placement (2026-09-09 —
+a combined priority score, since Ground only has one physical lever unlike Rack's independent
+aisle+level axes) plus a 5th color mode, "Priority Gradient" (continuous green→yellow→red), and now
+a 6th color mode, "Bin Rank" (2026-09-09, same day) — a literal 1-9 number + matching gradient on
+every Ground bin's own POSITION (matching the ABC×FMS matrix cell its proximity represents), shown
+regardless of occupancy — the client's own clarified ask after a Dock Proximity detour got fully
+reverted. Rack's aisle/level tiebreaks are independent (ABC picks aisle, FMS picks level); Ground's
+are blended into one score (AF nearest, CS farthest, real gradation in between). (A separate "Dock
+Proximity" mode was tried and fully reverted the same day, before ever being committed — a misread
+of the client's own ask, see CLAUDE.md's "A misread, built then reverted" note — Priority Gradient
+and Bin Rank are the two ABC×FMS visualizations that actually shipped.) Next candidates: the
+reslotting/consolidation suggestion engine (now doubly unblocked — Topics 1/2 AND FMS are all in
+place), asking whether Rack should get its own analogous Bin Rank treatment (flagged, not confirmed),
+or Inventory (the next module in the build order) — see "Immediate candidates" below.
 
 See the 2026-09-06 session notes further down for that whole day's earlier work (Ground/Floor
 Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
@@ -55,9 +62,10 @@ have been wrong) plus a live UI pass (Company Settings save/reload round-trip co
 live DOM, not just displayed text). `tsc --noEmit`/`tsc -b`/`nest build` all clean.
 
 **Still genuinely open**: the real order-count formula is correct by construction but unexercised
-against real data (no Outbound module writes DISPATCH movements yet); Ground/Stillage's own
-FMS-driven placement enhancement (flagged, not built — no `level` field exists on a Ground
-candidate to enhance); the reslotting/consolidation suggestion engine (now doubly unblocked).
+against real data (no Outbound module writes DISPATCH movements yet); the reslotting/consolidation
+suggestion engine (now doubly unblocked). Ground's own FMS-driven placement enhancement was flagged
+here as open — **now built, see the 2026-09-09 session note below**; Stillage's own version is
+still genuinely untouched (never discussed).
 
 **Same-day follow-up: the FMS class is now visible, not just consumed internally by
 `suggestBin()`** — "can we have this rank displayed in the simulation / 3d views." A 4th occupancy-
@@ -73,6 +81,71 @@ with a fixed offset only ever trace 3 of 9 possible combinations, not a real ind
 Verified 6/6 via a throwaway-company diagnostic script plus a live UI pass (ran a real 20-unit
 simulation, confirmed real FMS-class colors applied to real boxes via the live SVG, confirmed the
 detail panel matches). See CLAUDE.md's "FMS Class display" section for full detail.
+
+## Session note (2026-09-09 — Ground/Floor's own FMS×ABC placement, plus a Priority Gradient visual)
+
+Closes the "Ground's own FMS-driven placement enhancement" item left open above. My first proposal
+(depth-tier as an SPR-Level analog) was rejected directly — "no, we just need to map like closest
+bin to outbound dock is A-F combo and further be next set of, then furtherest b the rest." Settled
+as a **combined ABC×FMS priority score** (not hand-drawn tier boundaries) — the right mechanism
+here, not just the simplest, since Ground genuinely has only one physical lever (aisle/dock
+proximity, no vertical level), so FMS can only ever matter by blending into that one lever, unlike
+Rack's independent axes. `PutawayTasksService.combinedPriorityScore()`: AF=2 (best), CS=6 (worst),
+D=CS (same precedent as Rack's own level tiebreak). Placement itself maps the score onto a genuine
+TARGET position along the near..far proximity range and ranks candidates by closeness to it — a
+simple near/far direction can't produce real gradation for a single SKU's own greedy bin search, so
+this needed an actual mechanism change, not just a richer input to the old one. A real off-by-one
+bug (`outboundRanker()` is 0-indexed, the first formula assumed 1-indexed — every SKU landed one
+aisle too far out) was caught by the diagnostic script and fixed.
+
+**Same-session follow-up, confirmed directly** ("i do wanna see a visual about this in our
+simulation tab... colour gradient for it, green being A-F slowlly moving to yellow then red") — a
+5th occupancy-overlay mode, "Priority Gradient": a real continuous green→yellow→red HSL gradient
+(not a fixed palette, since the whole point is to SEE whether placement is actually respecting the
+score), wired into the same shared color-resolution function every other mode uses, so it shows in
+2D/3D/Simulation automatically. Detail panel gained a matching "Priority Score" row.
+
+Verified via a throwaway-company diagnostic script against the real, unmodified `suggestBin()`
+(6/6, after the off-by-one fix): 5 SKUs spanning all 5 distinct combined scores, placed in a
+deliberately shuffled worst-first order, each landing on exactly its target aisle regardless of
+placement order — proving the result is genuinely score-driven, not an artifact of placement
+sequence. Live UI pass confirmed real HSL gradient colors on real boxes via the live SVG, matching
+the detail panel exactly. See CLAUDE.md's "Ground/Floor's own FMS×ABC placement" section for full
+detail. **Stillage's own version of this is still untouched** — never discussed, not decided
+against.
+
+## Session note (2026-09-09, same day continued — "Bin Rank": a literal 1-9 number + gradient per Ground bin)
+
+A brief detour first, worth recording honestly: right after Priority Gradient shipped, "doesnt
+matter if occupancy is there or not, the person designing the wh should know if the location
+hierarchy is correct" was misread as a request for a genuinely different, occupancy-independent
+metric — built as a 6th color mode ("Dock Proximity") with its own endpoint, verified working, then
+**fully removed before ever being committed** once the client clarified directly: "i dont want
+either abc and fms, but only the abc-fms combo study we did?? ... i never meant dock proximity, idk
+why and whats that." See CLAUDE.md's "A misread, built then reverted" note.
+
+The client's actual, clarified ask: "i jst want you do number / rank each bin with the numbering we
+did for the abc-fms calcuation," refined to "first number ranking, then make the pallet colour in
+the gradient type. so i know which ranked 1 2 3 -- 9 .. idc if the bin is used or not, i just wanna
+know our bin ranking." Confirmed with "ok proceed" after two verification questions (does bin
+numbering need to exist before a SKU is placed — yes, it's a static positional fact independent of
+any SKU; does the system fall through to the next-best rank when the ideal one is full — yes,
+verified via a real diagnostic script). Built as a 6th color mode, "Bin Rank" — a NEW, separate
+1-9 formula (`(abcRank-1)*3+fmsRank`, mapping one-to-one onto the 9 real ABC×FMS matrix cells) from
+Priority Gradient's own 2-6 `combinedPriorityScore()` — every Ground bin gets a literal number badge
++ matching green→red gradient color on its own POSITION, occupied or not, including unselected 3D
+footprint blocks (which the occupancy-based modes can't safely color). Scoped to Ground only —
+Rack's independent ABC(aisle)/FMS(level) axes mean one number can't honestly represent a Rack bin's
+position the way it can for Ground's single combined lever (my own reasoning, not yet re-confirmed).
+
+Verified via a throwaway diagnostic script (12/12) plus a full live browser pass (a fresh warehouse,
+9 real Ground aisles, a configured OUTBOUND dock zone) — confirmed the real API response, the live
+SVG gradient colors and numbered badges in 2D, and the live 3D detail-box rank/color plus
+click-to-inspect DetailPanel row, all matching exactly. See CLAUDE.md's "'Bin Rank' — a literal 1-9
+number + gradient per Ground bin" section for full detail. `tsc --noEmit`/`tsc -b` both clean.
+**Still uncommitted** — on `feature/fms-abc-classification` alongside everything else from
+2026-09-08/09, pending the client's own commit/push call. **Not yet asked**: whether Rack should get
+its own analogous ranking treatment.
 
 ## Session note (2026-09-07 — Ground depth-tier stacking, generator simplification, 3D camera/numbering fixes, ProductCategory cleanup)
 
@@ -967,9 +1040,12 @@ Pick one — these are the live options on the table, not a forced order:
    since Topic 1 — the actual detect-a-misplaced-SKU/suggest-a-target-bin algorithm and its daily job
    still need designing and building.
 2. ~~FMS classification combined with ABC~~ — **BUILT 2026-09-08**, see the session note above and
-   CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section. Ground/Stillage's
-   own FMS-driven placement enhancement is the one genuine follow-on left (no `level` field exists on
-   a Ground candidate today to enhance — flagged, not decided against).
+   CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section. Ground's own
+   FMS-driven placement (a combined priority score + "Priority Gradient"/"Bin Rank" visuals) is also
+   now **BUILT 2026-09-09** — see the two same-day session notes above. Stillage's own version is the
+   one genuine follow-on left (never discussed). **Not yet asked**: whether Rack (SPR/ASRS) should get
+   its own analogous "Bin Rank" numbering treatment, alongside its existing independent aisle/level
+   placement — the Ground-only scoping was a judgment call, not confirmed with the client.
 3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
    it. Even a read-only view would close a real, felt gap. Next in the stated module build order.

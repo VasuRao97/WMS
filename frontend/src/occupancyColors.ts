@@ -34,7 +34,7 @@ export type Occupancy = {
   quantity?: number;
 };
 
-export type ColorMode = 'structural' | 'category' | 'class' | 'fmsClass';
+export type ColorMode = 'structural' | 'category' | 'class' | 'fmsClass' | 'priority' | 'binRank';
 
 export const NEUTRAL_COLOR = { fill: '#f3f4f6', stroke: '#9ca3af' };
 
@@ -55,6 +55,66 @@ export const FMS_CLASS_COLORS: Record<'F' | 'M' | 'S', { fill: string; stroke: s
   M: { fill: '#fef3c7', stroke: '#d97706' },
   S: { fill: '#dbeafe', stroke: '#2563eb' },
 };
+
+// Combined ABC×FMS priority score, "By Priority Gradient" mode (2026-09-09
+// — see [[wms-abc-velocity-design]] in memory). Ground's own placement
+// mechanism (suggestGroundBin() in putaway-tasks.service.ts) — Ground has
+// only one physical lever (aisle/dock proximity, no vertical level concept
+// the way Rack has), so FMS blends into the SAME score ABC already drives
+// rather than getting its own independent lever. This is a byte-identical
+// mirror of PutawayTasksService.combinedPriorityScore() on the backend —
+// duplicated rather than shared, same "no shared package between frontend/
+// backend" convention as every other cross-cutting pure function in this
+// codebase (e.g. buildRackName's own frontend/backend copies). Keep both in
+// sync if the scoring formula ever changes.
+export function combinedPriorityScore(abcClass: string, fmsClass: string | null | undefined): number {
+  if (abcClass === 'D') return 6;
+  const abcRank = abcClass === 'A' ? 1 : abcClass === 'B' ? 2 : 3;
+  const fmsRank = fmsClass === 'F' ? 1 : fmsClass === 'M' ? 2 : fmsClass === 'S' ? 3 : abcRank;
+  return abcRank + fmsRank;
+}
+
+// 2 (AF, the best possible score) down to 6 (CS/D, the worst) mapped onto a
+// continuous green→yellow→red HSL gradient — confirmed directly: "colour
+// gradient for it, green being A-F slowlly moving to yellow then red." A
+// gradient, not a fixed lookup table, is the whole point here — this mode
+// exists specifically to let you SEE whether Ground placement is actually
+// respecting the combined score (green bins clustering near outbound, red
+// bins clustering far), which a handful of discrete buckets would obscure.
+export function priorityGradientColor(occ: Occupancy): { fill: string; stroke: string } {
+  const score = combinedPriorityScore(occ.abcClass, occ.fmsClass);
+  const t = (score - 2) / 4; // 0 = best (green) .. 1 = worst (red)
+  const hue = 120 - t * 120; // 120=green, 60=yellow (the score=4 midpoint), 0=red
+  return { fill: `hsl(${hue}, 70%, 88%)`, stroke: `hsl(${hue}, 65%, 45%)` };
+}
+
+// Bin Rank, "By Bin Rank" mode (2026-09-09) — genuinely different from
+// every mode above: LOCATION-INTRINSIC (no occupancy or SKU involved at
+// all), and a discrete 1-9 NUMBER shown as text on the bin itself, not
+// just a color. Confirmed directly, multiple rounds of clarifying this was
+// NOT the same thing as the (removed) "Dock Proximity" mode: "i mean, yes?
+// ... first number ranking, then make the pallet colour in the gradient
+// type. so i know which ranked 1 2 3 -- 9 .. idc if the bin is used or
+// not, i just wanna know our bin ranking." The number IS the 9-cell
+// ABC×FMS matrix itself (1=AF best .. 9=CS worst, row-major — the same
+// order the whole FMS×ABC design already uses), not a disconnected
+// geometry number the way the removed mode was — the actual fix for why
+// that one didn't register as "the ABC-FMS thing."
+export const BIN_RANK_MATRIX_LABELS = ['AF', 'AM', 'AS', 'BF', 'BM', 'BS', 'CF', 'CM', 'CS'];
+
+// Scoped to Ground/Floor only (see LocationsService.binRankByWarehouse()'s
+// own comment for why — Rack splits ABC/FMS across two independent levers,
+// so a single number per bin wouldn't honestly represent a Rack position).
+export type BinRank = { configured: boolean; ranks: { aisle: string; rank: number; label: string }[] };
+
+// Same green→yellow→red HSL gradient formula as Priority Gradient's own
+// (combinedPriorityScore-driven) coloring, just mapped onto the 1-9 range
+// instead of the 2-6 one — 1 (AF, best) is green, 9 (CS, worst) is red.
+export function binRankColor(rank: number): { fill: string; stroke: string } {
+  const t = (rank - 1) / 8; // 0 = best (green) .. 1 = worst (red)
+  const hue = 120 - t * 120;
+  return { fill: `hsl(${hue}, 70%, 88%)`, stroke: `hsl(${hue}, 65%, 45%)` };
+}
 
 // Categories are open-ended (however many a company has created) — a fixed
 // rotating palette assigned by sorted category name, so the same category
@@ -105,6 +165,7 @@ export function occupancyColorFor(
   if (!occ) return NEUTRAL_COLOR;
   if (mode === 'class') return ABC_CLASS_COLORS[occ.abcClass] || NEUTRAL_COLOR;
   if (mode === 'fmsClass') return (occ.fmsClass && FMS_CLASS_COLORS[occ.fmsClass]) || NEUTRAL_COLOR;
+  if (mode === 'priority') return priorityGradientColor(occ);
   if (occ.categoryId) return categoryColors.get(occ.categoryId) || NEUTRAL_COLOR;
   return NEUTRAL_COLOR;
 }

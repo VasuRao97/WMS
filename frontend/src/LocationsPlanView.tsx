@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
-import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, FMS_CLASS_COLORS, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
+import { type ColorMode, type Occupancy, type BinRank, ABC_CLASS_COLORS, FMS_CLASS_COLORS, BIN_RANK_MATRIX_LABELS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor, binRankColor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
 import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
@@ -342,7 +342,7 @@ function buildLayout(locations: Location[]): { aisles: AisleBlock[]; skipped: nu
   return { aisles, skipped };
 }
 
-function AisleCellBox({ box, x, y, color, onClick }: { box: Box; x: number; y: number; color: { fill: string; stroke: string }; onClick: (locationId: string) => void }) {
+function AisleCellBox({ box, x, y, color, rankLabel, onClick }: { box: Box; x: number; y: number; color: { fill: string; stroke: string }; rankLabel?: string; onClick: (locationId: string) => void }) {
   return (
     <g onClick={() => onClick(box.key)} style={{ cursor: 'pointer' }}>
       <rect
@@ -369,6 +369,18 @@ function AisleCellBox({ box, x, y, color, onClick }: { box: Box; x: number; y: n
           {line}
         </text>
       ))}
+      {/* Bin Rank (2026-09-09) — the actual number printed ON the bin, not
+          just implied by color, confirmed directly ("first number ranking,
+          then make the pallet colour"). A bold badge circle, top-right
+          corner, so it never collides with the existing centered lines. */}
+      {rankLabel && (
+        <>
+          <circle cx={x + box.width - 11} cy={y + 11} r={10} fill="#fff" stroke={color.stroke} strokeWidth={1.5} />
+          <text x={x + box.width - 11} y={y + 15} textAnchor="middle" fontSize={12} fontWeight="bold" fill={color.stroke} fontFamily="sans-serif">
+            {rankLabel}
+          </text>
+        </>
+      )}
     </g>
   );
 }
@@ -377,7 +389,23 @@ function AisleCellBox({ box, x, y, color, onClick }: { box: Box; x: number; y: n
 // edgeX is the walkway's right edge and boxes grow rightward (deeper lanes
 // extend further from the aisle); for the left flank, edgeX is the
 // walkway's left edge and boxes grow leftward. `direction` controls which.
-function Flank({ cells, edgeX, direction, yForRow, getColor, onSelect }: { cells: Cell[]; edgeX: number; direction: 1 | -1; yForRow: (r: number) => number; getColor: (box: Box) => { fill: string; stroke: string }; onSelect: (locationId: string) => void }) {
+function Flank({
+  cells,
+  edgeX,
+  direction,
+  yForRow,
+  getColor,
+  getRankLabel,
+  onSelect,
+}: {
+  cells: Cell[];
+  edgeX: number;
+  direction: 1 | -1;
+  yForRow: (r: number) => number;
+  getColor: (box: Box) => { fill: string; stroke: string };
+  getRankLabel: (box: Box) => string | undefined;
+  onSelect: (locationId: string) => void;
+}) {
   return (
     <>
       {cells.map((cell, r) => {
@@ -388,7 +416,7 @@ function Flank({ cells, edgeX, direction, yForRow, getColor, onSelect }: { cells
             {cell.boxes.map((box) => {
               const x = direction === 1 ? cursor : cursor - box.width;
               cursor = direction === 1 ? cursor + box.width : cursor - box.width;
-              return <AisleCellBox key={box.key} box={box} x={x} y={y} color={getColor(box)} onClick={onSelect} />;
+              return <AisleCellBox key={box.key} box={box} x={x} y={y} color={getColor(box)} rankLabel={getRankLabel(box)} onClick={onSelect} />;
             })}
           </g>
         );
@@ -397,7 +425,7 @@ function Flank({ cells, edgeX, direction, yForRow, getColor, onSelect }: { cells
   );
 }
 
-function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: { locations: Location[]; warehouseLabel: string; colorMode: ColorMode; occupancy: Occupancy[] }) {
+function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, binRank }: { locations: Location[]; warehouseLabel: string; colorMode: ColorMode; occupancy: Occupancy[]; binRank?: BinRank }) {
   // Click-to-inspect (2026-09-05 "upgrade mode" backlog, item 2) — closes
   // the original 2026-08-25 deferred item, 3D got it first. Hook called
   // unconditionally before the early-return empty states below, same rule
@@ -461,14 +489,39 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
   // that signal stays distinct on purpose, same as it always has been.
   const occupancyByLocationId = new Map(occupancy.map((o) => [o.locationId, o]));
   const categoryColors = buildCategoryColorMap(occupancy);
+  // Bin Rank (2026-09-09) — LOCATION-INTRINSIC, so resolved before
+  // occupancyColorFor() rather than through it, same as every other
+  // location-intrinsic mode this file has ever had. Ground/Floor only —
+  // see BinRank's own type comment for why Rack isn't covered.
+  const binRankByAisle = new Map((binRank?.ranks ?? []).map((r) => [r.aisle, r]));
   const getColor = (box: Box): { fill: string; stroke: string } => {
+    if (colorMode === 'binRank') {
+      if (box.storageType !== 'GROUND_FLOOR') return NEUTRAL_COLOR;
+      const aisle = locationById.get(box.key)?.aisle;
+      const entry = aisle != null ? binRankByAisle.get(aisle) : undefined;
+      if (!binRank?.configured || !entry) return NEUTRAL_COLOR;
+      return binRankColor(entry.rank);
+    }
     const overlay = occupancyColorFor(colorMode, occupancyByLocationId.get(box.key), categoryColors);
     return overlay ?? STORAGE_TYPE_COLORS[box.storageType] ?? DEFAULT_BOX_COLOR;
+  };
+  const getRankLabel = (box: Box): string | undefined => {
+    if (colorMode !== 'binRank' || box.storageType !== 'GROUND_FLOOR') return undefined;
+    const aisle = locationById.get(box.key)?.aisle;
+    const entry = aisle != null ? binRankByAisle.get(aisle) : undefined;
+    return entry ? String(entry.rank) : undefined;
   };
 
   return (
     <div style={{ position: 'relative' }}>
-      {selected && <DetailPanel location={selected} occupancy={occupancyByLocationId.get(selected.id)} onClose={() => setSelected(null)} />}
+      {selected && (
+        <DetailPanel
+          location={selected}
+          occupancy={occupancyByLocationId.get(selected.id)}
+          binRankEntry={selected.storageType === 'GROUND_FLOOR' && selected.aisle != null ? binRankByAisle.get(selected.aisle) : undefined}
+          onClose={() => setSelected(null)}
+        />
+      )}
       <p style={{ fontSize: 12, color: '#666', marginTop: 4, marginBottom: 12 }}>
         <strong>{warehouseLabel}</strong> — {aisles.length} aisle(s).{' '}
         {colorMode === 'structural'
@@ -477,7 +530,11 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
             ? "Colored by each bin's current occupant Category — plain grey means empty."
             : colorMode === 'class'
               ? "Colored by each bin's current occupant's A/B/C Class — plain grey means empty."
-              : "Colored by each bin's current occupant's F/M/S Class — plain grey means empty, or FMS not yet computed for this SKU."}
+              : colorMode === 'fmsClass'
+                ? "Colored by each bin's current occupant's F/M/S Class — plain grey means empty, or FMS not yet computed for this SKU."
+                : colorMode === 'priority'
+                  ? "Colored by each bin's current occupant's combined ABC×FMS priority score — green (AF, best) through yellow to red (CS/D, worst); plain grey means empty. Ground/Floor's own placement uses this exact score to decide proximity to the outbound dock."
+                  : "Ground/Floor bins only — numbered 1-9 and colored on the same green-to-red gradient, matching the ABC×FMS matrix cell each bin's own POSITION represents (1=AF nearest outbound, 9=CS farthest) — regardless of whether anything is in it. Needs an OUTBOUND Dock Zone configured in Company Settings; Rack bins always show plain grey here."}
         {' '}Aisle 1 sits closest to the bottom-right corner; each further aisle is added to its left. A single-sided
         aisle draws as one flank on the right; a second flank (left) only appears when it was actually generated (a
         Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number — each
@@ -522,6 +579,23 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
               Class {cls}
             </span>
           ))}
+        {colorMode === 'priority' && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>Best (AF)</span>
+            <span style={{ width: 90, height: 12, borderRadius: 2, background: 'linear-gradient(to right, hsl(120,65%,45%), hsl(60,65%,45%), hsl(0,65%,45%))', display: 'inline-block', border: '1px solid #ccc' }} />
+            <span>Worst (CS/D)</span>
+          </span>
+        )}
+        {colorMode === 'binRank' && (
+          <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 90, height: 12, borderRadius: 2, background: 'linear-gradient(to right, hsl(120,65%,45%), hsl(60,65%,45%), hsl(0,65%,45%))', display: 'inline-block', border: '1px solid #ccc' }} />
+            </span>
+            {BIN_RANK_MATRIX_LABELS.map((label, i) => (
+              <span key={label} style={{ fontSize: 11, color: '#666' }}>{i + 1}={label}</span>
+            ))}
+          </span>
+        )}
         {colorMode === 'category' &&
           [...new Map(occupancy.filter((o) => o.categoryId).map((o) => [o.categoryId, o.categoryName])).entries()]
             .sort((a, b) => (a[1] || '').localeCompare(b[1] || ''))
@@ -743,8 +817,8 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy }: 
                       </text>
                     </>
                   )}
-                  <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} getColor={getColor} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
-                  <Flank cells={aisle.rightCells} edgeX={walkwayRightX} direction={1} yForRow={yForRow} getColor={getColor} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
+                  <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} getColor={getColor} getRankLabel={getRankLabel} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
+                  <Flank cells={aisle.rightCells} edgeX={walkwayRightX} direction={1} yForRow={yForRow} getColor={getColor} getRankLabel={getRankLabel} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
                 </g>
               );
             });

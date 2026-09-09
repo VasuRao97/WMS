@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
 import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
 import { displayCode, RACK_STORAGE_TYPES } from '../common/rack-name.util';
+import { buildOutboundProximityRanker } from '../common/dock-zone.util';
 import * as bwipjs from 'bwip-js';
 import { ZipArchive } from 'archiver';
 
@@ -779,6 +780,56 @@ export class LocationsService {
         quantity: balanceByLocSku.get(`${locationId}|${skuId}`) ?? 0,
       };
     });
+  }
+
+  // Bin Rank — "which of the 9 ABC×FMS matrix cells does this bin's own
+  // POSITION represent" (2026-09-09, see [[wms-abc-velocity-design]] in
+  // memory). Genuinely location-intrinsic, no occupancy or SKU involved at
+  // all — confirmed directly, multiple rounds: "idc if the bin is used or
+  // not, i just wanna know our bin ranking," and the exact numbering is the
+  // 9-cell matrix itself, 1=AF (best) through 9=CS (worst), same order
+  // already used throughout this design (row-major: A-row/B-row/C-row,
+  // F/M/S across each). Scoped to GROUND_FLOOR only — that's the one
+  // storage type where a SINGLE combined score genuinely drives placement
+  // (`PutawayTasksService.suggestGroundBin()`'s own target-rank mechanism);
+  // Rack (SPR/ASRS) splits ABC and FMS across two INDEPENDENT levers
+  // (aisle vs. level), so a single 1-9 number per bin wouldn't honestly
+  // represent a Rack position without also folding in its Level — flagged
+  // as a genuine open follow-on, not silently included with a half-formed
+  // number. Reuses the exact same buildOutboundProximityRanker()
+  // suggestGroundBin() itself calls, then buckets the resulting 0-indexed
+  // proximity rank evenly across the 9 cells — an even geometric split,
+  // since there's no SKU here to derive an exact combinedPriorityScore
+  // from, only a position to estimate one for.
+  private static readonly BIN_RANK_MATRIX_LABELS = ['AF', 'AM', 'AS', 'BF', 'BM', 'BS', 'CF', 'CM', 'CS'];
+
+  async binRankByWarehouse(warehouseId: string, user: any) {
+    if (!warehouseId) throw new BadRequestException('warehouseId is required.');
+    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+    if (!warehouse) throw new NotFoundException('Warehouse not found.');
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) {
+      throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+
+    const groundLocations = await this.prisma.location.findMany({ where: { warehouseId, storageType: 'GROUND_FLOOR' }, select: { aisle: true } });
+    const distinctAisles = [...new Set(groundLocations.map((l) => l.aisle).filter((a): a is string => a != null))];
+    if (distinctAisles.length === 0) return { configured: false, ranks: [] };
+
+    const dockZones = await this.prisma.warehouseDockZone.findMany({ where: { warehouseId }, select: { purpose: true, nearAisleEnd: true } });
+    const ranker = buildOutboundProximityRanker(distinctAisles, dockZones);
+    if (!ranker) return { configured: false, ranks: [] };
+
+    const rawRanks = distinctAisles.map((aisle) => ({ aisle, raw: ranker(aisle) }));
+    const maxRaw = Math.max(...rawRanks.map((r) => r.raw));
+    const ranks = rawRanks.map(({ aisle, raw }) => {
+      const bucket = maxRaw > 0 ? Math.min(9, Math.max(1, Math.round((raw / maxRaw) * 8) + 1)) : 1;
+      return { aisle, rank: bucket, label: LocationsService.BIN_RANK_MATRIX_LABELS[bucket - 1] };
+    });
+    return { configured: true, ranks };
   }
 
   // Location Labels (2026-08-29) — a genuine, simple stand-in for a real

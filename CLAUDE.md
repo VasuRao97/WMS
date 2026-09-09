@@ -4930,6 +4930,157 @@ confirmed the real Locations page's own Plan View also shows the new "F/M/S Clas
 (same shared component, not separately re-verified end-to-end there since the underlying logic is
 identical). `tsc --noEmit`/`tsc -b`/`nest build` all clean.
 
+### Ground/Floor's own FMS×ABC placement — a combined priority score, plus a gradient visual (2026-09-09)
+Closes the "Ground/Stillage's own FMS-driven placement enhancement" item flagged open when the
+core FMS×ABC work shipped — see [[wms-abc-velocity-design]] in memory for the full design
+conversation. My first instinct (Ground's depth-tier stacking as an SPR-Level analog) was rejected
+directly — "no, we just need to map like closest bin to outbound dock is A-F combo and further be
+next set of, then furtherest b the rest." The real, settled resolution: Ground has only ONE
+physical lever (aisle/dock proximity — no vertical level concept the way Rack has), so unlike
+Rack's independent-axes choice, FMS can only ever matter for Ground by blending into that SAME
+lever, not by getting its own. A **combined ABC×FMS priority score** — not a set of hand-drawn
+tier boundaries — was the resolution, precisely because a continuous score sidesteps the genuinely
+arguable "what exactly is in the middle tier" question a fixed 3-zone split would have needed.
+
+**`PutawayTasksService.combinedPriorityScore(abcClass, fmsClass)`** — `abcRank`/`fmsRank` both
+1 (best) to 3 (worst), summed: AF=2 (best possible), CS=6 (worst). D scores identically to CS —
+same "D behaves exactly like CS" precedent Rack's own level tiebreak already established, not a
+separate "even worse" tier, since there's no real signal to justify one. An unknown `fmsClass`
+(feature not yet run) falls back to `fmsRank = abcRank`, collapsing the formula to exactly
+`2×abcRank` — the SAME relative ordering as the old pure-ABC near/far split, so an unconfigured/
+not-yet-classified SKU sees zero placement regression.
+
+**The actual placement mechanism — a target-rank, not a direction.** `suggestGroundBin()`'s old
+`preferFar` boolean only ever picked a SORT DIRECTION (ascending or descending) — which, for a
+single SKU's own greedy bin search, can only ever produce a binary near/far split no matter how
+finely `preferFar` itself was computed; there's no way to get genuine three-way (let alone
+continuous) gradation out of a direction alone. The real fix: map the combined score onto a
+TARGET position along the full 0..maxRank proximity range (`targetRank = ((score-2)/4) × maxRank`)
+and rank candidates by closeness to that target, not by ascending/descending order. AF's target is
+rank 0 (the nearest bin, full stop); CS's target is `maxRank` (the farthest); everything else lands
+at its own genuinely proportional position — real gradation, not a hand-drawn 3-zone split.
+`maxRank` is computed from `groundLocations` (every Ground location in the warehouse), not the
+currently-eligible `candidates` — the identical "full distinct-aisle list, not narrowed to what's
+available right now" discipline `buildOutboundProximityRanker()` was already built with (Topic 2),
+for the identical reason: narrowing to what's still open shrinks the scale as bins fill in, which
+would silently corrupt the mapping for every SKU placed after the first. An unconfigured warehouse
+(no `WarehouseDockZone` at all, `outboundRanker` null) falls back to the exact old binary
+`preferFar` + flankNumber logic, byte-for-byte unchanged — zero regression there either.
+
+**A real off-by-one bug caught by the diagnostic script, not assumed correct**: the first version
+of the target-rank formula assumed `outboundRanker()` returns 1-indexed ranks (1..N) — it's
+actually 0-indexed (0..N-1). Every single SKU in a 5-aisle test landed exactly one aisle farther
+than intended until this was caught (traced with a temporary debug flag comparing each SKU's
+computed `targetRank` against the ranker's own real output) and fixed to map onto `[0, maxRank]`
+instead of `[1, maxRank]`.
+
+**Visualization — a 4th occupancy-overlay mode, "Priority Gradient"** (same-session follow-up,
+confirmed directly: "i do wanna see a visual about this in our simulation tab, whats the ranking
+against each bin... colour gradient for it, green being A-F slowlly moving to yellow then red").
+`occupancyColors.ts` gained `combinedPriorityScore()` (a byte-identical mirror of the backend
+version — duplicated, not shared, same convention as every other cross-cutting pure function in
+this codebase) and `priorityGradientColor()`, mapping score 2→6 onto a continuous HSL hue
+120(green)→60(yellow)→0(red) — a real gradient, not a fixed per-class lookup table, since the whole
+point is to SEE whether Ground placement is actually respecting the score, which discrete buckets
+would obscure. Wired into the same shared `occupancyColorFor()` every other mode already uses, so
+it shows in 2D, 3D, *and* Simulation automatically. `LocationDetailPanel.tsx` gained a "Priority
+Score" row (color-swatched to match) shown for every occupant, not just Ground ones, since it's a
+pure function of Class/FMS Class either way.
+
+Verified via a throwaway-company diagnostic script exercising the real, unmodified `suggestBin()`
+directly (6/6, after the off-by-one fix): 5 Ground aisles, one bin each, a real `WarehouseDockZone`
+configured, 5 SKUs spanning all 5 distinct combined scores (2,3,4,5,6) placed in a DELIBERATELY
+SHUFFLED order (worst-first) — each landed on exactly its target aisle regardless of placement
+order, proving the result is genuinely driven by each SKU's own score, not just "whichever gets
+placed first grabs the nearest bin"; a 6th, D-class SKU correctly joined the CS SKU's own bin
+(C/D's unbounded default sharing cap) rather than needing a separate free aisle — the intended
+"D=CS" outcome landing in literally the same physical bin, not just a coincidentally-nearby one.
+Then re-verified live through the actual rendered UI (throwaway company, registered fresh): ran a
+real 15-unit Ground/Floor simulation, clicked the real "Priority Gradient" toggle, inspected the
+live SVG `fill` attributes directly and confirmed real HSL gradient colors (`hsl(120,...)` pure
+green, `hsl(90,...)`, `hsl(60,...)` yellow) rendering on real occupied boxes; clicked the green box
+and confirmed the detail panel read `Occupant SKU: SIM-A3 | Class: A | FMS Class: F | Priority
+Score: 2 (2=best, 6=worst)` — matching the gradient's green endpoint exactly. `tsc --noEmit`/
+`tsc -b`/`nest build` all clean.
+
+### A misread, built then reverted before ever committing: "Dock Proximity" (2026-09-09)
+Worth a short honest note so a future session doesn't retread this. After Priority Gradient shipped
+(above), the client's "doesnt matter if occupancy is there or not, the person designing the wh
+should know if the location hierarchy is correct" was misread as a request for a genuinely different,
+occupancy-independent metric — built as a 6th color mode, a new `GET /locations/dock-proximity`
+endpoint, and real plumbing through both Plan Views, verified working. The client's actual meaning,
+once clarified directly: they never asked for a separate dock-proximity concept at all — "i dont
+want either abc and fms, but only the abc-fms combo study we did?? that was my plan... i never meant
+dock proximity, idk why and whats that." **Fully removed before any of it was committed** — the
+combined ABC×FMS Priority Gradient above is, and was always meant to be, the actual deliverable.
+Lesson: "doesn't matter if X" is not the same as "build something that doesn't need X" — it can just
+mean "don't let X block me," which here meant nothing more than being able to demo Priority Gradient
+against a Simulation run rather than needing a fully-occupied real warehouse.
+
+### "Bin Rank" — a literal 1-9 number + gradient per Ground bin, location-intrinsic (2026-09-09, same day)
+Immediate follow-up to the Dock Proximity misread above — the client's actual, clarified ask, once
+untangled from that detour: "i jst want you do number / rank each bin with the numbering we did for
+the abc-fms calcuation," refined to "first number ranking, then make the pallet colour in the
+gradient type. so i know which ranked 1 2 3 -- 9 .. idc if the bin is used or not, i just wanna know
+our bin ranking." Distinct from Priority Gradient (which colors OCCUPANTS' scores, occupied bins
+only) — this labels and colors the BIN'S OWN POSITION, every Ground bin, occupied or not, matching
+exactly the 9-cell ABC×FMS matrix (1=AF nearest outbound … 9=CS farthest) — a genuinely new,
+location-intrinsic mode, not a variant of the occupancy-based ones.
+
+**Two verification questions the client asked before "ok proceed," both answered directly** (see
+`wms-abc-velocity-design` / this session's own conversation for the full exchange): whether bin
+numbering has to exist before a SKU can be "married" to a bin (yes — the ranking is a static
+positional fact computed from `WarehouseDockZone` config, entirely independent of any SKU;
+`suggestGroundBin()`'s real placement logic maps a SKU's own combined ABC×FMS score onto this same
+range separately, at scan time) and whether the system falls through to the next-best rank when the
+ideal one is full (yes — confirmed via a real diagnostic script exercising the actual placement
+code, not just reasoning about it, showing genuine graceful fallback to the next-closest available
+bin).
+
+**A deliberately NEW, separate formula from `combinedPriorityScore()`** (Priority Gradient's own
+2-6 sum-based score, already verified and driving real placement) — `(abcRank-1)*3 + fmsRank` where
+abcRank/fmsRank are both 1-3, giving unique values 1-9 (AF=1 … CS=9) that map exactly onto the
+matrix's 9 cells, one-to-one, rather than reusing the 5-value 2-6 range. Kept intentionally separate
+from the already-verified placement-driving code — Bin Rank is purely a DISPLAY overlay, computed by
+evenly bucketing a bin's raw 0-indexed aisle-proximity rank (from the same `buildOutboundProximityRanker()`
+Topic 2 already built) into 9 discrete tiers: `bucket = Math.min(9, Math.max(1,
+Math.round((raw/maxRaw)*8)+1))`. Scoped to **GROUND_FLOOR only** — Rack splits ABC(aisle)/FMS(level)
+across two independent levers, so one number can't honestly represent a Rack bin's position the way
+it can for Ground's single combined lever; this scoping was my own reasoning, not separately
+re-confirmed with the client.
+
+**Backend**: `LocationsService.binRankByWarehouse()` (`GET /locations/bin-rank?warehouseId=X`) —
+returns `{configured: false, ranks: []}` when no OUTBOUND/BOTH `WarehouseDockZone` exists yet (same
+graceful-fallback shape every other dock-zone-dependent feature already has), otherwise one
+`{aisle, rank, label}` row per distinct Ground aisle in the warehouse.
+
+**Frontend**: a 6th `ColorMode` (`'binRank'`), wired into the same shared `occupancyColorFor()`-
+adjacent path every other mode uses — but genuinely different from the other five in one respect:
+because it's location-intrinsic, not occupancy-driven, it can safely color **every** Ground bin
+regardless of occupancy, including unselected 3D footprint blocks (the occupancy-based modes can't —
+a footprint could represent many potential occupants, so they stay grey there). `binRankColor()`
+(`occupancyColors.ts`) — the same green(hue 120)→red(hue 0) HSL gradient family Priority Gradient
+uses, stepped evenly across ranks 1-9 rather than continuously across a 2-6 score. 2D
+(`LocationsPlanView.tsx`) renders a small circular badge with the rank number in the corner of each
+Ground box; 3D (`Locations3DView.tsx`) shows the rank via `Label3D` on a selected/detailed box and
+appends `— #{rank}` to a footprint block's own aisle label. `LocationDetailPanel.tsx` gained a "Bin
+Rank: N (LABEL)" row, shown for every Ground bin's click-to-inspect regardless of occupancy.
+
+Verified two ways. A throwaway diagnostic script (12/12, since deleted) confirming the bucket math
+against a real 9-aisle warehouse with a configured dock zone. Then a full live browser pass (a fresh
+throwaway company, 9 real Ground/Floor aisles, an OUTBOUND/LOW dock zone) — confirmed via direct
+`fetch` that `GET /locations/bin-rank` returns the exact expected `{aisle, rank, label}` sequence
+1→AF through 9→CS; confirmed via live SVG `fill`/`stroke` inspection that 2D renders the identical
+9-step green→red gradient (`hsl(120,...)` through `hsl(0,...)`, 15° apart) with the correct numbered
+badges, and that clicking a bin opens the DetailPanel showing "Bin Rank: 1 (AF)" correctly; confirmed
+in 3D that the selected aisle's own box renders the same rank/color and resolves to the correct
+`Location` row (`GF-1-BLK01-C1-D1`) with the identical "Bin Rank: 1 (AF)" row on click. `tsc
+--noEmit`(backend)/`tsc -b`(frontend) both clean.
+
+**Not yet done**: asking the client whether Rack (SPR/ASRS) should eventually get its own analogous
+ranking treatment — the Ground-only scoping above was my own call, not explicitly confirmed, and
+given this session's own repeated pattern of misreads it's worth confirming rather than assuming.
+
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components
 (`WarehousesPage.tsx`, `SkusPage.tsx`, `CustomersPage.tsx`, `LoginPage.tsx` — one file each). No
@@ -5244,7 +5395,21 @@ above) — a 4th occupancy-overlay color mode ("F/M/S Class") alongside the exis
 Category/A-B-C-Class ones, in 2D, 3D, *and* Simulation, plus an FMS Class row on the click-to-inspect
 detail panel. The Simulation sandbox's synthetic SKU pool now carries a real, independent FMS spread
 too, so the new color mode (and the underlying level-tiebreak logic itself) has something genuine to
-demonstrate there, not just always-grey.
+demonstrate there, not just always-grey. **Ground/Floor now has its own real FMS×ABC placement
+too** (2026-09-09, see "Ground/Floor's own FMS×ABC placement" above) — since Ground has only one
+physical lever (aisle proximity, no vertical level), FMS blends into ABC as a single combined
+priority score (AF=2 best, CS=6 worst, D=CS) mapped onto a genuine TARGET position along the near..
+far range, not just a near/far direction — real gradation, not three hand-drawn zones. A 5th
+occupancy-overlay mode, "Priority Gradient" (a continuous green→yellow→red HSL gradient, not a
+fixed palette), makes this visible in 2D/3D/Simulation and on the detail panel as a new "Priority
+Score" row. (A separate "Dock Proximity" mode was briefly built and then fully removed the same
+day, before ever being committed — see "A misread, built then reverted before ever committing"
+below for why; Priority Gradient above is the only combined ABC×FMS visualization that actually
+shipped.) **A 6th mode, "Bin Rank," followed the same day** (see "'Bin Rank' — a literal 1-9 number
++ gradient per Ground bin" above) — genuinely different from Priority Gradient: a location-intrinsic
+1-9 number + matching gradient on every Ground bin's own POSITION (matching the ABC×FMS matrix cell
+its proximity represents), shown regardless of occupancy, including unselected 3D footprint blocks —
+where Priority Gradient colors an OCCUPANT's own score, only on occupied bins.
 
 **The "Rows 1-N" row-position summary is also done** (2026-09-06, same session, see "Plan View:
 'Rows 1-N' row-position summary" above) — closes the loose end from earlier the same session

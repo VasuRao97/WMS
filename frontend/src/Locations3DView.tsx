@@ -4,7 +4,7 @@ import { OrbitControls, Edges, Grid, Billboard, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { RACK_STORAGE_TYPES, type Location } from './LocationsPage';
 import { STORAGE_TYPE_COLORS, DEFAULT_BOX_COLOR } from './LocationsPlanView';
-import { type ColorMode, type Occupancy, ABC_CLASS_COLORS, FMS_CLASS_COLORS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor } from './occupancyColors';
+import { type ColorMode, type Occupancy, type BinRank, ABC_CLASS_COLORS, FMS_CLASS_COLORS, BIN_RANK_MATRIX_LABELS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor, binRankColor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
 import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
@@ -274,7 +274,7 @@ function buildWarehouseLayout(locations: Location[], rackBaysPerCrossAisle: numb
   return layouts;
 }
 
-function LocationBox({ box, isSelected, onSelect, color }: { box: BoxSpec; isSelected: boolean; onSelect: (l: Location) => void; color: { fill: string; stroke: string } }) {
+function LocationBox({ box, isSelected, onSelect, color, rankLabel }: { box: BoxSpec; isSelected: boolean; onSelect: (l: Location) => void; color: { fill: string; stroke: string }; rankLabel?: string }) {
   const inactive = !box.location.isActive;
 
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
@@ -283,11 +283,17 @@ function LocationBox({ box, isSelected, onSelect, color }: { box: BoxSpec; isSel
   };
 
   return (
-    <mesh position={[box.x, box.y, box.z]} onClick={handleClick}>
-      <boxGeometry args={[box.w, box.h, box.d]} />
-      <meshStandardMaterial color={inactive ? '#cccccc' : color.fill} transparent opacity={inactive ? 0.5 : 1} />
-      <Edges color={isSelected ? '#f59e0b' : inactive ? '#666666' : color.stroke} linewidth={isSelected ? 2 : 1} />
-    </mesh>
+    <>
+      <mesh position={[box.x, box.y, box.z]} onClick={handleClick}>
+        <boxGeometry args={[box.w, box.h, box.d]} />
+        <meshStandardMaterial color={inactive ? '#cccccc' : color.fill} transparent opacity={inactive ? 0.5 : 1} />
+        <Edges color={isSelected ? '#f59e0b' : inactive ? '#666666' : color.stroke} linewidth={isSelected ? 2 : 1} />
+      </mesh>
+      {/* Bin Rank (2026-09-09) — the actual number, not just implied by
+          color, confirmed directly ("first number ranking, then make the
+          pallet colour"). */}
+      {rankLabel && <Label3D position={[box.x, box.y + box.h / 2 + 0.25, box.z]} text={rankLabel} fontSize={0.3} color={color.stroke} />}
+    </>
   );
 }
 
@@ -378,15 +384,14 @@ function Label3D({ position, text, fontSize = 0.34, color = '#1f2937' }: { posit
 // unlike the hundreds of real bins it stands in for). Clicking it is a
 // second way to select the same aisle the checkbox slicer does — either
 // path leads to the same full-detail render.
-function AisleFootprint({ layout, onSelect }: { layout: AisleLayout; onSelect: (aisleCode: string) => void }) {
-  const color = STORAGE_TYPE_COLORS[layout.storageTypes[0]] || DEFAULT_BOX_COLOR;
+function AisleFootprint({ layout, color, rankLabel, onSelect }: { layout: AisleLayout; color: { fill: string; stroke: string }; rankLabel?: string; onSelect: (aisleCode: string) => void }) {
   const { footprint } = layout;
   return (
     <mesh position={[footprint.x, footprint.y, footprint.z]} onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onSelect(layout.aisleCode); }}>
       <boxGeometry args={[footprint.w, footprint.h, footprint.d]} />
       <meshStandardMaterial color={color.fill} transparent opacity={0.35} />
       <Edges color={color.stroke} />
-      <Label3D position={[0, footprint.h / 2 + 0.4, 0]} text={`Aisle ${layout.aisleCode}`} fontSize={0.4} />
+      <Label3D position={[0, footprint.h / 2 + 0.4, 0]} text={rankLabel ? `Aisle ${layout.aisleCode} — #${rankLabel}` : `Aisle ${layout.aisleCode}`} fontSize={0.4} />
     </mesh>
   );
 }
@@ -582,12 +587,14 @@ function Locations3DView({
   locations,
   colorMode,
   occupancy,
+  binRank,
   rackBaysPerCrossAisle = 10,
   groundBinsPerCrossAisle = 10,
 }: {
   locations: Location[];
   colorMode: ColorMode;
   occupancy: Occupancy[];
+  binRank?: BinRank;
   // Company-configured 3D cross-aisle spacing (2026-09-07) — optional so
   // callers that don't fetch Company Settings (or haven't loaded them yet)
   // still get a sensible default, matching the schema's own DB default.
@@ -636,9 +643,44 @@ function Locations3DView({
   // try; the real occupancy detail only shows once you drill into it.
   const occupancyByLocationId = new Map(occupancy.map((o) => [o.locationId, o]));
   const categoryColors = buildCategoryColorMap(occupancy);
+  // Bin Rank (2026-09-09) — LOCATION-INTRINSIC, resolved before
+  // occupancyColorFor() rather than through it, same as 2D. Ground/Floor
+  // only — see BinRank's own type comment for why Rack isn't covered.
+  const binRankByAisle = new Map((binRank?.ranks ?? []).map((r) => [r.aisle, r]));
   const getColor = (location: Location): { fill: string; stroke: string } => {
+    if (colorMode === 'binRank') {
+      if (location.storageType !== 'GROUND_FLOOR') return NEUTRAL_COLOR;
+      const entry = location.aisle != null ? binRankByAisle.get(location.aisle) : undefined;
+      if (!binRank?.configured || !entry) return NEUTRAL_COLOR;
+      return binRankColor(entry.rank);
+    }
     const overlay = occupancyColorFor(colorMode, occupancyByLocationId.get(location.id), categoryColors);
     return overlay ?? STORAGE_TYPE_COLORS[location.storageType] ?? DEFAULT_BOX_COLOR;
+  };
+  const getRankLabel = (location: Location): string | undefined => {
+    if (colorMode !== 'binRank' || location.storageType !== 'GROUND_FLOOR') return undefined;
+    const entry = location.aisle != null ? binRankByAisle.get(location.aisle) : undefined;
+    return entry ? String(entry.rank) : undefined;
+  };
+
+  // Bin Rank ALSO colors/labels unselected footprint blocks — same reason
+  // Dock Proximity's own removed version did (a per-aisle geometric fact
+  // has no "which occupant" ambiguity a footprint block would otherwise
+  // have), letting you see the whole warehouse's ranking at a glance.
+  // Ground/Floor aisles only — a mixed or Rack-only aisle's footprint stays
+  // plain structural.
+  const getFootprintColor = (layout: AisleLayout): { fill: string; stroke: string } => {
+    if (colorMode === 'binRank' && layout.storageTypes.length === 1 && layout.storageTypes[0] === 'GROUND_FLOOR') {
+      const entry = binRankByAisle.get(layout.aisleCode);
+      if (binRank?.configured && entry) return binRankColor(entry.rank);
+      return NEUTRAL_COLOR;
+    }
+    return STORAGE_TYPE_COLORS[layout.storageTypes[0]] || DEFAULT_BOX_COLOR;
+  };
+  const getFootprintRankLabel = (layout: AisleLayout): string | undefined => {
+    if (colorMode !== 'binRank' || layout.storageTypes.length !== 1 || layout.storageTypes[0] !== 'GROUND_FLOOR') return undefined;
+    const entry = binRankByAisle.get(layout.aisleCode);
+    return entry ? `${entry.rank} (${entry.label})` : undefined;
   };
 
   // totalWidth/totalDepth size the floor/grid to the WHOLE warehouse always
@@ -659,7 +701,11 @@ function Locations3DView({
               ? 'Colored by occupant Category (selected aisles only):'
               : colorMode === 'class'
                 ? 'Colored by occupant A/B/C Class (selected aisles only):'
-                : 'Colored by occupant F/M/S Class (selected aisles only):'}
+                : colorMode === 'fmsClass'
+                  ? 'Colored by occupant F/M/S Class (selected aisles only):'
+                  : colorMode === 'priority'
+                    ? 'Colored by occupant combined ABC×FMS priority score (selected aisles only):'
+                    : 'Ground/Floor bins numbered 1-9 by dock proximity (footprints included, no selection needed):'}
           </span>
           {colorMode === 'class' &&
             (['A', 'B', 'C'] as const).map((cls) => (
@@ -675,6 +721,21 @@ function Locations3DView({
                 Class {cls}
               </span>
             ))}
+          {colorMode === 'priority' && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>Best (AF)</span>
+              <span style={{ width: 90, height: 12, borderRadius: 2, background: 'linear-gradient(to right, hsl(120,65%,45%), hsl(60,65%,45%), hsl(0,65%,45%))', display: 'inline-block', border: '1px solid #ccc' }} />
+              <span>Worst (CS/D)</span>
+            </span>
+          )}
+          {colorMode === 'binRank' && (
+            <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+              <span style={{ width: 90, height: 12, borderRadius: 2, background: 'linear-gradient(to right, hsl(120,65%,45%), hsl(60,65%,45%), hsl(0,65%,45%))', display: 'inline-block', border: '1px solid #ccc' }} />
+              {BIN_RANK_MATRIX_LABELS.map((label, i) => (
+                <span key={label} style={{ fontSize: 11, color: '#666' }}>{i + 1}={label}</span>
+              ))}
+            </span>
+          )}
           {colorMode === 'category' &&
             [...new Map(occupancy.filter((o) => o.categoryId).map((o) => [o.categoryId, o.categoryName])).entries()]
               .sort((a, b) => (a[1] || '').localeCompare(b[1] || ''))
@@ -735,14 +796,14 @@ function Locations3DView({
                 <AisleDetailLabel layout={layout} />
                 <RowNumberMarkers layout={layout} />
                 {layout.boxes.map((box) => (
-                  <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} />
+                  <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} rankLabel={getRankLabel(box.location)} />
                 ))}
                 {computeGroundBinOutlines(layout.boxes).map((outline) => (
                   <GroundBinOutline key={outline.key} outline={outline} />
                 ))}
               </group>
             ) : (
-              <AisleFootprint key={layout.aisleCode} layout={layout} onSelect={toggleAisle} />
+              <AisleFootprint key={layout.aisleCode} layout={layout} color={getFootprintColor(layout)} rankLabel={getFootprintRankLabel(layout)} onSelect={toggleAisle} />
             ),
           )}
           {/* No `target` prop here — CameraRig above owns the target
@@ -760,7 +821,14 @@ function Locations3DView({
         <p style={{ position: 'absolute', bottom: 8, left: 12, fontSize: 11, color: '#888', margin: 0 }}>
           Drag to orbit, scroll to zoom, right-drag to pan. Click an aisle block (or check it above) to see its bins; click a bin for details.
         </p>
-        {selected && <DetailPanel location={selected} occupancy={occupancyByLocationId.get(selected.id)} onClose={() => setSelected(null)} />}
+        {selected && (
+          <DetailPanel
+            location={selected}
+            occupancy={occupancyByLocationId.get(selected.id)}
+            binRankEntry={selected.storageType === 'GROUND_FLOOR' && selected.aisle != null ? binRankByAisle.get(selected.aisle) : undefined}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
     </div>
   );

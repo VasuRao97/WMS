@@ -224,9 +224,14 @@ function LocationsPage() {
   // default; 'category'/'class' are fetched on demand, not on every
   // warehouse load, since most sessions will just look at the structural
   // layout.
-  const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class' | 'fmsClass'>('structural');
+  const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class' | 'fmsClass' | 'priority' | 'binRank'>('structural');
   const [occupancy, setOccupancy] = useState<import('./occupancyColors').Occupancy[]>([]);
   const [occupancyLoading, setOccupancyLoading] = useState(false);
+  // Bin Rank (2026-09-09) — its own fetch, deliberately separate from
+  // occupancy above: location-intrinsic, no real stock needed to be
+  // meaningful.
+  const [binRank, setBinRank] = useState<import('./occupancyColors').BinRank | undefined>(undefined);
+  const [binRankLoading, setBinRankLoading] = useState(false);
   // 3D cross-aisle spacing (2026-09-07) — a rendering input for
   // Locations3DView, fetched once via the broadly-readable
   // /companies/layout-settings endpoint (not the COMPANY_ADMIN-only
@@ -241,12 +246,21 @@ function LocationsPage() {
   const [groundBinsPerCrossAisle, setGroundBinsPerCrossAisle] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
-    if (colorMode === 'structural' || !planWarehouseId) return;
+    if (colorMode === 'structural' || colorMode === 'binRank' || !planWarehouseId) return;
     setOccupancyLoading(true);
     fetch(`http://localhost:3000/locations/occupancy?warehouseId=${planWarehouseId}`, { headers: authHeaders() })
       .then((res) => (res.status === 401 ? [] : res.json()))
       .then((data) => setOccupancy(Array.isArray(data) ? data : []))
       .finally(() => setOccupancyLoading(false));
+  }, [colorMode, planWarehouseId]);
+
+  useEffect(() => {
+    if (colorMode !== 'binRank' || !planWarehouseId) return;
+    setBinRankLoading(true);
+    fetch(`http://localhost:3000/locations/bin-rank?warehouseId=${planWarehouseId}`, { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? null : res.json()))
+      .then((data) => setBinRank(data ?? undefined))
+      .finally(() => setBinRankLoading(false));
   }, [colorMode, planWarehouseId]);
 
   const loadLocations = () => {
@@ -1010,7 +1024,10 @@ function LocationsPage() {
             <button type="button" onClick={() => setColorMode('category')} style={{ fontWeight: colorMode === 'category' ? 'bold' : 'normal' }}>Category</button>
             <button type="button" onClick={() => setColorMode('class')} style={{ fontWeight: colorMode === 'class' ? 'bold' : 'normal' }}>A/B/C Class</button>
             <button type="button" onClick={() => setColorMode('fmsClass')} style={{ fontWeight: colorMode === 'fmsClass' ? 'bold' : 'normal' }}>F/M/S Class</button>
+            <button type="button" onClick={() => setColorMode('priority')} style={{ fontWeight: colorMode === 'priority' ? 'bold' : 'normal' }}>Priority Gradient</button>
+            <button type="button" onClick={() => setColorMode('binRank')} style={{ fontWeight: colorMode === 'binRank' ? 'bold' : 'normal' }}>Bin Rank</button>
             {occupancyLoading && <span style={{ fontSize: 12, color: '#888' }}>Loading occupancy...</span>}
+            {binRankLoading && <span style={{ fontSize: 12, color: '#888' }}>Loading bin rank...</span>}
           </div>
           {!planWarehouseId ? (
             <p style={{ marginTop: 16, color: '#666' }}>Pick a warehouse above to render its layout.</p>
@@ -1020,6 +1037,7 @@ function LocationsPage() {
               warehouseLabel={labelFor(warehouses.map((w) => ({ value: w.id, label: `${w.code} — ${w.name}` })), planWarehouseId)}
               colorMode={colorMode}
               occupancy={occupancy}
+              binRank={binRank}
             />
           ) : (
             <Suspense fallback={<p style={{ marginTop: 16, color: '#666' }}>Loading 3D view…</p>}>
@@ -1027,6 +1045,7 @@ function LocationsPage() {
                 locations={locations.filter((l) => l.warehouseId === planWarehouseId)}
                 colorMode={colorMode}
                 occupancy={occupancy}
+                binRank={binRank}
                 rackBaysPerCrossAisle={rackBaysPerCrossAisle}
                 groundBinsPerCrossAisle={groundBinsPerCrossAisle}
               />

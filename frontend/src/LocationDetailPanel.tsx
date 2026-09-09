@@ -1,6 +1,6 @@
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, ZONE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
 import { posOf } from './locationBoxUtils';
-import { ABC_CLASS_COLORS, FMS_CLASS_COLORS, type Occupancy } from './occupancyColors';
+import { ABC_CLASS_COLORS, FMS_CLASS_COLORS, combinedPriorityScore, priorityGradientColor, binRankColor, type Occupancy } from './occupancyColors';
 
 // Click-to-inspect side panel — originally built for Locations3DView.tsx
 // (2026-09-05, closing the original 2026-08-25 2D Plan View's own deferred
@@ -31,7 +31,21 @@ export function buildRackName(l: Location): string {
 // hasn't loaded occupancy at all, e.g. structural-only Structural mode)
 // shows a plain "Empty" line rather than omitting the section — confirms
 // there's genuinely nothing there rather than looking like an oversight.
-export function DetailPanel({ location, occupancy, onClose }: { location: Location; occupancy?: Occupancy; onClose: () => void }) {
+export function DetailPanel({
+  location,
+  occupancy,
+  binRankEntry,
+  onClose,
+}: {
+  location: Location;
+  occupancy?: Occupancy;
+  // Bin Rank (2026-09-09) — LOCATION-INTRINSIC, so shown among the
+  // structural fields below, not tied to occupancy at all; undefined
+  // simply means the caller isn't in Bin Rank mode, this isn't a
+  // Ground/Floor bin, or no OUTBOUND Dock Zone is configured yet.
+  binRankEntry?: { aisle: string; rank: number; label: string };
+  onClose: () => void;
+}) {
   const rackName = buildRackName(location);
   return (
     <div style={{ position: 'absolute', top: 12, right: 12, width: 240, background: '#fff', border: '1px solid #ccc', borderRadius: 8, padding: 12, fontSize: 13, boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
@@ -61,6 +75,14 @@ export function DetailPanel({ location, occupancy, onClose }: { location: Locati
         </>
       )}
       <p style={{ margin: '4px 0' }}><strong>Status:</strong> {location.isActive ? 'Active' : 'Inactive'}</p>
+      {binRankEntry && (
+        <p style={{ margin: '4px 0' }}>
+          <strong>Bin Rank:</strong>{' '}
+          <span style={{ padding: '1px 6px', borderRadius: 4, background: binRankColor(binRankEntry.rank).fill, border: `1px solid ${binRankColor(binRankEntry.rank).stroke}` }}>
+            {binRankEntry.rank} ({binRankEntry.label})
+          </span>
+        </p>
+      )}
       <hr style={{ margin: '8px 0', border: 'none', borderTop: '1px solid #eee' }} />
       {occupancy ? (
         <>
@@ -81,6 +103,16 @@ export function DetailPanel({ location, occupancy, onClose }: { location: Locati
                 {occupancy.fmsClass}
               </span>
             ) : '—'}
+          </p>
+          <p style={{ margin: '4px 0' }}>
+            {/* Combined ABC×FMS priority score (2026-09-09) — the same score
+                Ground/Floor's own suggestGroundBin() uses to decide outbound
+                proximity; shown for every occupant, not just Ground ones,
+                since it's a pure function of Class/FMS Class either way. */}
+            <strong>Priority Score:</strong>{' '}
+            <span style={{ padding: '1px 6px', borderRadius: 4, background: priorityGradientColor(occupancy).fill, border: `1px solid ${priorityGradientColor(occupancy).stroke}` }}>
+              {combinedPriorityScore(occupancy.abcClass, occupancy.fmsClass)} (2=best, 6=worst)
+            </span>
           </p>
           <p style={{ margin: '4px 0' }}><strong>Category:</strong> {occupancy.categoryName ?? '—'}</p>
           {occupancy.quantity != null && <p style={{ margin: '4px 0' }}><strong>On-hand Qty:</strong> {occupancy.quantity}</p>}

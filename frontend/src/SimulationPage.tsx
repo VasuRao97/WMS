@@ -101,6 +101,11 @@ function SimulationPage() {
   // etc.).
   const [rackBaysPerCrossAisle, setRackBaysPerCrossAisle] = useState<number | null | undefined>(undefined);
   const [groundBinsPerCrossAisle, setGroundBinsPerCrossAisle] = useState<number | null | undefined>(undefined);
+  // Bin Rank (2026-09-09) — location-intrinsic, own separate fetch, same
+  // shape LocationsPage.tsx uses. The sandbox has no WarehouseDockZone
+  // configured by default, so this mode will genuinely show "not
+  // configured" there unless one gets set up directly against it.
+  const [binRank, setBinRank] = useState<import('./occupancyColors').BinRank | undefined>(undefined);
 
   // Plain fetch-and-set, no `loading` flag — reused after Run, which can
   // rebuild the sandbox's layout server-side (different Location rows
@@ -129,6 +134,13 @@ function SimulationPage() {
         return refreshLocations(data.id).then(() => setLoading(false));
       });
   };
+
+  useEffect(() => {
+    if (colorMode !== 'binRank' || !sandbox?.id) return;
+    fetch(`http://localhost:3000/locations/bin-rank?warehouseId=${sandbox.id}`, { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? null : res.json()))
+      .then((data) => setBinRank(data ?? undefined));
+  }, [colorMode, sandbox?.id]);
 
   useEffect(() => {
     loadSandbox();
@@ -318,16 +330,19 @@ function SimulationPage() {
             <button type="button" onClick={() => setColorMode('category')} style={{ fontWeight: colorMode === 'category' ? 'bold' : 'normal' }}>Category</button>
             <button type="button" onClick={() => setColorMode('class')} style={{ fontWeight: colorMode === 'class' ? 'bold' : 'normal' }}>A/B/C Class</button>
             <button type="button" onClick={() => setColorMode('fmsClass')} style={{ fontWeight: colorMode === 'fmsClass' ? 'bold' : 'normal' }}>F/M/S Class</button>
+            <button type="button" onClick={() => setColorMode('priority')} style={{ fontWeight: colorMode === 'priority' ? 'bold' : 'normal' }}>Priority Gradient</button>
+            <button type="button" onClick={() => setColorMode('binRank')} style={{ fontWeight: colorMode === 'binRank' ? 'bold' : 'normal' }}>Bin Rank</button>
           </div>
 
           {planMode === '2d' ? (
-            <LocationsPlanView locations={locations} warehouseLabel="Simulation Sandbox" colorMode={colorMode} occupancy={occupancy} />
+            <LocationsPlanView locations={locations} warehouseLabel="Simulation Sandbox" colorMode={colorMode} occupancy={occupancy} binRank={binRank} />
           ) : (
             <Suspense fallback={<p style={{ marginTop: 16, color: '#666' }}>Loading 3D view…</p>}>
               <Locations3DView
                 locations={locations}
                 colorMode={colorMode}
                 occupancy={occupancy}
+                binRank={binRank}
                 rackBaysPerCrossAisle={rackBaysPerCrossAisle}
                 groundBinsPerCrossAisle={groundBinsPerCrossAisle}
               />

@@ -78,6 +78,27 @@ export class PutawayTasksService {
     return row.maxSkusClassC;
   }
 
+  // Combined ABC×FMS priority score (2026-09-09) — Ground's own analog to
+  // Rack's independent aisle+level axes (see [[wms-abc-velocity-design]] in
+  // memory for the full conversation). Ground has only one physical lever
+  // (aisle/dock proximity), so FMS can only ever matter there by blending
+  // into the same score ABC already drives, not by getting its own separate
+  // lever. Lower = higher priority = wants the nearest bin: AF scores 2
+  // (the best possible), CS scores 6 (the worst). D is scored identically
+  // to CS — same "D behaves exactly like CS" precedent Rack's own level
+  // tiebreak already established, not a separate "even worse" tier, since
+  // there's no real signal to justify one. An unknown fmsClass (FMS not yet
+  // computed for this warehouse) falls back to fmsRank = abcRank, which
+  // collapses this formula to exactly 2×abcRank — the SAME relative
+  // ordering as the old pure-ABC near/far split, so an unconfigured/
+  // not-yet-classified SKU sees zero placement regression.
+  private combinedPriorityScore(abcClass: string, fmsClass: string | null): number {
+    if (abcClass === 'D') return 6;
+    const abcRank = abcClass === 'A' ? 1 : abcClass === 'B' ? 2 : 3;
+    const fmsRank = fmsClass === 'F' ? 1 : fmsClass === 'M' ? 2 : fmsClass === 'S' ? 3 : abcRank;
+    return abcRank + fmsRank;
+  }
+
   // The core slotting algorithm. Returns a Location id, or null if nothing
   // eligible exists (the caller sets the task to NEEDS_BIN in that case).
   // excludeLocationIds — "request different bin" passes every location this
@@ -626,6 +647,7 @@ export class PutawayTasksService {
     const {
       skuId,
       abcClass,
+      fmsClass,
       storageTypeRowByType,
       balanceByLocSku,
       skuBalancesByLocation,
@@ -829,22 +851,60 @@ export class PutawayTasksService {
 
     if (candidates.length === 0) return null;
 
-    // Interim cross-bin preference — the FMS×ABC combined-classification
-    // study (2026-09-08, see [[wms-abc-velocity-design]] in memory)
-    // deliberately built the level tiebreak for RACK (SPR/ASRS) bins only;
-    // Ground candidates here have no `level` field to enhance (no vertical
-    // rack-position concept), so there's nothing for FMS to add to THIS
-    // sort — still ABC-only, unchanged from before this pass. The client's
-    // own explicit call ("we will make a ABC/FMS study for all ground +
-    // rack etc to find best one for putaway") means Ground's own analog is
-    // still a genuinely open follow-on, not silently decided against.
+    // Ground's own FMS×ABC placement (2026-09-09 — see
+    // [[wms-abc-velocity-design]] in memory for the full conversation).
+    // Ground has only ONE physical lever (aisle/dock proximity — no
+    // vertical level concept the way Rack has), so unlike Rack's
+    // independent-axes choice, FMS can only ever influence Ground placement
+    // by blending into that same one lever. Confirmed directly: "we just
+    // need to map like closest bin to outbound dock is A-F combo and
+    // further be next set of, then furtherest b the rest" — resolved as a
+    // combined ABC×FMS PRIORITY SCORE (combinedPriorityScore(), lower =
+    // better = wants the nearest bin) mapped onto a TARGET position along
+    // the full near..far proximity range, candidates ranked by closeness to
+    // that target — not a simple ascending/descending direction. A pure
+    // near/far direction can't produce real gradation (AF always nearest,
+    // CS always farthest, everything else genuinely in between) since a
+    // single SKU's own bin search only ever has one direction to sort in;
+    // target-distance is what turns "prefer near" into "prefer THIS SPECIFIC
+    // degree of near."
+    const priorityScore = this.combinedPriorityScore(abcClass, fmsClass);
+    // Computed from EVERY Ground location in the warehouse (groundLocations,
+    // the function's own full input), not just the currently-eligible
+    // `candidates` — the exact same "full distinct-aisle list, not narrowed
+    // to what's available right now" discipline buildOutboundProximityRanker()
+    // itself was already built with, for the identical reason: narrowing to
+    // whatever's still open shrinks the scale as bins fill up, corrupting
+    // the target-rank mapping (an AF SKU placed after a slower one already
+    // took the nearest aisle would otherwise compute its target against a
+    // smaller remaining range and land somewhere that ISN'T actually
+    // nearest overall). A real bug caught by the diagnostic script's own
+    // shuffled-placement-order test, not assumed correct.
+    const allRanks = outboundRanker
+      ? groundLocations.map((l: any) => (l.aisle != null ? outboundRanker(l.aisle) : null)).filter((r: number | null): r is number => r != null)
+      : [];
+    // outboundRanker() is 0-INDEXED (nearest aisle = rank 0, not 1) — a real
+    // bug caught by the diagnostic script's own multi-aisle test (every SKU
+    // landed one aisle farther than intended until this was fixed): the
+    // target-rank formula below must map onto [0, maxRank], not [1, maxRank].
+    const maxRank = allRanks.length > 0 ? Math.max(...allRanks) : 0;
+    // 0 (AF, the best possible score) .. 1 (CS/D, the worst) — linear map
+    // onto proximity ranks 0..maxRank (0 = nearest, matching outboundRanker's
+    // own 0-indexed convention).
+    const targetFraction = (priorityScore - 2) / 4;
+    const targetRank = targetFraction * maxRank;
+    // Unconfigured-warehouse fallback (no WarehouseDockZone at all) — same
+    // binary near/far direction this codebase has always used when there's
+    // no real dock geometry to rank against, completely unchanged from
+    // before this pass; only ever consulted when outboundRanker is null,
+    // so a warehouse that hasn't configured dock zones sees zero regression.
     const preferFar = abcClass !== 'A' && abcClass !== 'B';
     candidates.sort((a, b) => {
       if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
       if (outboundRanker) {
-        const ra = a.aisle != null ? outboundRanker(a.aisle) : Number.MAX_SAFE_INTEGER;
-        const rb = b.aisle != null ? outboundRanker(b.aisle) : Number.MAX_SAFE_INTEGER;
-        if (ra !== rb) return preferFar ? rb - ra : ra - rb;
+        const ra = a.aisle != null ? outboundRanker(a.aisle) : null;
+        const rb = b.aisle != null ? outboundRanker(b.aisle) : null;
+        if (ra != null && rb != null && ra !== rb) return Math.abs(ra - targetRank) - Math.abs(rb - targetRank);
       }
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;

@@ -86,6 +86,14 @@ export class LocationsController {
     return this.locationsService.occupancyByWarehouse(warehouseId, user);
   }
 
+  // Bin Rank (2026-09-09) — which of the 9 ABC×FMS matrix cells a Ground/
+  // Floor bin's own POSITION represents, no occupancy needed at all.
+  @Get('bin-rank')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  binRank(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+    return this.locationsService.binRankByWarehouse(warehouseId, user);
+  }
+
   // Location Labels (2026-08-29) — a ZIP of one Code128 PNG per requested
   // location, encoding its Rack Name (or raw code as fallback). POST, not
   // GET, since a real batch of ids is too long for a query string. Read-
