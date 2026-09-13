@@ -25,14 +25,13 @@ const ABC_CLASSES = ['A', 'B', 'C'] as const;
 export class InsightsService {
   constructor(private prisma: PrismaService) {}
 
-  // Scoped to exactly the same location set suggestBin() itself considers
-  // (ACTUAL_STORAGE, rack storage types only — SPR/Drive-in) — this
-  // report is meant to answer "how well is Putaway using the space it's
-  // allowed to use," so it has to look at the identical universe Putaway's
-  // own placement logic does. Ground/Floor and Stillage are deliberately
-  // excluded — they don't have this lane/depth model at all, and their own
-  // multi-position Putaway logic is still deferred (see the open list in
-  // [[wms-putaway-design]]).
+  // Scoped to the storage types that have a real lane/depth model —
+  // SPR/Drive-in (always) plus STILLAGE (added 2026-09-13, once Stillage's
+  // own physical redesign gave it a column/depth lane exactly like Rack's
+  // — see laneKeyOf()'s own comment). Ground/Floor is deliberately still
+  // excluded — nothing has asked to extend this report to it, even though
+  // its own redesign gave it the same column/depth shape; left out rather
+  // than silently bundled in.
   async storageUtilization(user: AuthUser, warehouseId: string) {
     if (!warehouseId) throw new BadRequestException('warehouseId is required.');
     const warehouse = await this.prisma.warehouse.findUnique({
@@ -58,7 +57,7 @@ export class InsightsService {
       where: {
         warehouseId,
         zoneType: 'ACTUAL_STORAGE',
-        storageType: { in: RACK_STORAGE_TYPES },
+        storageType: { in: [...RACK_STORAGE_TYPES, 'STILLAGE'] },
         isActive: true,
       },
       select: {
@@ -68,6 +67,7 @@ export class InsightsService {
         rack: true,
         level: true,
         flankNumber: true,
+        stack: true,
       },
     });
 

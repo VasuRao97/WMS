@@ -276,6 +276,7 @@ export class PutawayTasksService {
       dockZones,
       allAisleRows,
       allGroundPositionRows,
+      allStillagePositionRows,
     ] = await Promise.all([
       tx.warehouse.findUnique({
         where: { id: warehouseId },
@@ -335,6 +336,24 @@ export class PutawayTasksService {
         },
         select: { aisle: true, flankNumber: true, block: true },
       }),
+      // Row-axis for Stillage (2026-09-13 follow-up to the 2026-09-12 4-wall
+      // dock model) — the client confirmed reusing the exact same row-axis
+      // mechanism Ground already has ("we need the second row also for
+      // stillage, same as ground"). A SEPARATE warehouse-wide group from
+      // Ground's own (below), keyed by `stack` instead of `block` — the two
+      // storage types can never share an Aisle (assertNoConflictingFamily()
+      // in locations.service.ts hard-blocks that), so their row sequences
+      // are physically unrelated axes and must be normalized against their
+      // OWN longest sequence, not against each other's.
+      tx.location.findMany({
+        where: {
+          warehouseId,
+          storageType: 'STILLAGE',
+          aisle: { not: null },
+          stack: { not: null },
+        },
+        select: { aisle: true, flankNumber: true, stack: true },
+      }),
     ]);
     const outboundRanker = buildOutboundProximityRanker(
       allAisleRows
@@ -381,6 +400,30 @@ export class PutawayTasksService {
         );
         groundRowGroups.set(key, sorted);
         globalMaxRowIndex = Math.max(globalMaxRowIndex, sorted.length - 1);
+      }
+    }
+
+    // Stillage's own row-axis groups — same shape as Ground's above, keyed
+    // by `stack` instead of `block`, normalized against ITS OWN longest
+    // sequence (see this batch's own query comment for why the two storage
+    // types' row axes can't be compared against a shared global max).
+    const stillageRowGroups = new Map<string, string[]>();
+    let globalMaxStillageRowIndex = 0;
+    if (rowRanker) {
+      for (const r of allStillagePositionRows as any[]) {
+        const key = `${r.aisle}|${r.flankNumber ?? 'x'}`;
+        if (!stillageRowGroups.has(key)) stillageRowGroups.set(key, []);
+        stillageRowGroups.get(key)!.push(r.stack);
+      }
+      for (const [key, positions] of stillageRowGroups) {
+        const sorted = Array.from(new Set(positions)).sort(
+          (a, b) => (Number(a) || 0) - (Number(b) || 0),
+        );
+        stillageRowGroups.set(key, sorted);
+        globalMaxStillageRowIndex = Math.max(
+          globalMaxStillageRowIndex,
+          sorted.length - 1,
+        );
       }
     }
 
@@ -526,6 +569,8 @@ export class PutawayTasksService {
       rowRanker,
       groundRowGroups,
       globalMaxRowIndex,
+      stillageRowGroups,
+      globalMaxStillageRowIndex,
       movements,
     };
 
@@ -1334,16 +1379,20 @@ export class PutawayTasksService {
   // through to C's cap, same "D behaves like C" convention as everywhere
   // else in this codebase (maxSkusForClass() already does this).
   //
-  // Deliberately simpler than suggestGroundBin() in two ways, both flagged
-  // rather than silently matched: no "closed column" lifecycle tracking (a
-  // column that's had a real pick/dispatch decrease stays open here — this
-  // wasn't discussed for Stillage, and is dormant/inert either way until a
-  // Picking module exists and starts writing negative movements); and no
-  // row-axis (NORTH/SOUTH second dock wall) placement — only the aisle-axis
-  // combined ABC×FMS priority score (confirmed with the client, "yes" to
-  // reusing Ground's own placement mechanism), since Stillage never got its
-  // own dedicated row-axis config the way Ground did. Both are easy follow-
-  // ons if ever asked for, not a hard limitation of this shape.
+  // Deliberately simpler than suggestGroundBin() in one remaining way, still
+  // flagged rather than silently matched: no "closed column" lifecycle
+  // tracking (a column that's had a real pick/dispatch decrease stays open
+  // here — this wasn't discussed for Stillage, and is dormant/inert either
+  // way until a Picking module exists and starts writing negative
+  // movements). Row-axis (NORTH/SOUTH second dock wall) placement WAS added
+  // 2026-09-13, same day as this method's own build — the client confirmed
+  // reusing Ground's exact mechanism ("we need the second row also for
+  // stillage, same as ground"); Stillage gets its OWN separate row-groups
+  // (`stillageRowGroups`/`globalMaxStillageRowIndex`, built alongside
+  // Ground's own in suggestBin() above) rather than sharing Ground's — the
+  // two storage types can never share an Aisle
+  // (assertNoConflictingFamily() in locations.service.ts hard-blocks that),
+  // so their row sequences are physically unrelated axes.
   // ------------------------------------------------------------
   private suggestStillageBin(
     stillageLocations: any[],
@@ -1367,6 +1416,9 @@ export class PutawayTasksService {
       newStockDate,
       excludeLocationIds,
       outboundRanker,
+      rowRanker,
+      stillageRowGroups,
+      globalMaxStillageRowIndex,
     } = ctx;
 
     const row: any = storageTypeRowByType.get('STILLAGE');
@@ -1387,6 +1439,7 @@ export class PutawayTasksService {
       occupancyCount: number;
       flankNumber: number | null;
       aisle: string | null;
+      stack: string | null;
       storageType: string;
     };
     const candidates: Candidate[] = [];
@@ -1531,6 +1584,7 @@ export class PutawayTasksService {
         occupancyCount,
         flankNumber: target.flankNumber ?? null,
         aisle: target.aisle ?? null,
+        stack: target.stack ?? null,
         storageType: target.storageType,
       });
     }
@@ -1538,10 +1592,12 @@ export class PutawayTasksService {
     if (candidates.length === 0) return null;
 
     // Same combined ABC×FMS priority-score + target-rank placement Ground
-    // uses (confirmed with the client — "yes" to reusing it) — aisle-axis
-    // only, since Stillage never got its own dedicated row-axis dock-zone
-    // config the way Ground did. See suggestGroundBin()'s own comment on
-    // combinedPriorityScore()/targetFraction for the full reasoning.
+    // uses (confirmed with the client — "yes" to reusing it), now on BOTH
+    // axes — aisle (outboundRanker) same as before, plus row (rowRanker,
+    // 2026-09-13 addition) using Stillage's own separate row-groups. See
+    // suggestGroundBin()'s own comment on combinedPriorityScore()/
+    // targetFraction/rowFractionFor for the full reasoning — mirrored here
+    // near-verbatim, just keyed by `stack` instead of `block`.
     const priorityScore = this.combinedPriorityScore(abcClass, fmsClass);
     const allRanks = outboundRanker
       ? stillageLocations
@@ -1552,27 +1608,38 @@ export class PutawayTasksService {
     const targetFraction = (priorityScore - 2) / 4;
     const preferFar = abcClass !== 'A' && abcClass !== 'B'; // unconfigured-warehouse fallback direction, same as Rack/Ground
 
+    const rowFractionFor = (c: Candidate): number | null => {
+      if (!rowRanker || c.aisle == null || c.stack == null) return null;
+      const positions = stillageRowGroups.get(
+        `${c.aisle}|${c.flankNumber ?? 'x'}`,
+      );
+      if (!positions || positions.length === 0) return null;
+      const raw = rowRanker(positions, c.stack, globalMaxStillageRowIndex);
+      return globalMaxStillageRowIndex > 0
+        ? raw / globalMaxStillageRowIndex
+        : 0;
+    };
+    const combinedFractionFor = (c: Candidate): number | null => {
+      let aisleFraction: number | null = null;
+      if (outboundRanker && c.aisle != null)
+        aisleFraction = maxRank > 0 ? outboundRanker(c.aisle) / maxRank : 0;
+      const rowFraction = rowFractionFor(c);
+      const parts = [aisleFraction, rowFraction].filter(
+        (v): v is number => v != null,
+      );
+      if (parts.length === 0) return null;
+      return parts.reduce((a, b) => a + b, 0) / parts.length;
+    };
+
     candidates.sort((a, b) => {
       if (a.occupancyCount !== b.occupancyCount)
         return b.occupancyCount - a.occupancyCount;
-      if (outboundRanker) {
-        const fracA =
-          a.aisle != null
-            ? maxRank > 0
-              ? outboundRanker(a.aisle) / maxRank
-              : 0
-            : null;
-        const fracB =
-          b.aisle != null
-            ? maxRank > 0
-              ? outboundRanker(b.aisle) / maxRank
-              : 0
-            : null;
-        if (fracA != null && fracB != null && fracA !== fracB)
-          return (
-            Math.abs(fracA - targetFraction) - Math.abs(fracB - targetFraction)
-          );
-      }
+      const fracA = combinedFractionFor(a);
+      const fracB = combinedFractionFor(b);
+      if (fracA != null && fracB != null && fracA !== fracB)
+        return (
+          Math.abs(fracA - targetFraction) - Math.abs(fracB - targetFraction)
+        );
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
       return preferFar ? fb - fa : fa - fb;

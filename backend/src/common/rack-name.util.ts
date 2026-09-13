@@ -76,6 +76,17 @@ export function displayCode(loc: {
 // addressable (a Reach/Stacker truck accesses any level from the aisle
 // without disturbing the others), so they keep Level in the key exactly
 // as before this date.
+//
+// STILLAGE (2026-09-13, added once Stillage's own redesign gave it a real
+// column/depth lane model equivalent to Rack's) — a lane is one COLUMN
+// (`stack` + `rack`, `rack` reused as the column number within the bin,
+// same convention Ground's own redesign already established), single-file
+// LIFO, `depth` positions deep — mechanically identical to a Rack lane,
+// just naming a stack instead of a rack row. Ground/Floor is deliberately
+// NOT included here even though its own redesign gave it the same
+// column/depth shape — nothing has asked to extend this grouping (or its
+// only consumer, InsightsService's storage-utilization report) to Ground,
+// so it stays out rather than silently bundled in.
 export function laneKeyOf(loc: {
   id: string;
   storageType: string;
@@ -83,7 +94,13 @@ export function laneKeyOf(loc: {
   rack: string | null;
   level: string | null;
   flankNumber: number | null;
+  stack?: string | null;
 }): string {
+  if (loc.storageType === 'STILLAGE') {
+    return loc.aisle && loc.stack && loc.rack
+      ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.stack}|${loc.rack}`
+      : `single|${loc.id}`;
+  }
   if (!RACK_STORAGE_TYPES.includes(loc.storageType) || !loc.aisle || !loc.rack)
     return `single|${loc.id}`;
   if (loc.storageType === 'DRIVE_IN')

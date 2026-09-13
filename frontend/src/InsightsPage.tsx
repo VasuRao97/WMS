@@ -74,9 +74,10 @@ function InsightsPage() {
 
       <h3 style={{ textAlign: 'center', marginBottom: 4 }}>Storage Utilization by ABC Class</h3>
       <p style={{ textAlign: 'center', color: '#888', fontSize: 13, marginTop: 0, marginBottom: 20 }}>
-        Of the rack-storage bins actually holding stock for each class, how much of that space is really being used
-        — a lane sitting mostly empty (e.g. one small SKU alone in a 3-deep lane) shows up as low utilization here.
-        Empty lanes (nothing of any class in them) aren't counted. Warehouse: {warehouseCode || '—'}.
+        Of the rack and stillage bins actually holding stock for each class, how much of that space is really being
+        used — a lane sitting mostly empty (e.g. one small SKU alone in a 3-deep lane) shows up as low utilization
+        here. Empty lanes (nothing of any class in them) aren't counted. Ground/Floor storage isn't included yet.
+        Warehouse: {warehouseCode || '—'}.
       </p>
 
       {error && <p style={{ color: 'crimson', textAlign: 'center' }}>{error}</p>}
