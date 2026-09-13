@@ -5077,19 +5077,85 @@ in 3D that the selected aisle's own box renders the same rank/color and resolves
 `Location` row (`GF-1-BLK01-C1-D1`) with the identical "Bin Rank: 1 (AF)" row on click. `tsc
 --noEmit`(backend)/`tsc -b`(frontend) both clean.
 
-**Not yet done**: asking the client whether Rack (SPR/ASRS) should eventually get its own analogous
-ranking treatment — the Ground-only scoping above was my own call, not explicitly confirmed, and
-given this session's own repeated pattern of misreads it's worth confirming rather than assuming.
-**Asked, next session (2026-09-13) — see "Dock zone: numberOneNearDock" below for the fuller context
-that prompted this.** A design conversation (not yet built) landed on: unlike Ground, Rack's aisle
-and level are two genuinely independent costs (aisle = travel distance, level = reach effort, not
-"distance to dock") — so forcing them into one blended 1-9 number the way Ground's Bin Rank does
-would hide real information. Proposed shape: **Aisle Rank (A/B/C)**, geometric, needs an EAST/WEST
-dock zone, applies to SPR/Drive-in/ASRS alike; **Level Rank (F/M/S)**, purely structural (lowest
-level = F/easiest-reach, highest = S), needs no dock zone at all, SPR/ASRS only — excluded for
-Drive-in since a Drive-in column has no independent level choice (top to bottom is always one SKU).
-Neither reuses Ground's 9-cell AF..CS labels — each gets its own real 3-tier scale matching the
-actual classification it's built from. Still just a proposal — not yet confirmed or built.
+**Asked, then built, next session (2026-09-13) — see "Rack Rank" below for the full build,
+verification, and a real data-integrity issue it surfaced on TNR8's Aisle 1.** Confirmed: unlike
+Ground, Rack's aisle and level are two genuinely independent costs (aisle = travel distance, level =
+reach effort, not "distance to dock") — so forcing them into one blended 1-9 number the way Ground's
+Bin Rank does would hide real information. Built shape: **Aisle Rank (A/B/C)**, geometric, needs an
+EAST/WEST dock zone, applies to SPR/Drive-in/ASRS alike; **Level Rank (F/M/S)**, purely structural
+(lowest level = F/easiest-reach, highest = S), needs no dock zone at all, SPR/ASRS only — excluded
+for Drive-in since a Drive-in column has no independent level choice (top to bottom is always one
+SKU). Neither reuses Ground's 9-cell AF..CS labels — each gets its own real 3-tier scale matching
+the actual classification it's built from.
+
+### Rack Rank — Aisle Rank (A/B/C) + Level Rank (F/M/S), Rack's own analogue to Bin Rank (2026-09-13)
+Closes the "Not yet done" item just above: whether Rack (SPR/Drive-in/ASRS) should get its own
+ranking display alongside Ground's Bin Rank. Genuinely different shape, not a copy — see the design
+conversation this came out of: Ground has ONE physical lever (dock distance), so one blended 1-9
+number is honest. Rack has TWO independent levers — **Aisle** (travel distance, ABC-driven) and
+**Level** (reach effort, FMS-driven, SPR/ASRS only) — and they're genuinely different KINDS of cost,
+not two measurements of the same thing the way Ground's aisle+row fractions were. Blending them
+(the way `combinedPriorityScore()` blends Ground's) would hide which cost is actually driving a bad
+rank. Resolved as **two separate small tier lists**, each on its own real 3-tier scale matching the
+classification it's built from (A/B/C, F/M/S) — reusing `ABC_CLASS_COLORS`/`FMS_CLASS_COLORS`
+directly, not Bin Rank's borrowed 9-cell AF..CS labels.
+
+**Backend**: `LocationsService.rackRankByWarehouse()` (`GET /locations/rack-rank?warehouseId=X`).
+Unlike Bin Rank, NEITHER list is per-bin — Aisle Rank is one entry per distinct Aisle (reuses
+`buildOutboundProximityRanker()` exactly, same EAST/WEST-zone-required fallback as Ground), Level
+Rank is one entry per distinct Level (no dock zone needed at all — "low is easy to reach" is a fixed
+physical fact). Both bucket a 0..1 fraction into 3 tiers via a shared `bucket3()` helper (`<=1/3`,
+`<=2/3`, else) instead of Bin Rank's 9.
+
+**A real bug caught live against TNR8's actual data, not assumed correct**: TNR8's Level values are
+stored inconsistently — `"01".."07"` on one aisle, `"1".."7"` on others (the same zero-padding-
+preservation behavior the Location range generator already documents, just landing differently
+across separate generation batches). The first version of `rackRankByWarehouse()` deduped by raw
+STRING, so it saw 14 "distinct" levels instead of 7, corrupting every bucket boundary — and even
+after that was traced, one bin's live badge still showed the wrong letter. Root cause turned out
+deeper: **the SAME (aisle, flank, rack, depth) position has genuine DUPLICATE `Location` rows on
+TNR8's Aisle 1** — 632 extra rows across 631 distinct `code` values (SPR and Ground/Floor both),
+different `id`s, identical `code`, differing only in Level-string spelling — almost certainly Aisle
+1 having been generated twice, once via each spelling convention. This is a real, pre-existing data
+integrity issue independent of Rack Rank — flagged to the client, NOT fixed/deleted without their
+decision (real TNR8 data, not throwaway). Two things were fixed on this feature's own side
+regardless of that larger issue: `rackRankByWarehouse()`'s Level grouping now dedupes/sorts by
+`Number(level)`, returning a canonical bare-number string (`"7"`, not `"07"`) — frontend lookups
+normalize a Location's own `level` the same way (`normLevel()`, both `LocationsPlanView.tsx` and
+`Locations3DView.tsx`) before joining, so either spelling resolves to the correct rank regardless of
+which duplicate row a lookup happens to land on. Separately, 2D's Level Rank badge is now gated on a
+SPECIFIC Level being selected (not "All Levels") — a box collapsing several real Levels into one
+(this view's own long-standing `L{min}-L{max}` summary) has no single Level Rank to honestly show;
+Aisle Rank has no such ambiguity (one value for the whole aisle) so only the second badge needed
+this gate.
+
+**Frontend**: a 7th `ColorMode` (`'rackRank'`) in both 2D (`LocationsPlanView.tsx`) and 3D
+(`Locations3DView.tsx`). 2D shows Aisle Rank as the box's own fill color plus a top-right badge,
+Level Rank as a second, smaller top-left badge (only SPR/ASRS, only with a specific Level selected).
+3D colors by Aisle Rank the same way and combines both letters into one Label3D slot on a detailed
+box (`"A/F"`) since there's only one text label per box there — an unselected aisle footprint shows
+Aisle Rank alone (`"Aisle 20 — #A"`), never Level Rank (a footprint spans every Level, same
+ambiguity as 2D's "All Levels" case). `LocationDetailPanel.tsx` gained "Aisle Rank"/"Level Rank"
+rows, shown independently (a Drive-in bin only ever gets Aisle Rank).
+
+Verified two ways. Backend: `GET /locations/rack-rank` against TNR8's real warehouse (read-only) —
+`aisleRank.configured: false` (TNR8 has no EAST/WEST zone, correct graceful fallback) and
+`levelRank` correctly returning exactly 7 entries (`"1".."7"`, not 14) bucketed F/F/F/M/M/S/S after
+the numeric-dedup fix. Then live in the browser (TNR8, real data, read-only — no Company Settings
+Save touched): selected TNR8, toggled to Rack Rank, picked Level `G+6`, confirmed via direct SVG
+text-node inspection that `R2-01-D1`'s badge correctly reads `S` (not the earlier wrong `F`), and
+confirmed via a real click that the DetailPanel shows `Level: 07` / `Level Rank: S` correctly, with
+no Aisle Rank row (matching the unconfigured aisle axis). `tsc --noEmit`(backend)/`tsc -b`(frontend)
+both clean. **3D's mirrored logic was not independently click-tested this pass** — it shares the
+exact same `normLevel`/lookup functions verified in 2D, but hasn't been separately exercised live.
+
+**Real, unresolved open item — needs the client's decision, not a code fix**: TNR8's Aisle 1 has
+632 genuine duplicate Location rows (real `id`s, same `code`) — affects real counts (Total
+Locations, Storage Type Mapping's Mapped column, etc. are all somewhat inflated by this on Aisle 1
+specifically) beyond just Rack Rank's own display. Needs the client to confirm before any cleanup —
+identifying and deleting genuine duplicates (keeping one canonical row per code, verified to have no
+independent stock/movement history before deletion) on real TNR8 data is exactly the kind of
+action this project's own standing rules require explicit confirmation for.
 
 ### Dock zone: `numberOneNearDock` — a real gap found live-testing Bin Rank against TNR8 (2026-09-12/13)
 A direct continuation of "Dock-relative Putaway placement — Topic 2" and "'Bin Rank'" above, found

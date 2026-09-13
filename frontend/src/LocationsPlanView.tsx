@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { RACK_STORAGE_TYPES, STORAGE_TYPE_OPTIONS, labelFor, type Location } from './LocationsPage';
-import { type ColorMode, type Occupancy, type BinRank, ABC_CLASS_COLORS, FMS_CLASS_COLORS, BIN_RANK_MATRIX_LABELS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor, binRankColor } from './occupancyColors';
+import { type ColorMode, type Occupancy, type BinRank, type AisleRank, type LevelRank, ABC_CLASS_COLORS, FMS_CLASS_COLORS, BIN_RANK_MATRIX_LABELS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor, binRankColor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
 import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
@@ -342,7 +342,7 @@ function buildLayout(locations: Location[]): { aisles: AisleBlock[]; skipped: nu
   return { aisles, skipped };
 }
 
-function AisleCellBox({ box, x, y, color, rankLabel, onClick }: { box: Box; x: number; y: number; color: { fill: string; stroke: string }; rankLabel?: string; onClick: (locationId: string) => void }) {
+function AisleCellBox({ box, x, y, color, rankLabel, rankLabel2, onClick }: { box: Box; x: number; y: number; color: { fill: string; stroke: string }; rankLabel?: string; rankLabel2?: string; onClick: (locationId: string) => void }) {
   return (
     <g onClick={() => onClick(box.key)} style={{ cursor: 'pointer' }}>
       <rect
@@ -381,6 +381,18 @@ function AisleCellBox({ box, x, y, color, rankLabel, onClick }: { box: Box; x: n
           </text>
         </>
       )}
+      {/* Rack Rank's second badge (2026-09-13) — Level Rank (F/M/S),
+          top-LEFT corner so it never collides with the Aisle Rank badge
+          (top-right) — two independent facts, two independent badges,
+          rather than blending into one number the way Bin Rank does. */}
+      {rankLabel2 && (
+        <>
+          <circle cx={x + 11} cy={y + 11} r={10} fill="#fff" stroke={FMS_CLASS_COLORS[rankLabel2 as 'F' | 'M' | 'S'].stroke} strokeWidth={1.5} />
+          <text x={x + 11} y={y + 15} textAnchor="middle" fontSize={12} fontWeight="bold" fill={FMS_CLASS_COLORS[rankLabel2 as 'F' | 'M' | 'S'].stroke} fontFamily="sans-serif">
+            {rankLabel2}
+          </text>
+        </>
+      )}
     </g>
   );
 }
@@ -396,6 +408,7 @@ function Flank({
   yForRow,
   getColor,
   getRankLabel,
+  getRankLabel2,
   onSelect,
 }: {
   cells: Cell[];
@@ -404,6 +417,7 @@ function Flank({
   yForRow: (r: number) => number;
   getColor: (box: Box) => { fill: string; stroke: string };
   getRankLabel: (box: Box) => string | undefined;
+  getRankLabel2?: (box: Box) => string | undefined;
   onSelect: (locationId: string) => void;
 }) {
   return (
@@ -416,7 +430,7 @@ function Flank({
             {cell.boxes.map((box) => {
               const x = direction === 1 ? cursor : cursor - box.width;
               cursor = direction === 1 ? cursor + box.width : cursor - box.width;
-              return <AisleCellBox key={box.key} box={box} x={x} y={y} color={getColor(box)} rankLabel={getRankLabel(box)} onClick={onSelect} />;
+              return <AisleCellBox key={box.key} box={box} x={x} y={y} color={getColor(box)} rankLabel={getRankLabel(box)} rankLabel2={getRankLabel2?.(box)} onClick={onSelect} />;
             })}
           </g>
         );
@@ -456,7 +470,7 @@ function CompassRose() {
   );
 }
 
-function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, binRank }: { locations: Location[]; warehouseLabel: string; colorMode: ColorMode; occupancy: Occupancy[]; binRank?: BinRank }) {
+function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, binRank, aisleRank, levelRank }: { locations: Location[]; warehouseLabel: string; colorMode: ColorMode; occupancy: Occupancy[]; binRank?: BinRank; aisleRank?: AisleRank; levelRank?: LevelRank }) {
   // Click-to-inspect (2026-09-05 "upgrade mode" backlog, item 2) — closes
   // the original 2026-08-25 deferred item, 3D got it first. Hook called
   // unconditionally before the early-return empty states below, same rule
@@ -531,6 +545,20 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
   const binKeyOf = (l: { aisle?: string | null; flankNumber?: number | null; block?: string | null }) => `${l.aisle}|${l.flankNumber ?? 'x'}|${l.block}`;
   const binRankByBin = new Map((binRank?.ranks ?? []).map((r) => [binKeyOf(r), r]));
   const binRankEntryFor = (location: Location | undefined) => (location ? binRankByBin.get(binKeyOf(location)) : undefined);
+  // Rack Rank (2026-09-13) — LOCATION-INTRINSIC like Bin Rank, but two
+  // independent small lookups (by Aisle, by Level) rather than one per-bin
+  // map — see AisleRank/LevelRank's own type comments in occupancyColors.ts
+  // for why these don't need combining the way Ground's aisle+row fractions
+  // did. Reuses the exact same ABC_CLASS_COLORS/FMS_CLASS_COLORS palettes
+  // real SKU classification already uses, for the same letters.
+  const aisleRankByAisle = new Map((aisleRank?.ranks ?? []).map((r) => [r.aisle, r.rank]));
+  const levelRankByLevel = new Map((levelRank?.ranks ?? []).map((r) => [r.level, r.rank]));
+  // Normalize a Location's own `level` before joining against the ranks
+  // above — the backend's own `level` field is a canonical bare-number
+  // string ("7"), but a real Location row can store it zero-padded ("07")
+  // depending on which Level Range generated it (a real data inconsistency
+  // caught live against TNR8: "01".."07" on one aisle, "1".."7" on others).
+  const normLevel = (level: string) => String(Number(level) || 0);
   const getColor = (box: Box): { fill: string; stroke: string } => {
     if (colorMode === 'binRank') {
       if (box.storageType !== 'GROUND_FLOOR') return NEUTRAL_COLOR;
@@ -538,13 +566,46 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
       if (!binRank?.configured || !entry) return NEUTRAL_COLOR;
       return binRankColor(entry.rank);
     }
+    if (colorMode === 'rackRank') {
+      if (!RACK_STORAGE_TYPES.includes(box.storageType)) return NEUTRAL_COLOR;
+      const location = locationById.get(box.key);
+      const aisleLetter = location?.aisle != null ? aisleRankByAisle.get(location.aisle) : undefined;
+      if (!aisleRank?.configured || !aisleLetter) return NEUTRAL_COLOR;
+      return ABC_CLASS_COLORS[aisleLetter];
+    }
     const overlay = occupancyColorFor(colorMode, occupancyByLocationId.get(box.key), categoryColors);
     return overlay ?? STORAGE_TYPE_COLORS[box.storageType] ?? DEFAULT_BOX_COLOR;
   };
   const getRankLabel = (box: Box): string | undefined => {
-    if (colorMode !== 'binRank' || box.storageType !== 'GROUND_FLOOR') return undefined;
-    const entry = binRankEntryFor(locationById.get(box.key));
-    return entry ? String(entry.rank) : undefined;
+    if (colorMode === 'binRank') {
+      if (box.storageType !== 'GROUND_FLOOR') return undefined;
+      const entry = binRankEntryFor(locationById.get(box.key));
+      return entry ? String(entry.rank) : undefined;
+    }
+    if (colorMode === 'rackRank') {
+      if (!RACK_STORAGE_TYPES.includes(box.storageType)) return undefined;
+      const location = locationById.get(box.key);
+      return location?.aisle != null ? aisleRankByAisle.get(location.aisle) : undefined;
+    }
+    return undefined;
+  };
+  // Level Rank (SPR/ASRS only — Drive-in has no independent level choice,
+  // see occupancyColors.ts's LevelRank comment) — a second, smaller badge so
+  // both axes are visible on one bin without blending into one number.
+  // Gated on a SPECIFIC Level being selected (not "All Levels") — a real
+  // ambiguity caught live: with every Level collapsed into one box (this
+  // view's own long-standing "L{min}-L{max}" summary), that one box can
+  // represent several real Levels at once, each with its OWN Level Rank —
+  // showing just one badge would arbitrarily pick whichever Location row
+  // `locationById` happened to resolve to (worse, TNR8's own Aisle 1 has a
+  // real, separate duplicate-row data issue that made this concretely
+  // visible during testing — see CLAUDE.md). Aisle Rank has no such
+  // ambiguity (one value for the whole aisle regardless of Level), so only
+  // this second badge needs the gate.
+  const getRankLabel2 = (box: Box): string | undefined => {
+    if (colorMode !== 'rackRank' || selectedLevel === 'all' || (box.storageType !== 'SPR' && box.storageType !== 'ASRS')) return undefined;
+    const location = locationById.get(box.key);
+    return location?.level != null ? levelRankByLevel.get(normLevel(location.level)) : undefined;
   };
 
   return (
@@ -554,6 +615,8 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
           location={selected}
           occupancy={occupancyByLocationId.get(selected.id)}
           binRankEntry={selected.storageType === 'GROUND_FLOOR' ? binRankEntryFor(selected) : undefined}
+          aisleRankLabel={RACK_STORAGE_TYPES.includes(selected.storageType) && selected.aisle != null ? aisleRankByAisle.get(selected.aisle) : undefined}
+          levelRankLabel={(selected.storageType === 'SPR' || selected.storageType === 'ASRS') && selected.level != null ? levelRankByLevel.get(normLevel(selected.level)) : undefined}
           onClose={() => setSelected(null)}
         />
       )}
@@ -571,7 +634,9 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
                 ? "Colored by each bin's current occupant's F/M/S Class — plain grey means empty, or FMS not yet computed for this SKU."
                 : colorMode === 'priority'
                   ? "Colored by each bin's current occupant's combined ABC×FMS priority score — green (AF, best) through yellow to red (CS/D, worst); plain grey means empty. Ground/Floor's own placement uses this exact score to decide proximity to the outbound dock."
-                  : "Ground/Floor bins only — numbered 1-9 and colored on the same green-to-red gradient, matching the ABC×FMS matrix cell each bin's own POSITION represents (1=AF nearest outbound, 9=CS farthest) — regardless of whether anything is in it. Needs an OUTBOUND Dock Zone configured in Company Settings; Rack bins always show plain grey here."}
+                  : colorMode === 'binRank'
+                    ? "Ground/Floor bins only — numbered 1-9 and colored on the same green-to-red gradient, matching the ABC×FMS matrix cell each bin's own POSITION represents (1=AF nearest outbound, 9=CS farthest) — regardless of whether anything is in it. Needs an OUTBOUND Dock Zone configured in Company Settings; Rack bins always show plain grey here."
+                    : "Rack bins only (SPR/Drive-in/ASRS) — two independent badges, since aisle (travel distance) and level (reach effort) are genuinely different costs, not blended into one number. Top-right: Aisle Rank (A/B/C, same colors as A/B/C Class) — needs an EAST/WEST Dock Zone configured. Top-left: Level Rank (F/M/S, same colors as F/M/S Class, SPR/ASRS only — lowest level = F/easiest to reach, highest = S) — no dock zone needed, purely structural, but only shows once you pick one specific Level below (a box collapsing several Levels into one has no single Level Rank to show). Ground/Stillage bins always show plain grey here."}
         {' '}Aisle 1 sits closest to the bottom-right corner; each further aisle is added to its left. A single-sided
         aisle draws as one flank on the right; a second flank (left) only appears when it was actually generated (a
         Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number — each
@@ -634,6 +699,28 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
             {BIN_RANK_MATRIX_LABELS.map((label, i) => (
               <span key={label} style={{ fontSize: 11, color: '#666' }}>{i + 1}={label}</span>
             ))}
+          </span>
+        )}
+        {colorMode === 'rackRank' && (
+          <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 11, color: '#888' }}>Aisle Rank (top-right):</span>
+              {(['A', 'B', 'C'] as const).map((cls) => (
+                <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 12, height: 12, borderRadius: 6, background: ABC_CLASS_COLORS[cls].fill, border: `1.5px solid ${ABC_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
+                  {cls}
+                </span>
+              ))}
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 11, color: '#888' }}>Level Rank (top-left, SPR/ASRS only):</span>
+              {(['F', 'M', 'S'] as const).map((cls) => (
+                <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 12, height: 12, borderRadius: 6, background: FMS_CLASS_COLORS[cls].fill, border: `1.5px solid ${FMS_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
+                  {cls}
+                </span>
+              ))}
+            </span>
           </span>
         )}
         {colorMode === 'category' &&
@@ -857,8 +944,8 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
                       </text>
                     </>
                   )}
-                  <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} getColor={getColor} getRankLabel={getRankLabel} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
-                  <Flank cells={aisle.rightCells} edgeX={walkwayRightX} direction={1} yForRow={yForRow} getColor={getColor} getRankLabel={getRankLabel} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
+                  <Flank cells={aisle.leftCells} edgeX={walkwayLeftX} direction={-1} yForRow={yForRow} getColor={getColor} getRankLabel={getRankLabel} getRankLabel2={getRankLabel2} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
+                  <Flank cells={aisle.rightCells} edgeX={walkwayRightX} direction={1} yForRow={yForRow} getColor={getColor} getRankLabel={getRankLabel} getRankLabel2={getRankLabel2} onSelect={(id) => setSelected(locationById.get(id) ?? null)} />
                 </g>
               );
             });

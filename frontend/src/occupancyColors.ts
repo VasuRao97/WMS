@@ -34,7 +34,7 @@ export type Occupancy = {
   quantity?: number;
 };
 
-export type ColorMode = 'structural' | 'category' | 'class' | 'fmsClass' | 'priority' | 'binRank';
+export type ColorMode = 'structural' | 'category' | 'class' | 'fmsClass' | 'priority' | 'binRank' | 'rackRank';
 
 export const NEUTRAL_COLOR = { fill: '#f3f4f6', stroke: '#9ca3af' };
 
@@ -126,6 +126,21 @@ export function binRankColor(rank: number): { fill: string; stroke: string } {
   const hue = 120 - t * 120;
   return { fill: `hsl(${hue}, 70%, 88%)`, stroke: `hsl(${hue}, 65%, 45%)` };
 }
+
+// Rack Rank, "By Rack Rank" mode (2026-09-13) — Rack's own analogue to Bin
+// Rank above, raised directly after building numberOneNearDock. Genuinely
+// different shape from Bin Rank, not a copy: Ground has one physical lever
+// (dock distance), so one blended 1-9 number honestly represents a bin.
+// Rack has TWO independent levers — Aisle (travel distance, ABC-driven) and
+// Level (reach effort, FMS-driven, SPR/ASRS only — a Drive-in column has no
+// independent level choice, top to bottom is always one SKU). Blending them
+// would hide which kind of cost is actually driving a bad rank, so this
+// stays two separate small tier lists/badges rather than one score — each
+// on its own real 3-tier scale (A/B/C, F/M/S) reusing the exact same color
+// maps already used for real SKU classification above, not a borrowed
+// 9-cell AF..CS label the way Bin Rank uses.
+export type AisleRank = { configured: boolean; ranks: { aisle: string; rank: 'A' | 'B' | 'C' }[] };
+export type LevelRank = { configured: boolean; ranks: { level: string; rank: 'F' | 'M' | 'S' }[] };
 
 // Categories are open-ended (however many a company has created) — a fixed
 // rotating palette assigned by sorted category name, so the same category

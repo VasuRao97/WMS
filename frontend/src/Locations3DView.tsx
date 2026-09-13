@@ -4,7 +4,7 @@ import { OrbitControls, Edges, Grid, Billboard, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { RACK_STORAGE_TYPES, type Location } from './LocationsPage';
 import { STORAGE_TYPE_COLORS, DEFAULT_BOX_COLOR } from './LocationsPlanView';
-import { type ColorMode, type Occupancy, type BinRank, ABC_CLASS_COLORS, FMS_CLASS_COLORS, BIN_RANK_MATRIX_LABELS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor, binRankColor } from './occupancyColors';
+import { type ColorMode, type Occupancy, type BinRank, type AisleRank, type LevelRank, ABC_CLASS_COLORS, FMS_CLASS_COLORS, BIN_RANK_MATRIX_LABELS, NEUTRAL_COLOR, buildCategoryColorMap, occupancyColorFor, binRankColor } from './occupancyColors';
 import { DetailPanel } from './LocationDetailPanel';
 import { posOf, naturalCompare, uniqSorted } from './locationBoxUtils';
 
@@ -709,6 +709,8 @@ function Locations3DView({
   colorMode,
   occupancy,
   binRank,
+  aisleRank,
+  levelRank,
   dockZones,
   rackBaysPerCrossAisle = 10,
   groundBinsPerCrossAisle = 10,
@@ -717,6 +719,8 @@ function Locations3DView({
   colorMode: ColorMode;
   occupancy: Occupancy[];
   binRank?: BinRank;
+  aisleRank?: AisleRank;
+  levelRank?: LevelRank;
   // Real configured dock zones (2026-09-12 — "mention where the docks are
   // in the 3d location view") — the compass alone only ever gave a fixed
   // N/S/E/W reference; this is the actual physical fact laid on top of it,
@@ -785,6 +789,15 @@ function Locations3DView({
   // is configured, not just one shared value for the whole aisle.
   const binKeyOf = (l: { aisle?: string | null; flankNumber?: number | null; block?: string | null }) => `${l.aisle}|${l.flankNumber ?? 'x'}|${l.block}`;
   const binRankByBin = new Map((binRank?.ranks ?? []).map((r) => [binKeyOf(r), r]));
+  // Rack Rank (2026-09-13) — same two independent small lookups as 2D, see
+  // occupancyColors.ts's AisleRank/LevelRank comments for why these stay
+  // separate rather than combining into one number the way Bin Rank does.
+  const aisleRankByAisle = new Map((aisleRank?.ranks ?? []).map((r) => [r.aisle, r.rank]));
+  const levelRankByLevel = new Map((levelRank?.ranks ?? []).map((r) => [r.level, r.rank]));
+  // Normalize before joining — see LocationsPlanView.tsx's identical
+  // `normLevel` comment for the real TNR8 zero-padding inconsistency this
+  // guards against ("01".."07" on one aisle, "1".."7" on others).
+  const normLevel = (level: string) => String(Number(level) || 0);
   const getColor = (location: Location): { fill: string; stroke: string } => {
     if (colorMode === 'binRank') {
       if (location.storageType !== 'GROUND_FLOOR') return NEUTRAL_COLOR;
@@ -792,13 +805,32 @@ function Locations3DView({
       if (!binRank?.configured || !entry) return NEUTRAL_COLOR;
       return binRankColor(entry.rank);
     }
+    if (colorMode === 'rackRank') {
+      if (!RACK_STORAGE_TYPES.includes(location.storageType)) return NEUTRAL_COLOR;
+      const aisleLetter = location.aisle != null ? aisleRankByAisle.get(location.aisle) : undefined;
+      if (!aisleRank?.configured || !aisleLetter) return NEUTRAL_COLOR;
+      return ABC_CLASS_COLORS[aisleLetter];
+    }
     const overlay = occupancyColorFor(colorMode, occupancyByLocationId.get(location.id), categoryColors);
     return overlay ?? STORAGE_TYPE_COLORS[location.storageType] ?? DEFAULT_BOX_COLOR;
   };
   const getRankLabel = (location: Location): string | undefined => {
-    if (colorMode !== 'binRank' || location.storageType !== 'GROUND_FLOOR') return undefined;
-    const entry = binRankByBin.get(binKeyOf(location));
-    return entry ? String(entry.rank) : undefined;
+    if (colorMode === 'binRank') {
+      if (location.storageType !== 'GROUND_FLOOR') return undefined;
+      const entry = binRankByBin.get(binKeyOf(location));
+      return entry ? String(entry.rank) : undefined;
+    }
+    if (colorMode === 'rackRank') {
+      if (!RACK_STORAGE_TYPES.includes(location.storageType)) return undefined;
+      const aisleLetter = location.aisle != null ? aisleRankByAisle.get(location.aisle) : undefined;
+      if (!aisleLetter) return undefined;
+      // SPR/ASRS combine both letters in one label (one Label3D slot per
+      // box, see the file's own single-rankLabel LocationBox shape) —
+      // Drive-in shows Aisle Rank alone, no Level Rank exists there at all.
+      const levelLetter = (location.storageType === 'SPR' || location.storageType === 'ASRS') && location.level != null ? levelRankByLevel.get(normLevel(location.level)) : undefined;
+      return levelLetter ? `${aisleLetter}/${levelLetter}` : aisleLetter;
+    }
+    return undefined;
   };
 
   // Bin Rank ALSO colors/labels unselected footprint blocks — same reason
@@ -820,6 +852,11 @@ function Locations3DView({
       if (binRank?.configured && entry) return binRankColor(entry.rank);
       return NEUTRAL_COLOR;
     }
+    if (colorMode === 'rackRank' && layout.storageTypes.length === 1 && RACK_STORAGE_TYPES.includes(layout.storageTypes[0])) {
+      const letter = aisleRankByAisle.get(layout.aisleCode);
+      if (aisleRank?.configured && letter) return ABC_CLASS_COLORS[letter];
+      return NEUTRAL_COLOR;
+    }
     return STORAGE_TYPE_COLORS[layout.storageTypes[0]] || DEFAULT_BOX_COLOR;
   };
   const bestRankInAisle = (aisleCode: string) => {
@@ -828,9 +865,19 @@ function Locations3DView({
     return candidates.reduce((best, r) => (r.rank < best.rank ? r : best));
   };
   const getFootprintRankLabel = (layout: AisleLayout): string | undefined => {
-    if (colorMode !== 'binRank' || layout.storageTypes.length !== 1 || layout.storageTypes[0] !== 'GROUND_FLOOR') return undefined;
-    const entry = bestRankInAisle(layout.aisleCode);
-    return entry ? `${entry.rank} (${entry.label})` : undefined;
+    if (colorMode === 'binRank' && layout.storageTypes.length === 1 && layout.storageTypes[0] === 'GROUND_FLOOR') {
+      const entry = bestRankInAisle(layout.aisleCode);
+      return entry ? `${entry.rank} (${entry.label})` : undefined;
+    }
+    if (colorMode === 'rackRank' && layout.storageTypes.length === 1 && RACK_STORAGE_TYPES.includes(layout.storageTypes[0])) {
+      // A footprint spans every Level in the aisle, so only Aisle Rank (one
+      // value for the whole aisle) is unambiguous here — Level Rank only
+      // means something once you drill into a specific bin's own Level.
+      // Bare letter, matching the "Aisle N — #{rankLabel}" template below
+      // (renders as "Aisle 20 — #A").
+      return aisleRankByAisle.get(layout.aisleCode);
+    }
+    return undefined;
   };
 
   // totalWidth/totalDepth size the floor/grid to the WHOLE warehouse always
@@ -873,7 +920,9 @@ function Locations3DView({
                   ? 'Colored by occupant F/M/S Class (selected aisles only):'
                   : colorMode === 'priority'
                     ? 'Colored by occupant combined ABC×FMS priority score (selected aisles only):'
-                    : 'Ground/Floor bins numbered 1-9 by dock proximity (footprints included, no selection needed):'}
+                    : colorMode === 'binRank'
+                      ? 'Ground/Floor bins numbered 1-9 by dock proximity (footprints included, no selection needed):'
+                      : 'Rack bins (SPR/Drive-in/ASRS) — Aisle Rank colors every box (footprints included); a detailed SPR/ASRS box also shows Level Rank as the 2nd letter ("A/F"):'}
           </span>
           {colorMode === 'class' &&
             (['A', 'B', 'C'] as const).map((cls) => (
@@ -902,6 +951,20 @@ function Locations3DView({
               {BIN_RANK_MATRIX_LABELS.map((label, i) => (
                 <span key={label} style={{ fontSize: 11, color: '#666' }}>{i + 1}={label}</span>
               ))}
+            </span>
+          )}
+          {colorMode === 'rackRank' && (
+            <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, color: '#888' }}>Aisle Rank:</span>
+                {(['A', 'B', 'C'] as const).map((cls) => (
+                  <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ width: 12, height: 12, borderRadius: 6, background: ABC_CLASS_COLORS[cls].fill, border: `1.5px solid ${ABC_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />
+                    {cls}
+                  </span>
+                ))}
+              </span>
+              <span style={{ fontSize: 11, color: '#888' }}>Level Rank (SPR/ASRS only, shown as "A/F" on a detailed box): F=easiest reach, M=middle, S=hardest reach.</span>
             </span>
           )}
           {colorMode === 'category' &&
@@ -1010,6 +1073,8 @@ function Locations3DView({
             location={selected}
             occupancy={occupancyByLocationId.get(selected.id)}
             binRankEntry={selected.storageType === 'GROUND_FLOOR' ? binRankByBin.get(binKeyOf(selected)) : undefined}
+            aisleRankLabel={RACK_STORAGE_TYPES.includes(selected.storageType) && selected.aisle != null ? aisleRankByAisle.get(selected.aisle) : undefined}
+            levelRankLabel={(selected.storageType === 'SPR' || selected.storageType === 'ASRS') && selected.level != null ? levelRankByLevel.get(normLevel(selected.level)) : undefined}
             onClose={() => setSelected(null)}
           />
         )}

@@ -11,9 +11,12 @@ full detail it used to carry inline already lives in the Session notes below and
 own data — `WarehouseDockZone` never captured which end of the Aisle/Row numbering actually sits
 nearest the dock, only which wall it touches. Fixed with a new `numberOneNearDock` field, backfilled
 to zero-change every existing zone (see CLAUDE.md's "Dock zone: numberOneNearDock" section). A
-follow-on design conversation proposed a Rack-specific ranking treatment (Aisle Rank A/B/C + Level
-Rank F/M/S, two separate numbers rather than Ground's one blended score) — not yet built. Before
-that: the FMS×ABC combined-classification study (design
+follow-on design conversation proposed, then BUILT, a Rack-specific ranking treatment (Aisle Rank
+A/B/C + Level Rank F/M/S, two separate numbers rather than Ground's one blended score) — see
+CLAUDE.md's "Rack Rank" section. Building it surfaced a real, separate, UNRESOLVED data-integrity
+issue on TNR8's real warehouse: Aisle 1 has 632 duplicate `Location` rows (real `id`s, same `code`)
+— needs the client's decision before any cleanup, not something to fix unilaterally. Before that:
+the FMS×ABC combined-classification study (design
 settled through a real round-by-round conversation, then built 2026-09-08 — see CLAUDE.md's
 "FMS×ABC combined classification" section), its same-day display follow-up (a 4th occupancy-overlay
 color mode, "F/M/S Class," in 2D/3D/Simulation), Ground/Floor's own FMS×ABC placement (2026-09-09 —
@@ -56,13 +59,26 @@ numberOneNearDock" section for the full trace and the worked example (same block
 in every aisle regardless of that aisle's own length — the real yardstick is the raw block number
 itself, shared warehouse-wide, not each aisle's own relative position).
 
-**Follow-on, not yet built**: a design conversation on whether Rack (SPR/Drive-in/ASRS) should get
-its own analogous ranking display. Landed on two separate numbers (Aisle Rank A/B/C + Level Rank
-F/M/S) rather than one blended score, since Rack's two axes are genuinely different kinds of cost
-(travel distance vs. reach effort) unlike Ground's single lever — see "Immediate candidates" below
-for the settled shape. Environment note: both dev servers died silently this session (once from a
-`prisma generate`/file-lock race, once from Docker Desktop itself having fully stopped) — see
-CLAUDE.md for the exact recovery steps.
+**Follow-on, designed then BUILT same session**: whether Rack (SPR/Drive-in/ASRS) should get its own
+analogous ranking display. Landed on two separate numbers (Aisle Rank A/B/C + Level Rank F/M/S)
+rather than one blended score, since Rack's two axes are genuinely different kinds of cost (travel
+distance vs. reach effort) unlike Ground's single lever. New `GET /locations/rack-rank`, a 7th
+`ColorMode` in both 2D/3D, and matching `LocationDetailPanel.tsx` rows — see CLAUDE.md's "Rack Rank"
+section for the full build and verification.
+
+**A real bug, then a real unresolved data-integrity finding, both surfaced building it**: TNR8's
+Level values are stored inconsistently (`"01".."07"` on one aisle, `"1".."7"` on others) — fixed by
+grouping/joining on `Number(level)` instead of the raw string, plus gating the 2D Level Rank badge
+on a specific Level being selected (a box collapsing several Levels into one has no single Level
+Rank to show). Tracing that further surfaced something bigger and NOT fixed: **TNR8's Aisle 1 has
+632 genuine duplicate `Location` rows** — same `code`, different `id`s, both SPR and Ground/Floor —
+almost certainly from Aisle 1 being generated twice under two different Level-spelling conventions.
+This affects real counts (Total Locations, Storage Type Mapping) beyond just this feature, and needs
+the client's own decision before any cleanup — real TNR8 data, not something to delete unilaterally.
+
+Environment note: both dev servers died silently this session (once from a `prisma generate`/
+file-lock race, once from Docker Desktop itself having fully stopped) — see CLAUDE.md for the exact
+recovery steps.
 
 ## Session note (2026-09-08 — FMS×ABC combined classification: designed, then built)
 
@@ -1077,14 +1093,12 @@ Pick one — these are the live options on the table, not a forced order:
    CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section. Ground's own
    FMS-driven placement (a combined priority score + "Priority Gradient"/"Bin Rank" visuals) is also
    now **BUILT 2026-09-09** — see the two same-day session notes above. Stillage's own version is the
-   one genuine follow-on left (never discussed). **Asked 2026-09-13, design proposed but NOT YET
-   BUILT**: Rack (SPR/Drive-in/ASRS) getting its own ranking treatment — unlike Ground, Rack's aisle
-   (travel distance) and level (reach effort) are genuinely independent costs, so the proposal is two
-   separate numbers rather than one blended one: **Aisle Rank (A/B/C)**, geometric, needs an
-   EAST/WEST dock zone, all three rack types; **Level Rank (F/M/S)**, purely structural (low level =
-   F/easy-reach, high = S), no dock zone needed, SPR/ASRS only (Drive-in excluded — no independent
-   level choice there). See CLAUDE.md's "Dock zone: numberOneNearDock" section for the fuller
-   context this came out of.
+   one genuine follow-on left (never discussed). **Rack (SPR/Drive-in/ASRS) getting its own ranking
+   treatment — asked AND BUILT 2026-09-13** — see CLAUDE.md's "Rack Rank" section: **Aisle Rank
+   (A/B/C)**, geometric, needs an EAST/WEST dock zone, all three rack types; **Level Rank (F/M/S)**,
+   purely structural (low level = F/easy-reach, high = S), no dock zone needed, SPR/ASRS only
+   (Drive-in excluded — no independent level choice there). Building it surfaced a real, unresolved
+   TNR8 data-integrity issue (632 duplicate Location rows on Aisle 1) — see item 8 below.
 3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
    it. Even a read-only view would close a real, felt gap. Next in the stated module build order.
@@ -1103,6 +1117,14 @@ Pick one — these are the live options on the table, not a forced order:
    already has an open entry elsewhere, but there's still no way to void a genuinely mistaken entry
    (wrong vehicle typed, never gated out) — today that needs a manual Gate Out to clear. Flagged,
    not designed.
+8. **TNR8's 632 duplicate Location rows on Aisle 1** (2026-09-13, found building Rack Rank — see
+   CLAUDE.md's "Rack Rank" section) — real `id`s, identical `code`, both SPR and Ground/Floor,
+   differing only in Level-string spelling (`"07"` vs `"7"`). Almost certainly Aisle 1 generated
+   twice under two different conventions. Inflates real counts (Total Locations, Storage Type
+   Mapping's Mapped column) beyond just this one display feature. **Needs the client's own
+   confirmation before any cleanup** — not something to delete unilaterally on real data. Once
+   confirmed, the fix is: identify true duplicate pairs (same `code`), verify neither side has
+   independent stock/movement/task history, keep one canonical row per code, delete the other.
 
 Also genuinely still open within Putaway itself, not a separate module: **Stillage's own** version
 of the multi-position bin logic (Rack and now Ground/Floor are both done — Stillage is the only

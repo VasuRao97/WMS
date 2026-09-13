@@ -890,6 +890,111 @@ export class LocationsService {
     return { configured: true, ranks };
   }
 
+  // Rack Rank (2026-09-13) — Rack's own analogue to Ground's Bin Rank above,
+  // raised directly after building numberOneNearDock: "asking whether Rack
+  // should eventually get its own analogous ranking treatment." Genuinely
+  // different shape, not a copy: Ground has ONE physical lever (distance
+  // from the dock), so one combined 1-9 number honestly represents a bin.
+  // Rack has TWO independent levers — which AISLE (a real travel-distance
+  // cost, ABC-driven) and which LEVEL (a reach-effort cost, FMS-driven,
+  // SPR/ASRS only — Drive-in locks a whole column to one SKU top to bottom,
+  // so there's no independent level choice to rank there at all). Blending
+  // the two into one score the way Ground does would quietly hide which
+  // kind of cost is actually driving a bad rank — so this returns two
+  // separate small tier lists instead, each on its own real 3-tier scale
+  // matching the classification it's actually built from (A/B/C for aisle,
+  // F/M/S for level) rather than borrowing Ground's 9-cell AF..CS labels.
+  //
+  // Both are warehouse-wide small lists (one entry per distinct Aisle, one
+  // per distinct Level) — NOT per-bin like Ground's Bin Rank needed to be,
+  // since neither axis here needs combining with the other the way Ground's
+  // aisle+row fractions did into one number per bin.
+  private static readonly AISLE_RANK_LABELS = ['A', 'B', 'C'];
+  private static readonly LEVEL_RANK_LABELS = ['F', 'M', 'S'];
+  private static bucket3(fraction: number): number {
+    if (fraction <= 1 / 3) return 0;
+    if (fraction <= 2 / 3) return 1;
+    return 2;
+  }
+
+  async rackRankByWarehouse(warehouseId: string, user: any) {
+    if (!warehouseId) throw new BadRequestException('warehouseId is required.');
+    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+    if (!warehouse) throw new NotFoundException('Warehouse not found.');
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) {
+      throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+    if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+    }
+
+    const rackLocations = await this.prisma.location.findMany({
+      where: { warehouseId, storageType: { in: RACK_STORAGE_TYPES }, aisle: { not: null } },
+      select: { storageType: true, aisle: true, level: true },
+    });
+
+    // Aisle Rank — reuses the exact same buildOutboundProximityRanker()
+    // suggestBin() itself uses for real Rack placement (ABC-driven), just
+    // bucketed into 3 tiers instead of consumed as a raw sort key.
+    const distinctAisles = [...new Set(rackLocations.map((l) => l.aisle).filter((a): a is string => a != null))];
+    let aisleRank: { configured: boolean; ranks: { aisle: string; rank: string }[] } = { configured: false, ranks: [] };
+    if (distinctAisles.length > 0) {
+      const dockZones = await this.prisma.warehouseDockZone.findMany({ where: { warehouseId }, select: { purpose: true, dockSide: true, numberOneNearDock: true } });
+      const aisleRanker = buildOutboundProximityRanker(distinctAisles, dockZones);
+      if (aisleRanker) {
+        const maxRaw = Math.max(...distinctAisles.map((a) => aisleRanker(a)));
+        const ranks = distinctAisles
+          .map((aisle) => {
+            const fraction = maxRaw > 0 ? aisleRanker(aisle) / maxRaw : 0;
+            return { aisle, rank: LocationsService.AISLE_RANK_LABELS[LocationsService.bucket3(fraction)] };
+          })
+          .sort((a, b) => (Number(a.aisle) || 0) - (Number(b.aisle) || 0));
+        aisleRank = { configured: true, ranks };
+      }
+    }
+
+    // Level Rank — purely structural, no dock zone needed at all: "low is
+    // easy to reach" is a fixed physical fact, not dependent on where the
+    // dock is. SPR/ASRS only, matching suggestBin()'s own level-tiebreak
+    // scoping exactly.
+    //
+    // Grouped by NUMERIC value, not raw string — a real bug caught live
+    // against TNR8's own data: Level Range generation zero-pads ("01".."07"
+    // on one aisle) while other aisles/rows store the bare number ("1".."7"),
+    // same "01-20" range-preservation behavior documented on the Location
+    // generator. `suggestBin()`'s own level tiebreak never hit this (it only
+    // ever numerically COMPARES two candidates, `Number(a.level) - Number(
+    // b.level)`, never builds a distinct-value SET), but this function does
+    // — treating "7" and "07" as two different levels doubled the apparent
+    // level count and skewed every bucket boundary, and returning whichever
+    // raw spelling happened to land in the Set meant a real bin's OWN level
+    // string often didn't even match its own rank entry on the frontend.
+    // The response's `level` field is the canonical bare-number string
+    // (`String(numeric)`) — frontend lookups normalize a Location's own
+    // `level` the same way before joining against this list.
+    const levelNumbers = [
+      ...new Set(
+        rackLocations
+          .filter((l) => l.storageType === 'SPR' || l.storageType === 'ASRS')
+          .map((l) => l.level)
+          .filter((lv): lv is string => lv != null)
+          .map((lv) => Number(lv) || 0),
+      ),
+    ].sort((a, b) => a - b);
+    let levelRank: { configured: boolean; ranks: { level: string; rank: string }[] } = { configured: false, ranks: [] };
+    if (levelNumbers.length > 0) {
+      const maxIdx = levelNumbers.length - 1;
+      const ranks = levelNumbers.map((num, idx) => {
+        const fraction = maxIdx > 0 ? idx / maxIdx : 0;
+        return { level: String(num), rank: LocationsService.LEVEL_RANK_LABELS[LocationsService.bucket3(fraction)] };
+      });
+      levelRank = { configured: true, ranks };
+    }
+
+    return { aisleRank, levelRank };
+  }
+
   // Location Labels (2026-08-29) — a genuine, simple stand-in for a real
   // barcode: since we're the sole source of a bin's identity (unlike a
   // SKU, which can have multiple manufacturer-printed barcodes across pack

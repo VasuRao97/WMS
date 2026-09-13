@@ -233,7 +233,7 @@ function LocationsPage() {
   // default; 'category'/'class' are fetched on demand, not on every
   // warehouse load, since most sessions will just look at the structural
   // layout.
-  const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class' | 'fmsClass' | 'priority' | 'binRank'>('structural');
+  const [colorMode, setColorMode] = useState<'structural' | 'category' | 'class' | 'fmsClass' | 'priority' | 'binRank' | 'rackRank'>('structural');
   const [occupancy, setOccupancy] = useState<import('./occupancyColors').Occupancy[]>([]);
   const [occupancyLoading, setOccupancyLoading] = useState(false);
   // Bin Rank (2026-09-09) — its own fetch, deliberately separate from
@@ -241,6 +241,11 @@ function LocationsPage() {
   // meaningful.
   const [binRank, setBinRank] = useState<import('./occupancyColors').BinRank | undefined>(undefined);
   const [binRankLoading, setBinRankLoading] = useState(false);
+  // Rack Rank (2026-09-13) — Rack's own two-axis analogue to Bin Rank,
+  // same "location-intrinsic, its own fetch" shape.
+  const [aisleRank, setAisleRank] = useState<import('./occupancyColors').AisleRank | undefined>(undefined);
+  const [levelRank, setLevelRank] = useState<import('./occupancyColors').LevelRank | undefined>(undefined);
+  const [rackRankLoading, setRackRankLoading] = useState(false);
   // 3D cross-aisle spacing (2026-09-07) — a rendering input for
   // Locations3DView, fetched once via the broadly-readable
   // /companies/layout-settings endpoint (not the COMPANY_ADMIN-only
@@ -255,7 +260,7 @@ function LocationsPage() {
   const [groundBinsPerCrossAisle, setGroundBinsPerCrossAisle] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
-    if (colorMode === 'structural' || colorMode === 'binRank' || !planWarehouseId) return;
+    if (colorMode === 'structural' || colorMode === 'binRank' || colorMode === 'rackRank' || !planWarehouseId) return;
     setOccupancyLoading(true);
     fetch(`http://localhost:3000/locations/occupancy?warehouseId=${planWarehouseId}`, { headers: authHeaders() })
       .then((res) => (res.status === 401 ? [] : res.json()))
@@ -270,6 +275,18 @@ function LocationsPage() {
       .then((res) => (res.status === 401 ? null : res.json()))
       .then((data) => setBinRank(data ?? undefined))
       .finally(() => setBinRankLoading(false));
+  }, [colorMode, planWarehouseId]);
+
+  useEffect(() => {
+    if (colorMode !== 'rackRank' || !planWarehouseId) return;
+    setRackRankLoading(true);
+    fetch(`http://localhost:3000/locations/rack-rank?warehouseId=${planWarehouseId}`, { headers: authHeaders() })
+      .then((res) => (res.status === 401 ? null : res.json()))
+      .then((data) => {
+        setAisleRank(data?.aisleRank ?? undefined);
+        setLevelRank(data?.levelRank ?? undefined);
+      })
+      .finally(() => setRackRankLoading(false));
   }, [colorMode, planWarehouseId]);
 
   const loadLocations = () => {
@@ -1035,8 +1052,10 @@ function LocationsPage() {
             <button type="button" onClick={() => setColorMode('fmsClass')} style={{ fontWeight: colorMode === 'fmsClass' ? 'bold' : 'normal' }}>F/M/S Class</button>
             <button type="button" onClick={() => setColorMode('priority')} style={{ fontWeight: colorMode === 'priority' ? 'bold' : 'normal' }}>Priority Gradient</button>
             <button type="button" onClick={() => setColorMode('binRank')} style={{ fontWeight: colorMode === 'binRank' ? 'bold' : 'normal' }}>Bin Rank</button>
+            <button type="button" onClick={() => setColorMode('rackRank')} style={{ fontWeight: colorMode === 'rackRank' ? 'bold' : 'normal' }}>Rack Rank</button>
             {occupancyLoading && <span style={{ fontSize: 12, color: '#888' }}>Loading occupancy...</span>}
             {binRankLoading && <span style={{ fontSize: 12, color: '#888' }}>Loading bin rank...</span>}
+            {rackRankLoading && <span style={{ fontSize: 12, color: '#888' }}>Loading rack rank...</span>}
           </div>
           {!planWarehouseId ? (
             <p style={{ marginTop: 16, color: '#666' }}>Pick a warehouse above to render its layout.</p>
@@ -1047,6 +1066,8 @@ function LocationsPage() {
               colorMode={colorMode}
               occupancy={occupancy}
               binRank={binRank}
+              aisleRank={aisleRank}
+              levelRank={levelRank}
             />
           ) : (
             <Suspense fallback={<p style={{ marginTop: 16, color: '#666' }}>Loading 3D view…</p>}>
@@ -1055,6 +1076,8 @@ function LocationsPage() {
                 colorMode={colorMode}
                 occupancy={occupancy}
                 binRank={binRank}
+                aisleRank={aisleRank}
+                levelRank={levelRank}
                 dockZones={warehouses.find((w) => w.id === planWarehouseId)?.dockZones}
                 rackBaysPerCrossAisle={rackBaysPerCrossAisle}
                 groundBinsPerCrossAisle={groundBinsPerCrossAisle}

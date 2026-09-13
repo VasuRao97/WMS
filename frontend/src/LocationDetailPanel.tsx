@@ -35,6 +35,8 @@ export function DetailPanel({
   location,
   occupancy,
   binRankEntry,
+  aisleRankLabel,
+  levelRankLabel,
   onClose,
 }: {
   location: Location;
@@ -44,6 +46,13 @@ export function DetailPanel({
   // simply means the caller isn't in Bin Rank mode, this isn't a
   // Ground/Floor bin, or no OUTBOUND Dock Zone is configured yet.
   binRankEntry?: { aisle: string; rank: number; label: string };
+  // Rack Rank (2026-09-13) — Rack's own two-axis analogue, also LOCATION-
+  // INTRINSIC. Two independent optional labels rather than one entry, since
+  // either can be present without the other (a Drive-in bin only ever gets
+  // aisleRankLabel — see occupancyColors.ts's LevelRank comment for why
+  // Level Rank doesn't apply there).
+  aisleRankLabel?: 'A' | 'B' | 'C';
+  levelRankLabel?: 'F' | 'M' | 'S';
   onClose: () => void;
 }) {
   const rackName = buildRackName(location);
@@ -80,6 +89,22 @@ export function DetailPanel({
           <strong>Bin Rank:</strong>{' '}
           <span style={{ padding: '1px 6px', borderRadius: 4, background: binRankColor(binRankEntry.rank).fill, border: `1px solid ${binRankColor(binRankEntry.rank).stroke}` }}>
             {binRankEntry.rank} ({binRankEntry.label})
+          </span>
+        </p>
+      )}
+      {aisleRankLabel && (
+        <p style={{ margin: '4px 0' }}>
+          <strong>Aisle Rank:</strong>{' '}
+          <span style={{ padding: '1px 6px', borderRadius: 4, background: ABC_CLASS_COLORS[aisleRankLabel].fill, border: `1px solid ${ABC_CLASS_COLORS[aisleRankLabel].stroke}` }}>
+            {aisleRankLabel}
+          </span>
+        </p>
+      )}
+      {levelRankLabel && (
+        <p style={{ margin: '4px 0' }}>
+          <strong>Level Rank:</strong>{' '}
+          <span style={{ padding: '1px 6px', borderRadius: 4, background: FMS_CLASS_COLORS[levelRankLabel].fill, border: `1px solid ${FMS_CLASS_COLORS[levelRankLabel].stroke}` }}>
+            {levelRankLabel}
           </span>
         </p>
       )}

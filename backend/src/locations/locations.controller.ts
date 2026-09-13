@@ -94,6 +94,18 @@ export class LocationsController {
     return this.locationsService.binRankByWarehouse(warehouseId, user);
   }
 
+  // Rack Rank (2026-09-13) — Rack's own two-axis analogue to Ground's Bin
+  // Rank. Unlike Ground (one physical lever), Rack splits into two genuinely
+  // independent costs (aisle = travel distance, level = reach effort) — so
+  // this returns two separate small tier lists rather than one blended
+  // per-bin number. See LocationsService.rackRankByWarehouse() for the full
+  // reasoning.
+  @Get('rack-rank')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  rackRank(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+    return this.locationsService.rackRankByWarehouse(warehouseId, user);
+  }
+
   // Location Labels (2026-08-29) — a ZIP of one Code128 PNG per requested
   // location, encoding its Rack Name (or raw code as fallback). POST, not
   // GET, since a real batch of ids is too long for a query string. Read-
