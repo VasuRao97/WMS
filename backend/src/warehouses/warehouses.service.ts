@@ -416,7 +416,7 @@ export class WarehousesService {
   // individual rows — a warehouse's dock config is naturally "0-2 rows as
   // a whole," one Save action, matching Aging Methodology's own single-
   // field-at-a-time simplicity.
-  async setDockZones(id: string, zones: { purpose: string; nearAisleEnd: string }[], user: any) {
+  async setDockZones(id: string, zones: { purpose: string; dockSide: string; numberOneNearDock?: boolean }[], user: any) {
     await this.assertAccess(id, user);
     if (zones.length > 2) {
       throw new BadRequestException('A warehouse can have at most 2 dock zones.');
@@ -425,13 +425,24 @@ export class WarehousesService {
       if (!['INBOUND', 'OUTBOUND', 'BOTH'].includes(z.purpose)) {
         throw new BadRequestException('Dock zone purpose must be Inbound, Outbound, or Both.');
       }
-      if (!['LOW', 'HIGH'].includes(z.nearAisleEnd)) {
-        throw new BadRequestException('Dock zone near-end must be Low or High.');
+      // 2026-09-12: renamed from LOW/HIGH/ROW_LOW/ROW_HIGH to real compass
+      // directions — see schema.prisma's own comment on
+      // DockCompassDirection for the full reasoning ("how can you know
+      // which side dude? ... north south west east").
+      if (!['EAST', 'WEST', 'SOUTH', 'NORTH'].includes(z.dockSide)) {
+        throw new BadRequestException('Dock zone side must be East, West, South, or North — see the Plan View\'s own compass marker.');
+      }
+      if (typeof z.numberOneNearDock !== 'boolean') {
+        throw new BadRequestException('Say whether Aisle/Row 1 or the highest number is nearest this dock (numberOneNearDock).');
       }
     }
     await this.prisma.$transaction([
       this.prisma.warehouseDockZone.deleteMany({ where: { warehouseId: id } }),
-      ...zones.map((z) => this.prisma.warehouseDockZone.create({ data: { warehouseId: id, purpose: z.purpose as any, nearAisleEnd: z.nearAisleEnd as any } })),
+      ...zones.map((z) =>
+        this.prisma.warehouseDockZone.create({
+          data: { warehouseId: id, purpose: z.purpose as any, dockSide: z.dockSide as any, numberOneNearDock: z.numberOneNearDock as boolean },
+        }),
+      ),
     ]);
     return this.prisma.warehouseDockZone.findMany({ where: { warehouseId: id } });
   }

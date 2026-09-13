@@ -59,7 +59,23 @@ type Settings = {
 // Both dock — a U-shape warehouse needs just one (client's own worked
 // example), an I-shape (opposite-end docks) needs two. Same "no general
 // Warehouse Edit form, so it lives here" reasoning as Aging Methodology.
-type DockZoneRow = { purpose: 'INBOUND' | 'OUTBOUND' | 'BOTH'; nearAisleEnd: 'LOW' | 'HIGH' };
+// Compass directions (2026-09-12, renamed from LOW/HIGH/ROW_LOW/ROW_HIGH —
+// a direct, correct client catch: "aisle one has 2 sides? how can you know
+// which side dude? not the right way, easiest way - north south west east
+// and in the location area put that direction marking in a corner!"). A
+// dock sits along one WALL of the building — EAST/WEST is which end of the
+// Aisle order, NORTH/SOUTH is which end of the Row order within every
+// aisle — tied to the Plan View's own fixed rendering orientation, where a
+// real compass rose is now drawn (LocationsPlanView.tsx) so this is a
+// visual look-up, not something to reason about abstractly. See
+// schema.prisma's DockCompassDirection comment for the exact mapping.
+// numberOneNearDock (2026-09-12, same-day follow-up) — dockSide alone only
+// ever said which WALL a dock touches, never which end of the Aisle/Row
+// NUMBERING is nearest it; a real client catch live-testing Bin Rank against
+// TNR8 ("we need to have idea of from where the row 1 starts... we need to
+// get info during warehouse stage so this issue doesnt pop up"). true =
+// Aisle 1 / Row 1 sits nearest this dock; false = the highest number does.
+type DockZoneRow = { purpose: 'INBOUND' | 'OUTBOUND' | 'BOTH'; dockSide: 'EAST' | 'WEST' | 'SOUTH' | 'NORTH'; numberOneNearDock: boolean };
 // Storage-type SKU-sharing caps + column-boundary toggles (2026-09-06 —
 // see the Ground design conversation in wms-putaway-design memory).
 // maxSkusClass* has real enforcement in suggestBin() for BOTH Rack and
@@ -334,7 +350,7 @@ function CompanySettingsPage() {
   const addDockZoneRow = () => {
     if (dockZoneRows.length >= 2) return;
     setDockZoneSaved(false);
-    setDockZoneRows((prev) => [...prev, { purpose: 'OUTBOUND', nearAisleEnd: 'LOW' }]);
+    setDockZoneRows((prev) => [...prev, { purpose: 'OUTBOUND', dockSide: 'EAST', numberOneNearDock: true }]);
   };
 
   const removeDockZoneRow = (index: number) => {
@@ -345,6 +361,11 @@ function CompanySettingsPage() {
   const updateDockZoneRow = (index: number, field: keyof DockZoneRow, value: string) => {
     setDockZoneSaved(false);
     setDockZoneRows((prev) => prev.map((r, i) => (i === index ? { ...r, [field]: value } : r)));
+  };
+
+  const updateDockZoneNumberOneNearDock = (index: number, value: boolean) => {
+    setDockZoneSaved(false);
+    setDockZoneRows((prev) => prev.map((r, i) => (i === index ? { ...r, numberOneNearDock: value } : r)));
   };
 
   const handleSaveDockZones = async () => {
@@ -592,33 +613,55 @@ function CompanySettingsPage() {
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #eee' }}>
           <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Dock Configuration (per warehouse)</label>
           <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>
-            Tells Putaway which end of this warehouse's own Aisle order sits near an Inbound/Outbound/Both dock —
-            fast movers (Class A/B) are placed near whichever end serves Outbound, slow movers (C/D) far from it. A
-            warehouse with docks on one side only needs one zone (e.g. Outbound, near the Low-numbered aisles); one
-            with docks on opposite ends (Inbound one side, Outbound the other) needs two. Leave empty to keep
-            today's behavior (nearest to the lowest flank number, unrelated to real dock position).
+            Tells Putaway which COMPASS DIRECTION of this warehouse sits near an Inbound/Outbound/Both dock — fast
+            movers (Class A/B) are placed near whichever wall serves Outbound, slow movers (C/D) far from it. Open
+            the Locations Plan View and look at the compass rose drawn in its corner — pick whichever direction
+            actually matches where your real dock is. A warehouse with docks on one wall only needs one zone; one
+            with docks on two different walls (Inbound one side, Outbound another, or a corner dock touching two)
+            needs two. Leave empty to keep today's fallback behavior (nearest to the lowest flank number, unrelated
+            to real dock position). Also say which end of your own Aisle/Row numbering is actually nearest that
+            wall — number 1, or your highest number — since that isn't something the compass direction alone tells
+            us.
           </p>
           <select value={dockZoneWarehouseId} onChange={(e) => handleDockZoneWarehouseChange(e.target.value)} style={{ padding: 6, minWidth: 180, marginBottom: 10 }}>
             {warehouses.map((w) => (
               <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
             ))}
           </select>
-          {dockZoneRows.map((row, i) => (
-            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-              <select value={row.purpose} onChange={(e) => updateDockZoneRow(i, 'purpose', e.target.value)} style={{ padding: 6, width: 120 }}>
-                <option value="INBOUND">Inbound</option>
-                <option value="OUTBOUND">Outbound</option>
-                <option value="BOTH">Both</option>
-              </select>
-              <span style={{ fontSize: 12, color: '#888' }}>near the</span>
-              <select value={row.nearAisleEnd} onChange={(e) => updateDockZoneRow(i, 'nearAisleEnd', e.target.value)} style={{ padding: 6, width: 100 }}>
-                <option value="LOW">Low</option>
-                <option value="HIGH">High</option>
-              </select>
-              <span style={{ fontSize: 12, color: '#888' }}>end of the aisle order</span>
-              <button type="button" onClick={() => removeDockZoneRow(i)} style={{ marginLeft: 'auto' }}>Remove</button>
-            </div>
-          ))}
+          {dockZoneRows.map((row, i) => {
+            const isAisleAxis = row.dockSide === 'EAST' || row.dockSide === 'WEST';
+            const unitWord = isAisleAxis ? 'Aisle' : 'Row/Block';
+            return (
+              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                <select value={row.purpose} onChange={(e) => updateDockZoneRow(i, 'purpose', e.target.value)} style={{ padding: 6, width: 120 }}>
+                  <option value="INBOUND">Inbound</option>
+                  <option value="OUTBOUND">Outbound</option>
+                  <option value="BOTH">Both</option>
+                </select>
+                <span style={{ fontSize: 12, color: '#888' }}>near the</span>
+                <select value={row.dockSide} onChange={(e) => updateDockZoneRow(i, 'dockSide', e.target.value)} style={{ padding: 6, width: 260 }}>
+                  <option value="EAST">East wall (right side of the Plan View)</option>
+                  <option value="WEST">West wall (left side of the Plan View)</option>
+                  <option value="SOUTH">South wall (bottom of the Plan View)</option>
+                  <option value="NORTH">North wall (top of the Plan View)</option>
+                </select>
+                {/* numberOneNearDock (2026-09-12) — the fact dockSide alone never
+                    captured: which end of the actual numbering sits against this
+                    wall. Label switches Aisle vs Row/Block depending on which axis
+                    this zone's dockSide governs, since that's the number that
+                    actually matters for it. */}
+                <select
+                  value={row.numberOneNearDock ? 'ONE' : 'HIGHEST'}
+                  onChange={(e) => updateDockZoneNumberOneNearDock(i, e.target.value === 'ONE')}
+                  style={{ padding: 6, width: 260 }}
+                >
+                  <option value="ONE">{unitWord} 1 is nearest this dock</option>
+                  <option value="HIGHEST">Highest-numbered {unitWord.toLowerCase()} is nearest this dock</option>
+                </select>
+                <button type="button" onClick={() => removeDockZoneRow(i)} style={{ marginLeft: 'auto' }}>Remove</button>
+              </div>
+            );
+          })}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button type="button" onClick={addDockZoneRow} disabled={dockZoneRows.length >= 2}>+ Add zone</button>
             <button type="button" onClick={handleSaveDockZones} disabled={dockZoneSaving || !dockZoneWarehouseId}>

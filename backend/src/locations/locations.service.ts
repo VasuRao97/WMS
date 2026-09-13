@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
 import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
 import { displayCode, RACK_STORAGE_TYPES } from '../common/rack-name.util';
-import { buildOutboundProximityRanker } from '../common/dock-zone.util';
+import { buildOutboundProximityRanker, buildRowProximityRanker } from '../common/dock-zone.util';
 import * as bwipjs from 'bwip-js';
 import { ZipArchive } from 'archiver';
 
@@ -796,11 +796,24 @@ export class LocationsService {
   // (aisle vs. level), so a single 1-9 number per bin wouldn't honestly
   // represent a Rack position without also folding in its Level — flagged
   // as a genuine open follow-on, not silently included with a half-formed
-  // number. Reuses the exact same buildOutboundProximityRanker()
-  // suggestGroundBin() itself calls, then buckets the resulting 0-indexed
-  // proximity rank evenly across the 9 cells — an even geometric split,
-  // since there's no SKU here to derive an exact combinedPriorityScore
-  // from, only a position to estimate one for.
+  // number.
+  //
+  // 2026-09-12: extended to PER-BIN granularity (was per-AISLE only) — a
+  // real, correct client catch: "the furthest bin from the dock should be
+  // red, closest bin should be green" — every bin in one aisle used to get
+  // the identical rank/color, which can't be right once a warehouse's dock
+  // sits on the front/back wall of every aisle (the ROW axis — see
+  // dock-zone.util.ts's buildRowProximityRanker(), step 2 of the 4-wall
+  // model) rather than either end of the aisle sequence. Now mirrors
+  // PutawayTasksService.suggestGroundBin()'s own combined aisle+row
+  // fraction exactly (byte-for-byte the same formula, duplicated rather
+  // than shared — no shared code exists between locations/ and putaway/ in
+  // this codebase, same convention as every other cross-module pure
+  // function here) so the DISPLAY genuinely matches what real placement
+  // uses, not a separate approximation. A warehouse with only an aisle-axis
+  // zone configured (today's only real case, e.g. TNR8) still returns the
+  // identical rank for every bin in one aisle — zero visible change until a
+  // row-axis zone is actually added.
   private static readonly BIN_RANK_MATRIX_LABELS = ['AF', 'AM', 'AS', 'BF', 'BM', 'BS', 'CF', 'CM', 'CS'];
 
   async binRankByWarehouse(warehouseId: string, user: any) {
@@ -815,19 +828,64 @@ export class LocationsService {
       if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
     }
 
-    const groundLocations = await this.prisma.location.findMany({ where: { warehouseId, storageType: 'GROUND_FLOOR' }, select: { aisle: true } });
+    const groundLocations = await this.prisma.location.findMany({
+      where: { warehouseId, storageType: 'GROUND_FLOOR', aisle: { not: null }, block: { not: null } },
+      select: { aisle: true, flankNumber: true, block: true },
+    });
     const distinctAisles = [...new Set(groundLocations.map((l) => l.aisle).filter((a): a is string => a != null))];
     if (distinctAisles.length === 0) return { configured: false, ranks: [] };
 
-    const dockZones = await this.prisma.warehouseDockZone.findMany({ where: { warehouseId }, select: { purpose: true, nearAisleEnd: true } });
-    const ranker = buildOutboundProximityRanker(distinctAisles, dockZones);
-    if (!ranker) return { configured: false, ranks: [] };
+    const dockZones = await this.prisma.warehouseDockZone.findMany({ where: { warehouseId }, select: { purpose: true, dockSide: true, numberOneNearDock: true } });
+    const aisleRanker = buildOutboundProximityRanker(distinctAisles, dockZones);
+    const rowRanker = buildRowProximityRanker(dockZones);
+    if (!aisleRanker && !rowRanker) return { configured: false, ranks: [] };
 
-    const rawRanks = distinctAisles.map((aisle) => ({ aisle, raw: ranker(aisle) }));
-    const maxRaw = Math.max(...rawRanks.map((r) => r.raw));
-    const ranks = rawRanks.map(({ aisle, raw }) => {
-      const bucket = maxRaw > 0 ? Math.min(9, Math.max(1, Math.round((raw / maxRaw) * 8) + 1)) : 1;
-      return { aisle, rank: bucket, label: LocationsService.BIN_RANK_MATRIX_LABELS[bucket - 1] };
+    const maxAisleRaw = aisleRanker ? Math.max(...distinctAisles.map((a) => aisleRanker(a))) : 0;
+
+    // Distinct (aisle, flankNumber, block) bins — same grouping key
+    // suggestGroundBin() itself uses (binKeyOf) — and each flank's own
+    // sorted distinct blocks, for the row ranker (mirrors
+    // PutawayTasksService's groundRowGroups exactly).
+    const binKeyOf = (l: { aisle: string | null; flankNumber: number | null; block: string | null }) => `${l.aisle}|${l.flankNumber ?? 'x'}|${l.block}`;
+    const distinctBins = new Map<string, { aisle: string; flankNumber: number | null; block: string }>();
+    const rowGroups = new Map<string, string[]>();
+    for (const l of groundLocations) {
+      if (l.aisle == null || l.block == null) continue;
+      distinctBins.set(binKeyOf(l), { aisle: l.aisle, flankNumber: l.flankNumber, block: l.block });
+      const groupKey = `${l.aisle}|${l.flankNumber ?? 'x'}`;
+      if (!rowGroups.has(groupKey)) rowGroups.set(groupKey, []);
+      rowGroups.get(groupKey)!.push(l.block);
+    }
+    // Normalized against the WAREHOUSE-WIDE longest row sequence, NOT each
+    // group's own length (2026-09-12 — a real bug the client caught live:
+    // two bins at the same visual depth from a South-wall dock, in
+    // different aisles, got very different ranks — because a per-group max
+    // made the identical physical row position read as a worse fraction in
+    // whichever aisle happened to have fewer distinct blocks. Every aisle's
+    // Row 1 anchors to the same shared line, so a raw row index means the
+    // same real depth everywhere — mirrors the identical fix in
+    // PutawayTasksService.suggestGroundBin()'s own rowFractionFor().
+    let globalMaxRowIndex = 0;
+    for (const [key, positions] of rowGroups) {
+      const sorted = Array.from(new Set(positions)).sort((a, b) => (Number(a) || 0) - (Number(b) || 0));
+      rowGroups.set(key, sorted);
+      globalMaxRowIndex = Math.max(globalMaxRowIndex, sorted.length - 1);
+    }
+
+    const bucketOf = (fraction: number) => Math.min(9, Math.max(1, Math.round(fraction * 8) + 1));
+
+    const ranks = [...distinctBins.values()].map((bin) => {
+      let aisleFraction: number | null = null;
+      if (aisleRanker) aisleFraction = maxAisleRaw > 0 ? aisleRanker(bin.aisle) / maxAisleRaw : 0;
+      let rowFraction: number | null = null;
+      if (rowRanker) {
+        const positions = rowGroups.get(`${bin.aisle}|${bin.flankNumber ?? 'x'}`) ?? [];
+        rowFraction = globalMaxRowIndex > 0 ? rowRanker(positions, bin.block, globalMaxRowIndex) / globalMaxRowIndex : 0;
+      }
+      const parts = [aisleFraction, rowFraction].filter((v): v is number => v != null);
+      const combinedFraction = parts.reduce((a, b) => a + b, 0) / parts.length;
+      const bucket = bucketOf(combinedFraction);
+      return { aisle: bin.aisle, flankNumber: bin.flankNumber, block: bin.block, rank: bucket, label: LocationsService.BIN_RANK_MATRIX_LABELS[bucket - 1] };
     });
     return { configured: true, ranks };
   }

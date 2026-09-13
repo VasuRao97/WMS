@@ -5080,6 +5080,62 @@ in 3D that the selected aisle's own box renders the same rank/color and resolves
 **Not yet done**: asking the client whether Rack (SPR/ASRS) should eventually get its own analogous
 ranking treatment — the Ground-only scoping above was my own call, not explicitly confirmed, and
 given this session's own repeated pattern of misreads it's worth confirming rather than assuming.
+**Asked, next session (2026-09-13) — see "Dock zone: numberOneNearDock" below for the fuller context
+that prompted this.** A design conversation (not yet built) landed on: unlike Ground, Rack's aisle
+and level are two genuinely independent costs (aisle = travel distance, level = reach effort, not
+"distance to dock") — so forcing them into one blended 1-9 number the way Ground's Bin Rank does
+would hide real information. Proposed shape: **Aisle Rank (A/B/C)**, geometric, needs an EAST/WEST
+dock zone, applies to SPR/Drive-in/ASRS alike; **Level Rank (F/M/S)**, purely structural (lowest
+level = F/easiest-reach, highest = S), needs no dock zone at all, SPR/ASRS only — excluded for
+Drive-in since a Drive-in column has no independent level choice (top to bottom is always one SKU).
+Neither reuses Ground's 9-cell AF..CS labels — each gets its own real 3-tier scale matching the
+actual classification it's built from. Still just a proposal — not yet confirmed or built.
+
+### Dock zone: `numberOneNearDock` — a real gap found live-testing Bin Rank against TNR8 (2026-09-12/13)
+A direct continuation of "Dock-relative Putaway placement — Topic 2" and "'Bin Rank'" above, found
+by live-testing Bin Rank against TNR8's own real data rather than a design conversation. The client
+gave two exact real bin codes that read as different ranks (`GF-10-BLK20B-...` → AF,
+`GF-20-BLK15-...` → AS) and asked why. Traced live (read-only) and confirmed the existing
+warehouse-wide row-normalization mechanic (see "Locations/Bins Bin Rank" above) explained it exactly
+— but surfaced a real, previously-unquestioned gap in the process: `WarehouseDockZone.dockSide`
+(EAST/WEST/SOUTH/NORTH) only ever said which WALL a dock touches — it never captured **which end of
+the Aisle/Row NUMBERING actually sits nearest that wall**. `dock-zone.util.ts`'s ranking functions
+had always silently assumed a fixed direction (Aisle 1/Row 1 = the EAST/SOUTH end), unconfirmed
+against how any real warehouse's aisles/blocks were actually numbered when generated. The client's
+own framing: "we need to have idea of from where the row 1 starts... we need to get info during
+warehouse stage so this issue doesnt pop up."
+
+**Fix**: new `WarehouseDockZone.numberOneNearDock` (Boolean) — captured per-zone on the same
+existing Dock Configuration mini-editor on Company Settings (no new screen). `true` = Aisle 1/Row 1
+sits nearest this dock; `false` = the highest-numbered one does.
+`buildOutboundProximityRanker()`/`buildRowProximityRanker()` (`dock-zone.util.ts`) now read this
+flag directly instead of a hardcoded EAST=low/SOUTH=low assumption. Migration
+`20260912010000_dock_zone_number_one_near_dock` backfilled every existing zone to match EXACTLY
+what the old hardcoded logic already computed (EAST/SOUTH → `true`, WEST/NORTH → `false`) — a
+zero-behavior-change backfill, confirmed live: TNR8's real NORTH zone read `numberOneNearDock:
+false` immediately after migrating, and both bin-rank values from the client's own example were
+byte-identical to before. Verified live in the browser (read-only — loaded TNR8's zone in the
+picker, confirmed the new dropdown showed the correct backfilled value from the live DOM) — the
+row was NOT saved during verification, per the standing TNR8 Save-lockout from the previous
+session (two earlier accidental `dockSide` overwrites). `tsc --noEmit`/`tsc -b` both clean.
+
+**A real worked example from testing this live, worth keeping**: with the toggle flipped to "Row 1
+nearest the dock" and saved (the client's own real test against TNR8), every aisle's Block N gets
+the *identical* rank regardless of that aisle's own length — Block 5 is always AS whether it's in a
+10-block aisle or a 20-block one. The block NUMBER itself is the shared yardstick across the whole
+warehouse, not each aisle's own relative position within itself — this only gives correct real
+answers if every aisle's blocks are the same physical size/pitch, which is a real assumption still
+worth confirming against TNR8's actual physical layout, not yet independently verified.
+
+**Environment note, same session**: both dev servers died silently between sessions on different
+occasions — once from `prisma generate` racing another already-running `nest start --watch`
+process's file lock (no process left running at all, silently), once from Docker Desktop having
+fully stopped (not just the Postgres container — the whole Docker engine), surfacing as
+`PrismaClientInitializationError: Can't reach database server`. Fixed by relaunching Docker Desktop
+directly (`Start-Process "shell:AppsFolder\Docker.DockerForWindows.Settings"` when the executable
+isn't at its usual `Program Files` path) before `docker compose up`/restarting the backend — worth
+checking `docker compose ps` first the moment a restarted backend throws a DB-connection error,
+per the existing Windows-gotchas doc, rather than assuming the Prisma client itself is broken.
 
 ### Frontend
 No router — `App.tsx` is a thin shell with local `tab` state switching between page components

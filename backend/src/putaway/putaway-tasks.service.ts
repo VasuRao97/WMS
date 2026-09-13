@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
 import { buildRackName, displayCode, laneKeyOf, RACK_STORAGE_TYPES } from '../common/rack-name.util';
-import { buildOutboundProximityRanker } from '../common/dock-zone.util';
+import { buildOutboundProximityRanker, buildRowProximityRanker } from '../common/dock-zone.util';
 
 // Rack storage types share the LIFO
 // depth constraint (see
@@ -163,7 +163,7 @@ export class PutawayTasksService {
     // WarehouseEquipmentSuitability being warehouse-scoped rather than a
     // single platform/company-wide value). No separate Company lookup
     // needed any more.
-    const [warehouse, movements, openTaskTargets, exception, dockZones, allAisleRows] = await Promise.all([
+    const [warehouse, movements, openTaskTargets, exception, dockZones, allAisleRows, allGroundPositionRows] = await Promise.all([
       tx.warehouse.findUnique({ where: { id: warehouseId }, select: { agingGranularity: true } }),
       tx.stockMovement.findMany({
         where: { locationId: { in: locationIds } },
@@ -181,11 +181,61 @@ export class PutawayTasksService {
       // just whichever aisles happen to be eligible for this one SKU, or a
       // narrow eligible subset could wrongly redefine which end is "far."
       tx.location.findMany({ where: { warehouseId, zoneType: 'ACTUAL_STORAGE', aisle: { not: null } }, select: { aisle: true }, distinct: ['aisle'] }),
+      // Row-axis placement (step 2 of the 4-wall dock model, 2026-09-12) —
+      // the FULL warehouse-wide (aisle, flankNumber, block) list for Ground,
+      // same "not narrowed to this SKU's own eligible subset" discipline as
+      // allAisleRows above, for the identical reason (a narrower subset
+      // could wrongly redefine which end of a flank's own Row 1..N sequence
+      // is "far"). Only Ground needs this today — see suggestGroundBin()'s
+      // own comment for why Rack isn't touched yet.
+      tx.location.findMany({
+        where: { warehouseId, storageType: 'GROUND_FLOOR', aisle: { not: null }, block: { not: null } },
+        select: { aisle: true, flankNumber: true, block: true },
+      }),
     ]);
     const outboundRanker = buildOutboundProximityRanker(
       allAisleRows.map((r: any) => r.aisle).filter((a: string | null): a is string => !!a),
       dockZones,
     );
+    // Row-axis: "Row 1..N" is only ever meaningful within ONE (aisle, flank)
+    // at a time (see buildRowProximityRanker's own comment) — group the
+    // full warehouse-wide Ground position list that way, sorting each
+    // group's distinct blocks numerically (`Number(x)||0`, matching this
+    // file's own established convention elsewhere, e.g. the column-sorting
+    // a few lines into suggestGroundBin() below — not the frontend's
+    // separate naturalCompare, no shared code exists between the two
+    // sides).
+    const rowRanker = buildRowProximityRanker(dockZones);
+    const groundRowGroups = new Map<string, string[]>();
+    // Normalized against the WAREHOUSE-WIDE longest row sequence, NOT each
+    // group's own length (2026-09-12 — a real bug the client caught live:
+    // "GF-5-BLK10B... : 9 (CS), but GF-3-BLK08... : 4 (BF), both are
+    // parallel, but they are having different ranks"). Aisle 5's flanks
+    // only have 10 distinct blocks; Aisle 3's have 20 — a per-GROUP max
+    // made the identical physical row position (e.g. "4th block from the
+    // dock wall") read as a much WORSE fraction in the shorter aisle than
+    // the longer one, even though both sit the same real distance from a
+    // wall-spanning South dock. Every aisle's Row 1 anchors to the exact
+    // same shared line (see buildBoxesForAisle()'s own z=0-at-Row-1
+    // convention) — a raw row index means the same real depth everywhere,
+    // so the SAME "full list, not narrowed to what's available right now"
+    // discipline buildOutboundProximityRanker() itself already uses for
+    // the aisle axis applies here too: normalize by the longest row
+    // sequence found ANYWHERE in the warehouse, not by whichever aisle a
+    // given candidate happens to be in.
+    let globalMaxRowIndex = 0;
+    if (rowRanker) {
+      for (const r of allGroundPositionRows as any[]) {
+        const key = `${r.aisle}|${r.flankNumber ?? 'x'}`;
+        if (!groundRowGroups.has(key)) groundRowGroups.set(key, []);
+        groundRowGroups.get(key)!.push(r.block);
+      }
+      for (const [key, positions] of groundRowGroups) {
+        const sorted = Array.from(new Set(positions)).sort((a, b) => (Number(a) || 0) - (Number(b) || 0));
+        groundRowGroups.set(key, sorted);
+        globalMaxRowIndex = Math.max(globalMaxRowIndex, sorted.length - 1);
+      }
+    }
 
     // 2026-08-29 fix: default to same-CALENDAR-DAY, not exact-millisecond-
     // match. Before this fix (and before the field moved to Warehouse),
@@ -311,6 +361,9 @@ export class PutawayTasksService {
       newStockDate,
       excludeLocationIds,
       outboundRanker,
+      rowRanker,
+      groundRowGroups,
+      globalMaxRowIndex,
       movements,
     };
 
@@ -661,6 +714,9 @@ export class PutawayTasksService {
       newStockDate,
       excludeLocationIds,
       outboundRanker,
+      rowRanker,
+      groundRowGroups,
+      globalMaxRowIndex,
       movements,
     } = ctx;
 
@@ -680,7 +736,7 @@ export class PutawayTasksService {
       bins.get(key)!.push(loc);
     }
 
-    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null; aisle: string | null; storageType: string };
+    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null; aisle: string | null; block: string | null; storageType: string };
     const candidates: Candidate[] = [];
 
     for (const binLocations of bins.values()) {
@@ -846,7 +902,14 @@ export class PutawayTasksService {
         (loc: any) => (skuBalancesByLocation.get(loc.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(loc.id),
       ).length;
 
-      candidates.push({ locationId: target.id, occupancyCount, flankNumber: target.flankNumber ?? null, aisle: target.aisle ?? null, storageType: target.storageType });
+      candidates.push({
+        locationId: target.id,
+        occupancyCount,
+        flankNumber: target.flankNumber ?? null,
+        aisle: target.aisle ?? null,
+        block: target.block ?? null,
+        storageType: target.storageType,
+      });
     }
 
     if (candidates.length === 0) return null;
@@ -888,24 +951,58 @@ export class PutawayTasksService {
     // landed one aisle farther than intended until this was fixed): the
     // target-rank formula below must map onto [0, maxRank], not [1, maxRank].
     const maxRank = allRanks.length > 0 ? Math.max(...allRanks) : 0;
-    // 0 (AF, the best possible score) .. 1 (CS/D, the worst) — linear map
-    // onto proximity ranks 0..maxRank (0 = nearest, matching outboundRanker's
-    // own 0-indexed convention).
+    // 0 (AF, the best possible score) .. 1 (CS/D, the worst).
     const targetFraction = (priorityScore - 2) / 4;
-    const targetRank = targetFraction * maxRank;
-    // Unconfigured-warehouse fallback (no WarehouseDockZone at all) — same
-    // binary near/far direction this codebase has always used when there's
-    // no real dock geometry to rank against, completely unchanged from
-    // before this pass; only ever consulted when outboundRanker is null,
-    // so a warehouse that hasn't configured dock zones sees zero regression.
+
+    // Row axis (step 2 of the 4-wall dock model, 2026-09-12 — "the furthest
+    // bin from the dock should be red, closest bin should be green"). Same
+    // 0..1 normalization as the aisle axis, just scoped to the candidate's
+    // OWN (aisle, flank) group — each flank has its own independent Row
+    // 1..N length, so a raw index isn't comparable across groups the way a
+    // warehouse-wide aisle index is; dividing by that group's own max index
+    // first is what makes the two axes combinable at all.
+    const rowFractionFor = (loc: { aisle: string | null; flankNumber: number | null; block: string | null }): number | null => {
+      if (!rowRanker || loc.aisle == null || loc.block == null) return null;
+      const positions = groundRowGroups.get(`${loc.aisle}|${loc.flankNumber ?? 'x'}`);
+      if (!positions || positions.length === 0) return null;
+      const raw = rowRanker(positions, loc.block, globalMaxRowIndex);
+      // Normalized against globalMaxRowIndex (the longest row sequence
+      // anywhere in the warehouse), NOT this group's own length — see this
+      // function's own ctx-building comment above for the real bug this
+      // fixes (a shorter aisle's bins reading a falsely worse rank than an
+      // equally-close bin in a longer aisle).
+      return globalMaxRowIndex > 0 ? raw / globalMaxRowIndex : 0;
+    };
+    // Combines whichever axis (or axes) the warehouse has actually
+    // configured into ONE 0..1 closeness fraction — a plain average, not a
+    // sum, so the result stays in the same 0..1 scale regardless of
+    // whether one wall or two (a corner dock: one OUTBOUND zone per axis)
+    // is configured. A warehouse with only an aisle zone (today's only
+    // real case, e.g. TNR8) gets a combinedFraction identical to its own
+    // aisleFraction alone — zero behavior change for any warehouse that
+    // hasn't added a row-axis zone yet. `null` (neither axis configured)
+    // falls through to the existing flankNumber-only fallback below,
+    // completely unchanged from before this step.
+    const combinedFractionFor = (loc: { aisle: string | null; flankNumber: number | null; block: string | null }): number | null => {
+      let aisleFraction: number | null = null;
+      if (outboundRanker && loc.aisle != null) aisleFraction = maxRank > 0 ? outboundRanker(loc.aisle) / maxRank : 0;
+      const rowFraction = rowFractionFor(loc);
+      const parts = [aisleFraction, rowFraction].filter((v): v is number => v != null);
+      if (parts.length === 0) return null;
+      return parts.reduce((a, b) => a + b, 0) / parts.length;
+    };
+    // Unconfigured-warehouse fallback (no WarehouseDockZone at all, on
+    // EITHER axis) — same binary near/far direction this codebase has
+    // always used when there's no real dock geometry to rank against,
+    // completely unchanged from before this pass; only ever consulted when
+    // combinedFractionFor() returns null for a candidate, so a warehouse
+    // that hasn't configured any dock zone sees zero regression.
     const preferFar = abcClass !== 'A' && abcClass !== 'B';
     candidates.sort((a, b) => {
       if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
-      if (outboundRanker) {
-        const ra = a.aisle != null ? outboundRanker(a.aisle) : null;
-        const rb = b.aisle != null ? outboundRanker(b.aisle) : null;
-        if (ra != null && rb != null && ra !== rb) return Math.abs(ra - targetRank) - Math.abs(rb - targetRank);
-      }
+      const fracA = combinedFractionFor(a);
+      const fracB = combinedFractionFor(b);
+      if (fracA != null && fracB != null && fracA !== fracB) return Math.abs(fracA - targetFraction) - Math.abs(fracB - targetFraction);
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
       return preferFar ? fb - fa : fa - fb;

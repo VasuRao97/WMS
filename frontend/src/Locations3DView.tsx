@@ -378,6 +378,127 @@ function Label3D({ position, text, fontSize = 0.34, color = '#1f2937' }: { posit
   );
 }
 
+// Compass overlay — screen-space, next to Reset View (2026-09-12, replacing
+// a first attempt that placed real geometry in the world). Direct feedback
+// on that first version: "this is not good enough, keep it near the reset
+// button, so its big and clear" — a world-space marker unavoidably shrinks
+// with the same zoom that makes the rest of a real (large) warehouse
+// legible, and hunting for a small object in the corner of the scene isn't
+// "big and clear." A FIXED on-screen size actually delivers that, but
+// naively fixing it to the screen would only be honest from the default
+// camera angle — orbit (drag-to-rotate is this view's whole normal
+// interaction) and a static icon would silently start lying about which
+// way is which. So the ring rotates live, in sync with the camera's own
+// real orbit angle (read every frame from OrbitControls' own
+// getAzimuthalAngle() via CompassAngleSync below, which lives inside
+// <Canvas> where that's available) — always true at whatever angle you're
+// currently viewing from, not just the moment it was drawn.
+//
+// Direction mapping matches 2D's own compass exactly (same underlying
+// physical facts): aisle number increases toward WEST in both views (2D:
+// screen-left; 3D: +X — buildWarehouseLayout()'s own cursorX also
+// increases as aisle code increases). Row number increases toward NORTH in
+// both (2D: screen-up; 3D: +Z — buildBoxesForAisle()'s own z accumulates
+// from 0 at Row 1 the same way). See DockCompassDirection's schema.prisma
+// comment for the canonical mapping this mirrors. The needle group starts
+// at rotation 0 matching the DEFAULT camera azimuth (0 radians, camera
+// looking along -Z toward the origin) — N is drawn at the top for that
+// default view, matching 2D's own "N is up" convention.
+function CompassOverlay({ needleRef }: { needleRef: React.RefObject<SVGGElement | null> }) {
+  return (
+    <svg
+      width={72}
+      height={72}
+      viewBox="0 0 64 64"
+      style={{ position: 'absolute', top: 12, left: 110, zIndex: 1, background: '#fff', border: '1px solid #ccc', borderRadius: 8 }}
+    >
+      <circle cx={32} cy={32} r={28} fill="#fafafa" stroke="#bbb" />
+      <g ref={needleRef}>
+        <line x1={32} y1={8} x2={32} y2={56} stroke="#999" strokeWidth={1} />
+        <line x1={8} y1={32} x2={56} y2={32} stroke="#999" strokeWidth={1} />
+        <text x={32} y={16} textAnchor="middle" fontSize={13} fontWeight="bold" fontFamily="sans-serif" fill="#b91c1c">N</text>
+        <text x={32} y={57} textAnchor="middle" fontSize={13} fontWeight="bold" fontFamily="sans-serif" fill="#222">S</text>
+        <text x={57} y={36} textAnchor="middle" fontSize={13} fontWeight="bold" fontFamily="sans-serif" fill="#222">E</text>
+        <text x={7} y={36} textAnchor="middle" fontSize={13} fontWeight="bold" fontFamily="sans-serif" fill="#222">W</text>
+      </g>
+    </svg>
+  );
+}
+
+// Lives INSIDE <Canvas> (only place OrbitControls' own imperative API is
+// reachable) — writes the current azimuth straight to the overlay SVG's
+// <g> transform via a ref every frame, deliberately NOT React state (a
+// per-frame setState would re-render this whole view 60x/sec for a purely
+// decorative rotation — same "prefer a ref over state for a useFrame
+// callback" lesson CameraRig's own camera writes already established).
+function CompassAngleSync({ controlsRef, needleRef }: { controlsRef: React.RefObject<any>; needleRef: React.RefObject<SVGGElement | null> }) {
+  useFrame(() => {
+    const controls = controlsRef.current;
+    const needle = needleRef.current;
+    if (!controls || !needle) return;
+    const azimuthDeg = (controls.getAzimuthalAngle() * 180) / Math.PI;
+    needle.setAttribute('transform', `rotate(${azimuthDeg} 32 32)`);
+  });
+  return null;
+}
+
+// Real dock markers (2026-09-12 — "mention where the docks are in the 3d
+// location view"). The compass above only ever gives a fixed N/S/E/W
+// reference; this lays the actual configured fact (Company Settings' Dock
+// Configuration) on top of it — one translucent colored wall per zone,
+// spanning the WHOLE warehouse footprint's edge on that side, labeled with
+// its purpose. Wall position uses the exact same mapping the compass and
+// DockCompassDirection itself use: EAST is the x=0 edge (Aisle 1's own
+// side — buildWarehouseLayout() starts aisles at cursorX=0), WEST is the
+// x=totalWidth edge (the last aisle's far side); SOUTH is the z=0 edge
+// (Row 1 — buildBoxesForAisle()'s own z starts at 0), NORTH is the
+// z=totalDepth edge. A warehouse with zero zones configured (every one of
+// this client's real warehouses today except TNR8) renders nothing —
+// exactly as absent as the feature itself until Company Settings has a
+// real zone saved.
+function DockMarkers3D({ dockZones, totalWidth, totalDepth }: { dockZones: { purpose: string; dockSide: string }[]; totalWidth: number; totalDepth: number }) {
+  const thickness = Math.max(0.6, Math.max(totalWidth, totalDepth) * 0.025);
+  const labelSize = Math.max(0.45, Math.max(totalWidth, totalDepth) * 0.035);
+  return (
+    <>
+      {dockZones.map((zone, i) => {
+        let position: [number, number, number];
+        let size: [number, number, number];
+        switch (zone.dockSide) {
+          case 'EAST':
+            position = [-thickness / 2, thickness / 2, totalDepth / 2];
+            size = [thickness, thickness, totalDepth + thickness];
+            break;
+          case 'WEST':
+            position = [totalWidth + thickness / 2, thickness / 2, totalDepth / 2];
+            size = [thickness, thickness, totalDepth + thickness];
+            break;
+          case 'SOUTH':
+            position = [totalWidth / 2, thickness / 2, -thickness / 2];
+            size = [totalWidth + thickness, thickness, thickness];
+            break;
+          case 'NORTH':
+          default:
+            position = [totalWidth / 2, thickness / 2, totalDepth + thickness / 2];
+            size = [totalWidth + thickness, thickness, thickness];
+            break;
+        }
+        const color = zone.purpose === 'INBOUND' ? '#2563eb' : zone.purpose === 'OUTBOUND' ? '#16a34a' : '#7c3aed';
+        const label = `${zone.purpose === 'INBOUND' ? 'Inbound' : zone.purpose === 'OUTBOUND' ? 'Outbound' : 'In/Outbound'} Dock (${zone.dockSide})`;
+        return (
+          <group key={i}>
+            <mesh position={position}>
+              <boxGeometry args={size} />
+              <meshStandardMaterial color={color} transparent opacity={0.55} />
+            </mesh>
+            <Label3D position={[position[0], position[1] + labelSize * 1.6, position[2]]} text={label} fontSize={labelSize} color={color} />
+          </group>
+        );
+      })}
+    </>
+  );
+}
+
 // The simplified stand-in for an unselected aisle — one translucent box
 // spanning its whole real footprint (not individual bins), labeled with its
 // Aisle code (cheap here — at most a handful of these exist per warehouse,
@@ -588,6 +709,7 @@ function Locations3DView({
   colorMode,
   occupancy,
   binRank,
+  dockZones,
   rackBaysPerCrossAisle = 10,
   groundBinsPerCrossAisle = 10,
 }: {
@@ -595,6 +717,14 @@ function Locations3DView({
   colorMode: ColorMode;
   occupancy: Occupancy[];
   binRank?: BinRank;
+  // Real configured dock zones (2026-09-12 — "mention where the docks are
+  // in the 3d location view") — the compass alone only ever gave a fixed
+  // N/S/E/W reference; this is the actual physical fact laid on top of it,
+  // straight from Company Settings' Dock Configuration. Optional so a
+  // caller that hasn't fetched Warehouse.dockZones (or a warehouse with
+  // none configured) just renders no markers, same graceful-absence shape
+  // as binRank/occupancy.
+  dockZones?: { purpose: string; dockSide: string }[];
   // Company-configured 3D cross-aisle spacing (2026-09-07) — optional so
   // callers that don't fetch Company Settings (or haven't loaded them yet)
   // still get a sensible default, matching the schema's own DB default.
@@ -606,6 +736,9 @@ function Locations3DView({
   // Called unconditionally, alongside the other hooks above — the empty-
   // state early return below must never skip a hook call between renders.
   const controlsRef = useRef<any>(null);
+  // Compass overlay's needle group (2026-09-12) — see CompassOverlay/
+  // CompassAngleSync's own comments for why this is a ref, not state.
+  const compassNeedleRef = useRef<SVGGElement>(null);
   // "Reset View" (2026-09-07 — "whats with this camera, not very user
   // friendly"): a plain incrementing nonce, not a boolean, since clicking
   // Reset twice in a row with nothing else changing in between still needs
@@ -643,14 +776,19 @@ function Locations3DView({
   // try; the real occupancy detail only shows once you drill into it.
   const occupancyByLocationId = new Map(occupancy.map((o) => [o.locationId, o]));
   const categoryColors = buildCategoryColorMap(occupancy);
-  // Bin Rank (2026-09-09) — LOCATION-INTRINSIC, resolved before
-  // occupancyColorFor() rather than through it, same as 2D. Ground/Floor
-  // only — see BinRank's own type comment for why Rack isn't covered.
-  const binRankByAisle = new Map((binRank?.ranks ?? []).map((r) => [r.aisle, r]));
+  // Bin Rank (2026-09-09, PER-BIN since 2026-09-12) — LOCATION-INTRINSIC,
+  // resolved before occupancyColorFor() rather than through it, same as 2D.
+  // Ground/Floor only — see BinRank's own type comment for why Rack isn't
+  // covered. Keyed by (aisle, flankNumber, block) — the same real-bin
+  // identity suggestGroundBin()'s own binKeyOf() uses — since one aisle can
+  // now hold bins with genuinely different ranks once a row-axis dock zone
+  // is configured, not just one shared value for the whole aisle.
+  const binKeyOf = (l: { aisle?: string | null; flankNumber?: number | null; block?: string | null }) => `${l.aisle}|${l.flankNumber ?? 'x'}|${l.block}`;
+  const binRankByBin = new Map((binRank?.ranks ?? []).map((r) => [binKeyOf(r), r]));
   const getColor = (location: Location): { fill: string; stroke: string } => {
     if (colorMode === 'binRank') {
       if (location.storageType !== 'GROUND_FLOOR') return NEUTRAL_COLOR;
-      const entry = location.aisle != null ? binRankByAisle.get(location.aisle) : undefined;
+      const entry = binRankByBin.get(binKeyOf(location));
       if (!binRank?.configured || !entry) return NEUTRAL_COLOR;
       return binRankColor(entry.rank);
     }
@@ -659,27 +797,39 @@ function Locations3DView({
   };
   const getRankLabel = (location: Location): string | undefined => {
     if (colorMode !== 'binRank' || location.storageType !== 'GROUND_FLOOR') return undefined;
-    const entry = location.aisle != null ? binRankByAisle.get(location.aisle) : undefined;
+    const entry = binRankByBin.get(binKeyOf(location));
     return entry ? String(entry.rank) : undefined;
   };
 
   // Bin Rank ALSO colors/labels unselected footprint blocks — same reason
-  // Dock Proximity's own removed version did (a per-aisle geometric fact
-  // has no "which occupant" ambiguity a footprint block would otherwise
-  // have), letting you see the whole warehouse's ranking at a glance.
-  // Ground/Floor aisles only — a mixed or Rack-only aisle's footprint stays
-  // plain structural.
+  // Dock Proximity's own removed version did (a per-bin geometric fact has
+  // no "which occupant" ambiguity a footprint block would otherwise have),
+  // letting you see the whole warehouse's ranking at a glance. Ground/Floor
+  // aisles only — a mixed or Rack-only aisle's footprint stays plain
+  // structural. A footprint stands in for potentially MANY bins now that
+  // ranking is per-bin, not per-aisle — shows the BEST (lowest/nearest)
+  // rank found anywhere in that aisle, same "give the most useful single
+  // glance" reasoning as everywhere else a footprint has to summarize
+  // several real positions into one box (matches today's real config for
+  // every one of this client's warehouses exactly, where every bin in an
+  // aisle still shares one rank — this only starts to differ once a
+  // row-axis zone is actually added).
   const getFootprintColor = (layout: AisleLayout): { fill: string; stroke: string } => {
     if (colorMode === 'binRank' && layout.storageTypes.length === 1 && layout.storageTypes[0] === 'GROUND_FLOOR') {
-      const entry = binRankByAisle.get(layout.aisleCode);
+      const entry = bestRankInAisle(layout.aisleCode);
       if (binRank?.configured && entry) return binRankColor(entry.rank);
       return NEUTRAL_COLOR;
     }
     return STORAGE_TYPE_COLORS[layout.storageTypes[0]] || DEFAULT_BOX_COLOR;
   };
+  const bestRankInAisle = (aisleCode: string) => {
+    const candidates = (binRank?.ranks ?? []).filter((r) => r.aisle === aisleCode);
+    if (candidates.length === 0) return undefined;
+    return candidates.reduce((best, r) => (r.rank < best.rank ? r : best));
+  };
   const getFootprintRankLabel = (layout: AisleLayout): string | undefined => {
     if (colorMode !== 'binRank' || layout.storageTypes.length !== 1 || layout.storageTypes[0] !== 'GROUND_FLOOR') return undefined;
-    const entry = binRankByAisle.get(layout.aisleCode);
+    const entry = bestRankInAisle(layout.aisleCode);
     return entry ? `${entry.rank} (${entry.label})` : undefined;
   };
 
@@ -691,6 +841,24 @@ function Locations3DView({
 
   const aislesToFit = selectedAisles.size > 0 ? layouts.filter((l) => selectedAisles.has(l.aisleCode)) : layouts;
   const focus = computeFocus(aislesToFit);
+
+  // Rendering-cost guard (2026-09-12 — "keep rendering time low and data
+  // low"), a real gap surfaced live on TNR8: swapping a real aisle into
+  // detail can mean 1000+ individual Location boxes at once (Aisle 1 alone
+  // is 1,320; Aisle 10 is 1,080) — every throwaway test warehouse this
+  // feature was ever verified against had a small handful. Each box's own
+  // mesh+Edges is cheap enough at this scale, but a per-box RANK LABEL
+  // (Bin Rank mode) is a real `Billboard`+`Text` (troika-three-text) object
+  // — genuinely expensive to create per instance, unlike a plain colored
+  // box. Counted across ALL currently-checked aisles together (not one at
+  // a time), since a viewer can check several at once and the true
+  // rendering cost is additive. Below the cap, behavior is completely
+  // unchanged from before this existed — the color alone already carries
+  // the rank/class/category signal in every mode, the number is a
+  // convenience on top of it, not the only way to read it.
+  const RANK_LABEL_MAX_BOXES = 300;
+  const totalSelectedBoxes = layouts.filter((l) => selectedAisles.has(l.aisleCode)).reduce((sum, l) => sum + l.boxes.length, 0);
+  const showBoxLabels = totalSelectedBoxes <= RANK_LABEL_MAX_BOXES;
 
   return (
     <div>
@@ -766,6 +934,11 @@ function Locations3DView({
             Aisle {l.aisleCode}
           </label>
         ))}
+        {!showBoxLabels && (
+          <span style={{ color: '#b45309', fontSize: 12, alignSelf: 'center' }}>
+            {totalSelectedBoxes} bins selected — per-bin number labels hidden above {RANK_LABEL_MAX_BOXES} to keep this responsive (colors still show).
+          </span>
+        )}
       </div>
 
       <div style={{ position: 'relative', border: '1px solid #ddd', borderRadius: 8, height: 520 }}>
@@ -776,8 +949,10 @@ function Locations3DView({
         >
           Reset View
         </button>
+        <CompassOverlay needleRef={compassNeedleRef} />
         <Canvas camera={{ position: focus.camPos, fov: 50 }} onPointerMissed={() => setSelected(null)}>
           <CameraRig camPos={focus.camPos} target={focus.target} controlsRef={controlsRef} resetSignal={resetSignal} />
+          <CompassAngleSync controlsRef={controlsRef} needleRef={compassNeedleRef} />
           <ambientLight intensity={0.7} />
           <directionalLight position={[10, 15, 10]} intensity={0.8} />
           {/* Solid floor beneath the grid lines — without this the "ground"
@@ -790,13 +965,14 @@ function Locations3DView({
             <meshStandardMaterial color="#c9c7bd" />
           </mesh>
           <Grid args={[Math.max(totalWidth, totalDepth) + 20, Math.max(totalWidth, totalDepth) + 20]} position={[totalWidth / 2, 0, totalDepth / 2]} rotation={[Math.PI / 2, 0, 0]} cellColor="#b0aea3" sectionColor="#8c8a80" fadeDistance={60} />
+          <DockMarkers3D dockZones={dockZones ?? []} totalWidth={totalWidth} totalDepth={totalDepth} />
           {layouts.map((layout) =>
             selectedAisles.has(layout.aisleCode) ? (
               <group key={layout.aisleCode}>
                 <AisleDetailLabel layout={layout} />
                 <RowNumberMarkers layout={layout} />
                 {layout.boxes.map((box) => (
-                  <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} rankLabel={getRankLabel(box.location)} />
+                  <LocationBox key={box.key} box={box} isSelected={selected?.id === box.location.id} onSelect={setSelected} color={getColor(box.location)} rankLabel={showBoxLabels ? getRankLabel(box.location) : undefined} />
                 ))}
                 {computeGroundBinOutlines(layout.boxes).map((outline) => (
                   <GroundBinOutline key={outline.key} outline={outline} />
@@ -820,12 +996,20 @@ function Locations3DView({
         </Canvas>
         <p style={{ position: 'absolute', bottom: 8, left: 12, fontSize: 11, color: '#888', margin: 0 }}>
           Drag to orbit, scroll to zoom, right-drag to pan. Click an aisle block (or check it above) to see its bins; click a bin for details.
+          {dockZones && dockZones.length > 0 && (
+            <>
+              {' '}Colored wall{dockZones.length > 1 ? 's' : ''} mark{dockZones.length > 1 ? '' : 's'} the real configured dock{dockZones.length > 1 ? 's' : ''} (
+              <span style={{ color: '#16a34a', fontWeight: 'bold' }}>green = Outbound</span>,{' '}
+              <span style={{ color: '#2563eb', fontWeight: 'bold' }}>blue = Inbound</span>,{' '}
+              <span style={{ color: '#7c3aed', fontWeight: 'bold' }}>purple = Both</span>) — set in Company Settings' Dock Configuration.
+            </>
+          )}
         </p>
         {selected && (
           <DetailPanel
             location={selected}
             occupancy={occupancyByLocationId.get(selected.id)}
-            binRankEntry={selected.storageType === 'GROUND_FLOOR' && selected.aisle != null ? binRankByAisle.get(selected.aisle) : undefined}
+            binRankEntry={selected.storageType === 'GROUND_FLOOR' ? binRankByBin.get(binKeyOf(selected)) : undefined}
             onClose={() => setSelected(null)}
           />
         )}

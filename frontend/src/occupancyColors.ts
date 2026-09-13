@@ -105,7 +105,18 @@ export const BIN_RANK_MATRIX_LABELS = ['AF', 'AM', 'AS', 'BF', 'BM', 'BS', 'CF',
 // Scoped to Ground/Floor only (see LocationsService.binRankByWarehouse()'s
 // own comment for why — Rack splits ABC/FMS across two independent levers,
 // so a single number per bin wouldn't honestly represent a Rack position).
-export type BinRank = { configured: boolean; ranks: { aisle: string; rank: number; label: string }[] };
+//
+// PER-BIN, not per-aisle (2026-09-12) — a real client catch: "the furthest
+// bin from the dock should be red, closest bin should be green," which a
+// single per-aisle value could never express once a dock sits on the
+// front/back wall of every aisle (the ROW axis) rather than either end of
+// the aisle sequence. `flankNumber`+`block` together identify one real bin
+// within its aisle — the same key suggestGroundBin()'s own `binKeyOf()`
+// uses — so a warehouse with only an aisle-axis zone configured still
+// returns the identical rank for every bin in one aisle (zero visible
+// change), while one with a row-axis zone too can now genuinely differ
+// bin-to-bin along the same aisle.
+export type BinRank = { configured: boolean; ranks: { aisle: string; flankNumber: number | null; block: string; rank: number; label: string }[] };
 
 // Same green→yellow→red HSL gradient formula as Priority Gradient's own
 // (combinedPriorityScore-driven) coloring, just mapped onto the 1-9 range

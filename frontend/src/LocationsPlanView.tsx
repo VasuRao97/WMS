@@ -425,6 +425,37 @@ function Flank({
   );
 }
 
+// Compass rose (2026-09-12) — a direct, correct client catch: "aisle one
+// has 2 sides? how can you know which side dude? not the right way,
+// easiest way - north south west east and in the location area put that
+// direction marking in a corner!" A fixed reference marker, not a live
+// readout of configured dock zones — it always shows the SAME orientation
+// this Plan View itself is drawn in (Aisle 1/Row 1 both anchor to the
+// bottom-right corner, aisles growing left = West, rows growing up =
+// North — see DockCompassDirection's own schema.prisma comment for the
+// exact mapping), so picking a dock's wall in Company Settings is a plain
+// visual look-up against this picture, not something to reason about
+// abstractly from aisle numbers. Absolutely positioned over the scrollable
+// plan so it never shifts as the SVG itself scrolls.
+function CompassRose() {
+  return (
+    <svg
+      width={64}
+      height={64}
+      viewBox="0 0 64 64"
+      style={{ flexShrink: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 8 }}
+    >
+      <circle cx={32} cy={32} r={26} fill="#fafafa" stroke="#bbb" />
+      <line x1={32} y1={10} x2={32} y2={54} stroke="#999" strokeWidth={1} />
+      <line x1={10} y1={32} x2={54} y2={32} stroke="#999" strokeWidth={1} />
+      <text x={32} y={13} textAnchor="middle" fontSize={11} fontWeight="bold" fontFamily="sans-serif" fill="#222">N</text>
+      <text x={32} y={58} textAnchor="middle" fontSize={11} fontWeight="bold" fontFamily="sans-serif" fill="#222">S</text>
+      <text x={58} y={35} textAnchor="middle" fontSize={11} fontWeight="bold" fontFamily="sans-serif" fill="#222">E</text>
+      <text x={6} y={35} textAnchor="middle" fontSize={11} fontWeight="bold" fontFamily="sans-serif" fill="#222">W</text>
+    </svg>
+  );
+}
+
 function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, binRank }: { locations: Location[]; warehouseLabel: string; colorMode: ColorMode; occupancy: Occupancy[]; binRank?: BinRank }) {
   // Click-to-inspect (2026-09-05 "upgrade mode" backlog, item 2) — closes
   // the original 2026-08-25 deferred item, 3D got it first. Hook called
@@ -489,16 +520,21 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
   // that signal stays distinct on purpose, same as it always has been.
   const occupancyByLocationId = new Map(occupancy.map((o) => [o.locationId, o]));
   const categoryColors = buildCategoryColorMap(occupancy);
-  // Bin Rank (2026-09-09) — LOCATION-INTRINSIC, so resolved before
-  // occupancyColorFor() rather than through it, same as every other
-  // location-intrinsic mode this file has ever had. Ground/Floor only —
-  // see BinRank's own type comment for why Rack isn't covered.
-  const binRankByAisle = new Map((binRank?.ranks ?? []).map((r) => [r.aisle, r]));
+  // Bin Rank (2026-09-09, PER-BIN since 2026-09-12) — LOCATION-INTRINSIC, so
+  // resolved before occupancyColorFor() rather than through it, same as
+  // every other location-intrinsic mode this file has ever had. Ground/
+  // Floor only — see BinRank's own type comment for why Rack isn't covered.
+  // Keyed by (aisle, flankNumber, block) — the same real-bin identity
+  // `suggestGroundBin()`'s own `binKeyOf()` uses — since one aisle can now
+  // hold bins with genuinely different ranks once a row-axis dock zone is
+  // configured, not just one shared value for the whole aisle.
+  const binKeyOf = (l: { aisle?: string | null; flankNumber?: number | null; block?: string | null }) => `${l.aisle}|${l.flankNumber ?? 'x'}|${l.block}`;
+  const binRankByBin = new Map((binRank?.ranks ?? []).map((r) => [binKeyOf(r), r]));
+  const binRankEntryFor = (location: Location | undefined) => (location ? binRankByBin.get(binKeyOf(location)) : undefined);
   const getColor = (box: Box): { fill: string; stroke: string } => {
     if (colorMode === 'binRank') {
       if (box.storageType !== 'GROUND_FLOOR') return NEUTRAL_COLOR;
-      const aisle = locationById.get(box.key)?.aisle;
-      const entry = aisle != null ? binRankByAisle.get(aisle) : undefined;
+      const entry = binRankEntryFor(locationById.get(box.key));
       if (!binRank?.configured || !entry) return NEUTRAL_COLOR;
       return binRankColor(entry.rank);
     }
@@ -507,8 +543,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
   };
   const getRankLabel = (box: Box): string | undefined => {
     if (colorMode !== 'binRank' || box.storageType !== 'GROUND_FLOOR') return undefined;
-    const aisle = locationById.get(box.key)?.aisle;
-    const entry = aisle != null ? binRankByAisle.get(aisle) : undefined;
+    const entry = binRankEntryFor(locationById.get(box.key));
     return entry ? String(entry.rank) : undefined;
   };
 
@@ -518,11 +553,13 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
         <DetailPanel
           location={selected}
           occupancy={occupancyByLocationId.get(selected.id)}
-          binRankEntry={selected.storageType === 'GROUND_FLOOR' && selected.aisle != null ? binRankByAisle.get(selected.aisle) : undefined}
+          binRankEntry={selected.storageType === 'GROUND_FLOOR' ? binRankEntryFor(selected) : undefined}
           onClose={() => setSelected(null)}
         />
       )}
-      <p style={{ fontSize: 12, color: '#666', marginTop: 4, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 4, marginBottom: 12 }}>
+        <CompassRose />
+        <p style={{ fontSize: 12, color: '#666', margin: 0, flex: 1 }}>
         <strong>{warehouseLabel}</strong> — {aisles.length} aisle(s).{' '}
         {colorMode === 'structural'
           ? 'Structural layout only (no occupancy).'
@@ -539,9 +576,12 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
         aisle draws as one flank on the right; a second flank (left) only appears when it was actually generated (a
         Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number — each
         flank's "Rows 1-N" summary (next to its R{'{n}'} callout) counts positions this way too, 1 nearest the
-        corner through N farthest, regardless of the underlying Rack/Block numbers.
+        corner through N farthest, regardless of the underlying Rack/Block numbers. The compass marker (top-left)
+        shows which way is North/South/East/West for THIS picture — set a dock's wall in Company Settings' Dock
+        Configuration to match what you actually see here, not by reasoning about aisle numbers.
         {skipped > 0 ? ` ${skipped} location(s) with no Aisle set are not shown.` : ''}
-      </p>
+        </p>
+      </div>
       {availableLevels.length > 0 && (
         <div style={{ marginBottom: 10, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
           <label>Level:</label>

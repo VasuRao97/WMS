@@ -80,7 +80,7 @@ export class WarehousesController {
   // own "Dock Configuration" mini-editor (2026-09-06, Topic 2).
   @Patch(':id/dock-zones')
   @Roles('COMPANY_ADMIN')
-  setDockZones(@Param('id') id: string, @Body() body: { zones: { purpose: string; nearAisleEnd: string }[] }, @CurrentUser() user: any) {
+  setDockZones(@Param('id') id: string, @Body() body: { zones: { purpose: string; dockSide: string; numberOneNearDock?: boolean }[] }, @CurrentUser() user: any) {
     return this.warehousesService.setDockZones(id, body.zones ?? [], user);
   }
 

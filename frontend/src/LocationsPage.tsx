@@ -9,7 +9,16 @@ import LocationsPlanView from './LocationsPlanView';
 const Locations3DView = lazy(() => import('./Locations3DView'));
 
 export type ProductCategory = { id: string; name: string };
-export type Warehouse = { id: string; code: string; name: string };
+export type Warehouse = {
+  id: string;
+  code: string;
+  name: string;
+  // Dock Configuration (2026-09-06 Topic 2, compass-renamed 2026-09-12) —
+  // already returned by GET /warehouses (WarehousesService.findAll()'s own
+  // include), just never threaded through this narrower frontend type
+  // until the Plan View needed to actually show where a real dock is.
+  dockZones?: { purpose: string; dockSide: string }[];
+};
 
 export type Location = {
   id: string;
@@ -1046,6 +1055,7 @@ function LocationsPage() {
                 colorMode={colorMode}
                 occupancy={occupancy}
                 binRank={binRank}
+                dockZones={warehouses.find((w) => w.id === planWarehouseId)?.dockZones}
                 rackBaysPerCrossAisle={rackBaysPerCrossAisle}
                 groundBinsPerCrossAisle={groundBinsPerCrossAisle}
               />

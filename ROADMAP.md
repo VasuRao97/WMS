@@ -7,7 +7,13 @@ holds a short current-state pointer — don't grow it into a run-on paragraph ag
 ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
 full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
 
-**Last updated 2026-09-09.** Most recent work: the FMS×ABC combined-classification study (design
+**Last updated 2026-09-13.** Most recent work: a real gap found live-testing Bin Rank against TNR8's
+own data — `WarehouseDockZone` never captured which end of the Aisle/Row numbering actually sits
+nearest the dock, only which wall it touches. Fixed with a new `numberOneNearDock` field, backfilled
+to zero-change every existing zone (see CLAUDE.md's "Dock zone: numberOneNearDock" section). A
+follow-on design conversation proposed a Rack-specific ranking treatment (Aisle Rank A/B/C + Level
+Rank F/M/S, two separate numbers rather than Ground's one blended score) — not yet built. Before
+that: the FMS×ABC combined-classification study (design
 settled through a real round-by-round conversation, then built 2026-09-08 — see CLAUDE.md's
 "FMS×ABC combined classification" section), its same-day display follow-up (a 4th occupancy-overlay
 color mode, "F/M/S Class," in 2D/3D/Simulation), Ground/Floor's own FMS×ABC placement (2026-09-09 —
@@ -29,6 +35,34 @@ See the 2026-09-06 session notes further down for that whole day's earlier work 
 Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
 placement Topic 2, the "Rows 1-N" summary), and 2026-09-07 for the 3D Plan View/camera/depth-model
 work and the ProductCategory cleanup.
+
+## Session note (2026-09-12/13 — dock zone `numberOneNearDock`, and a Rack ranking proposal)
+
+The client gave two exact real TNR8 bin codes that read different Bin Rank labels
+(`GF-10-BLK20B-...` → AF, `GF-20-BLK15-...` → AS) and asked why. Traced live (read-only) — the
+existing warehouse-wide row-normalization mechanic explained it exactly, but surfaced a real,
+previously-unquestioned gap: `WarehouseDockZone.dockSide` only ever said which WALL a dock touches,
+never which end of the Aisle/Row NUMBERING sits nearest it. The ranking code had always silently
+assumed a fixed direction, unconfirmed against how any real warehouse's aisles/blocks were actually
+numbered. Client's own framing: "we need to have idea of from where the row 1 starts... we need to
+get info during warehouse stage so this issue doesnt pop up."
+
+**Built and verified**: new `WarehouseDockZone.numberOneNearDock` (Boolean), captured on the same
+existing Dock Configuration mini-editor on Company Settings. `dock-zone.util.ts`'s ranking functions
+now read it directly instead of a hardcoded EAST=low/SOUTH=low guess. Migration backfilled every
+existing zone to match EXACTLY what the old logic already computed — zero behavior change, confirmed
+live (TNR8's real values were byte-identical before/after). See CLAUDE.md's "Dock zone:
+numberOneNearDock" section for the full trace and the worked example (same block number = same rank
+in every aisle regardless of that aisle's own length — the real yardstick is the raw block number
+itself, shared warehouse-wide, not each aisle's own relative position).
+
+**Follow-on, not yet built**: a design conversation on whether Rack (SPR/Drive-in/ASRS) should get
+its own analogous ranking display. Landed on two separate numbers (Aisle Rank A/B/C + Level Rank
+F/M/S) rather than one blended score, since Rack's two axes are genuinely different kinds of cost
+(travel distance vs. reach effort) unlike Ground's single lever — see "Immediate candidates" below
+for the settled shape. Environment note: both dev servers died silently this session (once from a
+`prisma generate`/file-lock race, once from Docker Desktop itself having fully stopped) — see
+CLAUDE.md for the exact recovery steps.
 
 ## Session note (2026-09-08 — FMS×ABC combined classification: designed, then built)
 
@@ -1043,9 +1077,14 @@ Pick one — these are the live options on the table, not a forced order:
    CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section. Ground's own
    FMS-driven placement (a combined priority score + "Priority Gradient"/"Bin Rank" visuals) is also
    now **BUILT 2026-09-09** — see the two same-day session notes above. Stillage's own version is the
-   one genuine follow-on left (never discussed). **Not yet asked**: whether Rack (SPR/ASRS) should get
-   its own analogous "Bin Rank" numbering treatment, alongside its existing independent aisle/level
-   placement — the Ground-only scoping was a judgment call, not confirmed with the client.
+   one genuine follow-on left (never discussed). **Asked 2026-09-13, design proposed but NOT YET
+   BUILT**: Rack (SPR/Drive-in/ASRS) getting its own ranking treatment — unlike Ground, Rack's aisle
+   (travel distance) and level (reach effort) are genuinely independent costs, so the proposal is two
+   separate numbers rather than one blended one: **Aisle Rank (A/B/C)**, geometric, needs an
+   EAST/WEST dock zone, all three rack types; **Level Rank (F/M/S)**, purely structural (low level =
+   F/easy-reach, high = S), no dock zone needed, SPR/ASRS only (Drive-in excluded — no independent
+   level choice there). See CLAUDE.md's "Dock zone: numberOneNearDock" section for the fuller
+   context this came out of.
 3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
    it. Even a read-only view would close a real, felt gap. Next in the stated module build order.

@@ -1170,18 +1170,72 @@ enum DockZonePurpose {
   BOTH
 }
 
-enum DockZoneAisleEnd {
-  LOW // near the first/lowest aisle in this warehouse's own natural-sorted aisle order
-  HIGH // near the last/highest aisle
+// 4-wall model (2026-09-10, extended from the original LOW/HIGH-only pair)
+// — a real dock sits along ONE WALL of the building, and a wall is just as
+// likely to be the front/back of every aisle (the ROW axis — Row 1 nearest
+// the reference corner through Row N farthest, the same numbering the Plan
+// View's own "Rows 1-N" summary already uses) as either end of the AISLE
+// sequence. LOW/HIGH (unchanged meaning) cover the aisle axis; ROW_LOW/
+// ROW_HIGH cover the row axis. Genuinely still only ONE value per zone row
+// (a dock sits on one wall, not two) — a corner dock effectively "touching"
+// two walls isn't modeled yet, deliberately deferred until a real case
+// needs it. See buildOutboundProximityRanker() in dock-zone.util.ts for
+// where this actually gets consumed.
+// Compass directions (2026-09-12, renamed from LOW/HIGH/ROW_LOW/ROW_HIGH —
+// a direct, correct client catch: "how can you know which side dude? not
+// the right way, easiest way - north south west east and in the location
+// area put that direction marking in a corner!"). Tied to the Plan View's
+// own fixed rendering orientation, where a compass rose is now actually
+// drawn (LocationsPlanView.tsx) — no more mentally tracking "which end of
+// the aisle-number sequence" or "which end of the row-number sequence,"
+// just look at the picture and match the wall. Fixed mapping, matching
+// LocationsPlanView.tsx's own layout (Aisle 1/Row 1 both anchor to the
+// bottom-right corner, aisles growing left, rows growing up):
+//   EAST  = near Aisle 1 (the right edge of the Plan View)
+//   WEST  = near the last aisle (the left edge)
+//   SOUTH = near Row 1 (the bottom edge, the front of every aisle)
+//   NORTH = near Row N (the top edge, the back of every aisle)
+enum DockCompassDirection {
+  EAST
+  WEST
+  SOUTH
+  NORTH
 }
 
 model WarehouseDockZone {
-  id           String           @id @default(uuid())
-  warehouseId  String
-  warehouse    Warehouse        @relation(fields: [warehouseId], references: [id])
-  purpose      DockZonePurpose
-  nearAisleEnd DockZoneAisleEnd
-  createdAt    DateTime         @default(now())
+  id          String               @id @default(uuid())
+  warehouseId String
+  warehouse   Warehouse            @relation(fields: [warehouseId], references: [id])
+  purpose     DockZonePurpose
+  dockSide    DockCompassDirection
+
+  // 2026-09-12 (same-day follow-up to the compass-direction rename) — a real
+  // gap the client caught testing Bin Rank against TNR8's own live data:
+  // `dockSide` alone tells you which WALL a dock sits against, but never
+  // which end of the Aisle/Row NUMBERING actually sits nearest that wall —
+  // the ranking code used to just assume a fixed direction (Aisle 1/Row 1
+  // always the EAST/SOUTH end), unconfirmed against how any real warehouse
+  // was actually numbered when it was generated. "we need to have idea of
+  // from where the row 1 starts... we need to get info during warehouse
+  // stage so this issue doesnt pop up." This is that missing fact, captured
+  // explicitly instead of assumed: true = Aisle/Row 1 (whichever axis this
+  // zone's dockSide governs) sits nearest this dock; false = the highest-
+  // numbered Aisle/Row sits nearest instead. See dock-zone.util.ts's
+  // buildOutboundProximityRanker()/buildRowProximityRanker() for where this
+  // actually drives the ranking direction (replacing the old hardcoded
+  // EAST/SOUTH-vs-WEST/NORTH assumption).
+  //
+  // DEFAULT true is a bare column default for a brand-new row only — every
+  // EXISTING row was backfilled explicitly by this migration to match
+  // exactly what the old hardcoded assumption already computed (true for
+  // EAST/SOUTH zones, false for WEST/NORTH zones), so no warehouse's live
+  // Bin Rank/placement results changed the moment this shipped. That
+  // backfilled value is still just the OLD GUESS, though, not a confirmed
+  // fact — TNR8's own NORTH zone in particular still needs the real answer
+  // from the client before this can be trusted for Ground.
+  numberOneNearDock Boolean @default(true)
+
+  createdAt DateTime @default(now())
 }
 
 // Platform-level reference data (like ProductCategory — no companyId, not
