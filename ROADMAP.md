@@ -7,15 +7,24 @@ holds a short current-state pointer — don't grow it into a run-on paragraph ag
 ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
 full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
 
-**Last updated 2026-09-13.** Most recent work: a real gap found live-testing Bin Rank against TNR8's
+**Last updated 2026-09-13 (Inventory module — Daily Inward Volume dashboard shipped, inward-only).**
+Most recent work: the Inventory module's on-hand screen (Line Items + SKU Summary) shipped, then —
+same day — the transaction-level ledger export (with its own From/To Location columns), and then the
+daily-inward half of the Analytics dashboard (the app's first real charting page, via `recharts`) all
+designed and built: see the "Inventory"/"Analytics" session notes right below for the full detail.
+The outward half of the dashboard is still not built — genuinely blocked on Picking/Dispatch writing
+real movements, see "Immediate candidates" below. Before Inventory: a real gap found live-testing
+Bin Rank against TNR8's
 own data — `WarehouseDockZone` never captured which end of the Aisle/Row numbering actually sits
 nearest the dock, only which wall it touches. Fixed with a new `numberOneNearDock` field, backfilled
 to zero-change every existing zone (see CLAUDE.md's "Dock zone: numberOneNearDock" section). A
 follow-on design conversation proposed, then BUILT, a Rack-specific ranking treatment (Aisle Rank
 A/B/C + Level Rank F/M/S, two separate numbers rather than Ground's one blended score) — see
-CLAUDE.md's "Rack Rank" section. Building it surfaced a real, separate, UNRESOLVED data-integrity
-issue on TNR8's real warehouse: Aisle 1 has 632 duplicate `Location` rows (real `id`s, same `code`)
-— needs the client's decision before any cleanup, not something to fix unilaterally. Then, in a
+CLAUDE.md's "Rack Rank" section. Building it initially raised a suspected data-integrity issue on
+TNR8 (632 "duplicate" `Location` rows) that turned out, once re-checked directly against the live
+data, to be a false alarm — a real DB-level `@@unique([warehouseId, code])` constraint makes true
+row duplication structurally impossible; the actual bug was purely an in-memory string-vs-numeric
+Level grouping bug, already fixed (see CLAUDE.md's "Rack Rank" section for the retraction). Then, in a
 deliberate "step back — what's left in Putaway" review, **ASRS was removed as a storage type
 entirely** — the client's own call, since a real ASRS installation runs its own dedicated WCS/WES
 software (see CLAUDE.md's "ASRS removed as a storage type" section) — zero real data anywhere ever
@@ -34,22 +43,90 @@ are blended into one score (AF nearest, CS farthest, real gradation in between).
 Proximity" mode was tried and fully reverted the same day, before ever being committed — a misread
 of the client's own ask, see CLAUDE.md's "A misread, built then reverted" note — Priority Gradient
 and Bin Rank are the two ABC×FMS visualizations that actually shipped.) Rack's own analogous ranking
-treatment (Aisle Rank + Level Rank) is now BUILT too, per the 2026-09-13 note above. Next
-candidates: the reslotting/consolidation suggestion engine (now doubly unblocked — Topics 1/2 AND
-FMS are all in place), Stillage's own Putaway logic (the only storage type with none at all), or
-Inventory (the next module in the build order) — see "Immediate candidates" below.
+treatment (Aisle Rank + Level Rank) is now BUILT too, per the 2026-09-13 note above. Then, working
+through the same step-back review's item 2, **Stillage got its own real Putaway logic** — a genuine
+physical-model redesign (one row per real stack-height position now, same "one row per real
+position" move Ground/Floor already went through, `rack` reused as the column number within a
+`stack`) plus a new `suggestStillageBin()` bin-suggestion strategy: A/B classes get the WHOLE bin
+(cap 1, reusing `maxSkusClassA/B` unchanged), C gets 1 SKU per column (cap unbounded, physically
+bounded by real column count) — the client's own confirmed rule, mapping exactly onto existing
+`WarehouseStorageType` config with zero new schema. See CLAUDE.md's "Stillage gets its own real
+Putaway logic" section for the full build, including two real pre-existing bugs found and fixed
+along the way (a Storage Type Mapping over-count bug inherited from Ground's own 2026-09-06 redesign,
+and Stillage having never actually been offered in the Warehouse Master's own storage-type
+breakdown at all). Next candidates: the reslotting/consolidation suggestion engine (now doubly
+unblocked — Topics 1/2 AND FMS are all in place), the task-lifecycle gaps (cancel path, queue
+ordering, the Class-B self-exclusion workaround), or Inventory (the next module in the build order)
+— see "Immediate candidates" below.
 
 See the 2026-09-06 session notes further down for that whole day's earlier work (Ground/Floor
 Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
 placement Topic 2, the "Rows 1-N" summary), and 2026-09-07 for the 3D Plan View/camera/depth-model
 work and the ProductCategory cleanup.
 
+## Session note (2026-09-13, fresh session — Inventory's transaction-level ledger export)
+
+Picked up item 2 from the note below (the ledger export ask) in a fresh session, per the client's own
+"stop and hand off" request. Aligned before coding first: signed `quantity` column, raw rows only (no
+running balance), human-readable movement-type labels, From/To dates with no forced default, third
+tab on the existing `InventoryPage.tsx`. One real correction mid-discussion — scope isn't a strict
+per-warehouse/company-wide binary, a COMPANY_ADMIN needs a company-wide download too — resolved by
+reusing `AnalyticsService.operatorProductivity`'s existing optional-`warehouseId` convention rather
+than inventing a new one. **Built and verified same session** — `GET /inventory/ledger`/`ledger/
+export` (XLSX), no new schema, same throwaway-company verification rigor as every other module (real
+login flow, curl + live-browser checks for both COMPANY_ADMIN and a warehouse-scoped Manager). Full
+detail in CLAUDE.md's "Inventory" section.
+
+Right after, a real follow-on ask: "from location & to location in ledger if it makes sense." Only
+cleanly true for genuine transfers (Putaway/Pick-Face-replenish trips share one referenceId) — every
+other movement type has no tracked partner location. Confirmed directly: real pairs keep today's 2
+raw rows but enrich BOTH with the real source+destination; everything else fills whichever side its
+own direction implies. One refinement made and flagged, not silently assumed: `ADJUSTMENT` was going
+to fill neither side (dropping its location entirely) — fixed by generalizing "fill by direction" to
+ANY non-paired type via the sign of `quantity`. **Built and verified same session** — see CLAUDE.md's
+"Ledger From/To Location columns" section.
+
+Then, item 3 — the daily inward/outward Analytics dashboard — was picked up too, same session.
+Client's answers: build inward-only now (outward stays deferred until Picking/Dispatch are real);
+**real charts**, not another table — the first chart-based page in this app (`recharts` added, React
+19-compatible); pallet count stays honest, zero for non-palletized stock. A real correctness point
+caught before building: "inward" must mean `RECEIPT`+`RETURN_IN` ONLY — `PUTAWAY_IN` is purely an
+internal transfer of stock already counted once at `RECEIPT`, so including it would double-count
+every put-away unit. **Built and verified (inward half only)** — see CLAUDE.md's "Analytics — Daily
+Inward Volume" section. Outward still needs Picking/Dispatch to exist first.
+
+## Session note (2026-09-13, same day, next module in the build order — Inventory begins)
+
+Right after Stillage shipped, moved to Inventory — the next module in the stated build order and a
+gap that had been flagged for weeks ("there is still no screen anywhere showing what's on hand at
+Location X"). Client attached a real sample sheet and asked for two views: full line-item and a
+SKU-level rollup "so we can calculate ABC." Two things confirmed before building: the ABC/FMS
+columns reuse the EXISTING monthly-computed classification (not a new on-hand-quantity-based
+methodology), and the view is per-warehouse like every other report page. **Both views built and
+verified same session** — `GET /inventory/line-items`/`sku-summary`, new `InventoryPage.tsx`
+(top-level nav) — no new schema, everything derived live off `StockMovement`/`SkuWarehouseClass`.
+Full detail in CLAUDE.md's "Inventory" section.
+
+**Three more real asks landed in the same conversation, right after the build was verified — the
+client explicitly asked to stop building and hand off rather than keep going mid-session:**
+1. **"After every putaway/picking, this file should auto-update"** — already true, no work needed.
+   Both new endpoints query the live ledger on every call, same as every other derived view in this
+   app; there is no stored file/cache to go stale. Confirmed directly to the client, not assumed.
+2. **A transaction-level ledger export** — every individual inward/outward `StockMovement` (not a
+   current-balance snapshot), downloadable for a given day or any date range. Genuinely new, not
+   designed — see "Immediate candidates" below for the scoped starting point.
+3. **An Analytics dashboard for daily inward/outward volume**, in units AND pallets. Genuinely new,
+   not designed — real dependency gap worth flagging up front: "outward" has nothing to show until
+   Picking/Dispatch exist and start writing `PICK`/`DISPATCH` movements (schema-only today, same as
+   everywhere else this gap has come up); "inward" is real and computable today. See "Immediate
+   candidates" below.
+
 ## Session note (2026-09-13, same day, immediate follow-up — a Putaway step-back review, then ASRS removed)
 
 Right after Rack Rank shipped, a deliberate "step back — what's left across the whole Putaway
 area" review was requested rather than continuing to build. Produced a full categorized inventory
 (storage-type coverage, task-lifecycle gaps, assignment/fairness, Pick Face scope, the reslotting
-engine, the TNR8 data issue, role gating) — see CLAUDE.md's Putaway sections and the
+engine, a since-retracted TNR8 data-integrity item, role gating) — see CLAUDE.md's Putaway sections and the
 `wms-putaway-design` memory for the full detail behind each item.
 
 Working through it one by one, item 1 (ASRS's own bin-suggestion strategy, parked since the
@@ -64,6 +141,35 @@ and all four Excel import templates (both `templates/` and `frontend/public/temp
 Warehouse Master and Location Master) — including a real example row in the Warehouse template that
 had used `ASRS` as its sample value, changed to `Stillage`. See CLAUDE.md's "ASRS removed as a
 storage type" section for the full file-by-file detail and verification.
+
+## Session note (2026-09-13, same day, next item in the step-back review — Stillage's own Putaway logic)
+
+Item 2 of the same step-back review: "i need stillage one" — confirmed real (unlike ASRS), the
+client walked through the physical concept directly — self-stackable cage pallets ("3 deep @ 3
+high... 9 stillages in that bin"), FIFO genuinely impractical mid-column ("we need to empty the
+full bin first then only allow next putaway into this"). A confirmed DB check found zero real
+Stillage data or config anywhere (a true clean slate, no backfill needed).
+
+**A physical redesign, not just new logic** — mirrors Ground/Floor's own 2026-09-06 "one row per
+real position" rewrite: `rack` reused as the column number within a `stack`, `depth` as the
+position within that column, `height` staying a real per-row CAPACITY (cages have no per-layer
+access, unlike Rack/Drive-in's own Level). **The class rule, confirmed point by point**: "A class
+can be given full 3x3... C can be kept in 1 column each" (then B confirmed to follow A) — maps
+exactly onto the EXISTING `WarehouseStorageType.maxSkusClassA/B/C` config, no new schema at all: A/B
+= cap 1 (whole bin), C = cap null/unbounded (1 SKU per column, physically bounded by real column
+count). New `PutawayTasksService.suggestStillageBin()`, a fully separate method mirroring
+`suggestGroundBin()`'s boundary-respecting shape but simpler (no closed-column tracking, no
+row-axis — both flagged as easy follow-ons, not discussed). Reuses Ground's own combined ABC×FMS
+priority-score placement as-is (confirmed "yes").
+
+**Two real, pre-existing bugs found and fixed along the way, neither introduced by this work**:
+`WarehousesService.getMappingSummary()`'s Storage Type Mapping table had been over-counting Ground
+positions since Ground's OWN 2026-09-06 redesign (multiplying depth×width×height per row instead of
+counting 1 per already-individually-addressable row) — a real 4×3 bin was reporting 96 instead of
+12; and the Warehouse Master's own storage-type breakdown had never actually offered Stillage as an
+option at all (a separate, independently-maintained list from `LocationsService`'s per-bin options).
+Both fixed. Full build/verification detail in CLAUDE.md's "Stillage gets its own real Putaway
+logic" section.
 
 ## Session note (2026-09-12/13 — dock zone `numberOneNearDock`, and a Rack ranking proposal)
 
@@ -92,15 +198,18 @@ distance vs. reach effort) unlike Ground's single lever. New `GET /locations/rac
 `ColorMode` in both 2D/3D, and matching `LocationDetailPanel.tsx` rows — see CLAUDE.md's "Rack Rank"
 section for the full build and verification.
 
-**A real bug, then a real unresolved data-integrity finding, both surfaced building it**: TNR8's
-Level values are stored inconsistently (`"01".."07"` on one aisle, `"1".."7"` on others) — fixed by
+**A real bug, then a false-alarm data-integrity scare, both surfaced building it**: TNR8's Level
+values are stored inconsistently (`"01".."07"` on one aisle, `"1".."7"` on others) — fixed by
 grouping/joining on `Number(level)` instead of the raw string, plus gating the 2D Level Rank badge
 on a specific Level being selected (a box collapsing several Levels into one has no single Level
-Rank to show). Tracing that further surfaced something bigger and NOT fixed: **TNR8's Aisle 1 has
-632 genuine duplicate `Location` rows** — same `code`, different `id`s, both SPR and Ground/Floor —
-almost certainly from Aisle 1 being generated twice under two different Level-spelling conventions.
-This affects real counts (Total Locations, Storage Type Mapping) beyond just this feature, and needs
-the client's own decision before any cleanup — real TNR8 data, not something to delete unilaterally.
+Rank to show). Investigating that bug's symptom ("14 distinct levels instead of 7") first led to a
+wrong conclusion — **"TNR8's Aisle 1 has 632 genuine duplicate `Location` rows"** — written up
+without ever running a real duplicate-detection query to confirm it. **Retracted the same day, once
+asked what it actually meant**: a direct re-check (by `code`, and separately by real physical
+position) found zero duplicates either way, and `Location` carries a real DB-level
+`@@unique([warehouseId, code])` constraint that makes true row duplication structurally impossible
+in the first place — the original claim's own "same code, different ids" framing directly
+contradicted that. Nothing on TNR8's real data was ever touched, and nothing needs cleanup.
 
 Environment note: both dev servers died silently this session (once from a `prisma generate`/
 file-lock race, once from Docker Desktop itself having fully stopped) — see CLAUDE.md for the exact
@@ -928,8 +1037,8 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). (2026-09-06) **Ground/Floor Putaway built end to end** — its own independent `suggestGroundBin()` (not shared with Rack's `suggestRackBin()`, a deliberate ask), a column-lifecycle rule feeding the still-unbuilt reslotting engine, per-class `respectsColumnBoundariesA/B/C/D` toggles, plus a real editor for the previously-dead `maxSkusClassA/B/C` field. (2026-09-13) **ASRS removed as a storage type entirely** — the client's own call, real ASRS runs its own dedicated WCS/WES software, zero real data anywhere ever used it — and Rack got its own **Aisle Rank (A/B/C) + Level Rank (F/M/S)** display, two independent numbers since Rack's aisle/level are genuinely different kinds of cost unlike Ground's single lever. Still open: **Stillage's own version of the multi-position logic** (the only storage type with none at all now), a cancel path, correcting an already-completed mis-putaway, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), and Pick Face for Drive-in/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
-| Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). (2026-09-06) **Ground/Floor Putaway built end to end** — its own independent `suggestGroundBin()` (not shared with Rack's `suggestRackBin()`, a deliberate ask), a column-lifecycle rule feeding the still-unbuilt reslotting engine, per-class `respectsColumnBoundariesA/B/C/D` toggles, plus a real editor for the previously-dead `maxSkusClassA/B/C` field. (2026-09-13) **ASRS removed as a storage type entirely** — the client's own call, real ASRS runs its own dedicated WCS/WES software, zero real data anywhere ever used it — and Rack got its own **Aisle Rank (A/B/C) + Level Rank (F/M/S)** display, two independent numbers since Rack's aisle/level are genuinely different kinds of cost unlike Ground's single lever. (2026-09-13, same day) **Stillage got its own real Putaway logic too** — a physical redesign (one row per real stack-height position, `rack` reused as column number, mirroring Ground/Floor's own 2026-09-06 rewrite) plus `suggestStillageBin()`: A/B classes get the whole bin (cap 1), C gets 1 SKU per column (cap unbounded, physically capped by real column count) — the client's own rule, mapping exactly onto existing `maxSkusClassA/B/C` config, no new schema. Every storage type (Rack, Ground/Floor, Stillage) now has real bin-suggestion logic. Still open: a cancel path, correcting an already-completed mis-putaway, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), Stillage's own row-axis placement refinement (never discussed), and Pick Face for Drive-in/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
+| **Inventory** | 🟨 Started (2026-09-13) — the on-hand screen: Line Items (one row per bin/pallet) and a SKU-level Summary, both derived live off `StockMovement`, no new schema. Reuses the existing monthly-computed ABC/FMS classification (confirmed, not a new methodology). Same day: the transaction-level ledger export (third tab, company-wide toggle for COMPANY_ADMIN, From/To Location columns) and the Analytics module's Daily Inward Volume dashboard (this app's first real charts, via `recharts`) both shipped and were verified. Still not built: the dashboard's outward half — genuinely blocked on Picking/Dispatch existing — see "Immediate candidates" below. |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started — **when this starts: Task Interleaving is a high-priority item, not a deferred one** (2026-09-07, from the top-WMS gap check — see the Deferred section for why) |
 | Dispatch | ⬜ Not started |
@@ -1118,18 +1227,39 @@ Pick one — these are the live options on the table, not a forced order:
 2. ~~FMS classification combined with ABC~~ — **BUILT 2026-09-08**, see the session note above and
    CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section. Ground's own
    FMS-driven placement (a combined priority score + "Priority Gradient"/"Bin Rank" visuals) is also
-   now **BUILT 2026-09-09** — see the two same-day session notes above. Stillage's own version is the
-   one genuine follow-on left (never discussed). **Rack (SPR/Drive-in) getting its own ranking
+   now **BUILT 2026-09-09** — see the two same-day session notes above. **Stillage's own version was
+   the one genuine follow-on left — now also BUILT 2026-09-13**, see CLAUDE.md's "Stillage gets its
+   own real Putaway logic" section (Stillage's aisle-axis placement reuses Ground's combined
+   priority score as-is; its own row-axis refinement stays a flagged, undiscussed follow-on).
+   **Rack (SPR/Drive-in) getting its own ranking
    treatment — asked AND BUILT 2026-09-13** — see CLAUDE.md's "Rack Rank" section: **Aisle Rank
    (A/B/C)**, geometric, needs an EAST/WEST dock zone, both rack types; **Level Rank (F/M/S)**,
    purely structural (low level = F/easy-reach, high = S), no dock zone needed, SPR only
-   (Drive-in excluded — no independent level choice there). Building it surfaced a real, unresolved
-   TNR8 data-integrity issue (632 duplicate Location rows on Aisle 1) — see item 8 below. **ASRS
+   (Drive-in excluded — no independent level choice there). Building it briefly raised a suspected
+   TNR8 data-integrity issue, since retracted as a false alarm — see item 8 below. **ASRS
    itself was removed as a storage type the same day** (see CLAUDE.md's "ASRS removed as a storage
    type" section) — the client's own call, real ASRS runs its own dedicated WCS/WES software.
-3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
-   hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
-   it. Even a read-only view would close a real, felt gap. Next in the stated module build order.
+3. ~~**Inventory (basic on-hand view)**~~ — **STARTED 2026-09-13**, see the session note above and
+   CLAUDE.md's "Inventory" section: Line Items + SKU Summary, both live off `StockMovement`, both
+   verified. Two real follow-on asks from the SAME conversation:
+   - ~~**9a. Transaction-level ledger export**~~ — **BUILT & VERIFIED 2026-09-13**, same day, fresh
+     session — see the session note above and CLAUDE.md's "Inventory" section. `GET /inventory/
+     ledger` (JSON, third `InventoryPage.tsx` tab) and `GET /inventory/ledger/export` (`.xlsx`, same
+     `json_to_sheet` convention as every other export). Signed `quantity` column, raw rows only (no
+     running balance), human-readable movement-type labels, From/To dates with no forced default.
+     `warehouseId` optional — company-wide when omitted, but COMPANY_ADMIN/SUPER_ADMIN only (mirrors
+     `AnalyticsService.operatorProductivity`'s own convention); a warehouse-scoped Manager/Supervisor
+     must always pick one of their own. No new schema.
+   - **9b. Daily inward/outward Analytics dashboard**, in units AND pallets — **INWARD HALF BUILT &
+     VERIFIED 2026-09-13**, same day as 9a — see the session note above and CLAUDE.md's "Analytics —
+     Daily Inward Volume" section. Client confirmed: build inward-only now; real charts (not another
+     table — `recharts` added, the first chart-based page in this app); pallet count honestly zero
+     for non-palletized stock. A real correctness point caught before building: "inward" means
+     `RECEIPT`+`RETURN_IN` ONLY — `PUTAWAY_IN` is an internal transfer of stock already counted once
+     at `RECEIPT`, so including it would double-count every put-away unit. **Outward is still NOT
+     built** — genuinely blocked: `PICK`/`DISPATCH` movements are schema-only today (no module
+     writes them yet), so there's nothing genuine to chart until Picking/Dispatch exist. Adding it
+     later needs zero changes to what's built — just a second parallel query/chart pair.
 4. **Outbound order maker** — destination + vehicle capacity check (weight *and* volume), triggering
    a pick list — the module after Inventory in the build order. Benefits from Inventory existing
    first so a "can this order be fulfilled" check means something.
@@ -1145,19 +1275,19 @@ Pick one — these are the live options on the table, not a forced order:
    already has an open entry elsewhere, but there's still no way to void a genuinely mistaken entry
    (wrong vehicle typed, never gated out) — today that needs a manual Gate Out to clear. Flagged,
    not designed.
-8. **TNR8's 632 duplicate Location rows on Aisle 1** (2026-09-13, found building Rack Rank — see
-   CLAUDE.md's "Rack Rank" section) — real `id`s, identical `code`, both SPR and Ground/Floor,
-   differing only in Level-string spelling (`"07"` vs `"7"`). Almost certainly Aisle 1 generated
-   twice under two different conventions. Inflates real counts (Total Locations, Storage Type
-   Mapping's Mapped column) beyond just this one display feature. **Needs the client's own
-   confirmation before any cleanup** — not something to delete unilaterally on real data. Once
-   confirmed, the fix is: identify true duplicate pairs (same `code`), verify neither side has
-   independent stock/movement/task history, keep one canonical row per code, delete the other.
+8. ~~**TNR8's 632 duplicate Location rows on Aisle 1**~~ — **RETRACTED 2026-09-13, same day.** The
+   original claim (found building Rack Rank) was never verified against a real duplicate-detection
+   query before being written up — a direct re-check found zero duplicates by `code` and zero by
+   real physical position, and `Location`'s own `@@unique([warehouseId, code])` DB constraint makes
+   true row duplication impossible in the first place. Nothing on TNR8's real data was ever touched,
+   and there is no cleanup pending. See CLAUDE.md's "Rack Rank" section for the full correction.
 
-Also genuinely still open within Putaway itself, not a separate module: **Stillage's own** version
-of the multi-position bin logic (Rack and now Ground/Floor are both done — Stillage is the only
-storage type left with none), a cancel/exception path for a task that can't be completed, correcting
-an already-completed mis-putaway, and real queue-ordering/aging-based task prioritization.
+Also genuinely still open within Putaway itself, not a separate module: ~~Stillage's own version of
+the multi-position bin logic~~ — **BUILT 2026-09-13**, see item 2 above and CLAUDE.md's "Stillage
+gets its own real Putaway logic" section (Rack, Ground/Floor, and Stillage are now all built — every
+storage type has real bin-suggestion logic). Still open: a cancel/exception path for a task that
+can't be completed, correcting an already-completed mis-putaway, and real queue-ordering/aging-based
+task prioritization.
 
 ## Deferred, lower priority (per your own explicit calls — don't build unprompted)
 

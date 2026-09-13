@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 // Analytics — the real, final module in the build order, deliberately
 // separate from the earlier one-off Insights page (2026-08-29 — "not the
@@ -16,6 +17,25 @@ import { useEffect, useState } from 'react';
 
 function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem('token')}` };
+}
+
+function currentUser(): any {
+  return localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null;
+}
+
+// Daily inward volume (2026-09-13, follow-on ask from the Inventory
+// ledger-export conversation — see [[wms-inventory-design]]) — the first
+// chart-based section in this app (client's own call: "real charts," not
+// another table). Deliberately inward-only: outward has nothing genuine to
+// show until Picking/Dispatch write real PICK/DISPATCH movements, and the
+// client confirmed building inward-only now rather than holding the whole
+// dashboard. "date" is a plain YYYY-MM-DD string, one row per calendar day
+// in the requested range (zero-filled server-side — a quiet day is a real
+// zero, not a gap).
+type DailyInwardRow = { date: string; units: number; pallets: number };
+
+function formatShortDate(iso: string) {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 type Warehouse = { id: string; code: string; name: string };
@@ -36,6 +56,13 @@ function formatMinutes(m: number) {
 }
 
 function AnalyticsPage() {
+  const user = currentUser();
+  // Company-wide daily-inward is COMPANY_ADMIN-only — mirrors the backend's
+  // own WAREHOUSE_SCOPED_ROLES check in AnalyticsService.dailyInward (a
+  // Warehouse Manager/Supervisor must always narrow to one of their own),
+  // same convention as the Inventory ledger export's own toggle.
+  const canGoCompanyWide = user?.role === 'COMPANY_ADMIN';
+
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseId, setWarehouseId] = useState('');
   const [marrying, setMarrying] = useState<MarryingRow[] | null>(null);
@@ -43,6 +70,15 @@ function AnalyticsPage() {
   const [abandoned, setAbandoned] = useState<AbandonedRow[] | null>(null);
   const [pickFace, setPickFace] = useState<PickFaceRow[] | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Daily Inward Volume — its own scope/date controls, separate from the
+  // operator-productivity tables below (same "own controls per section"
+  // pattern the Inventory Ledger tab already established).
+  const [dailyInwardCompanyWide, setDailyInwardCompanyWide] = useState(false);
+  const [dailyInwardFrom, setDailyInwardFrom] = useState('');
+  const [dailyInwardTo, setDailyInwardTo] = useState('');
+  const [dailyInward, setDailyInward] = useState<DailyInwardRow[] | null>(null);
+  const [dailyInwardError, setDailyInwardError] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -79,6 +115,32 @@ function AnalyticsPage() {
       });
   }, [warehouseId]);
 
+  // Daily Inward Volume — its own effect since warehouseId is OPTIONAL here
+  // (omitted entirely when dailyInwardCompanyWide is checked), unlike the
+  // operator-productivity fetch above.
+  useEffect(() => {
+    if (!dailyInwardCompanyWide && !warehouseId) return;
+    const params = new URLSearchParams();
+    if (!dailyInwardCompanyWide && warehouseId) params.set('warehouseId', warehouseId);
+    if (dailyInwardFrom) params.set('from', dailyInwardFrom);
+    if (dailyInwardTo) params.set('to', dailyInwardTo);
+    fetch(`http://localhost:3000/analytics/daily-inward?${params.toString()}`, { headers: authHeaders() })
+      .then((res) => {
+        if (res.status === 401) { localStorage.clear(); window.location.reload(); return null; }
+        return res.json().then((data) => ({ ok: res.ok, data }));
+      })
+      .then((result) => {
+        if (!result) return;
+        if (!result.ok) {
+          setDailyInwardError(Array.isArray(result.data?.message) ? result.data.message.join(' | ') : result.data?.message || 'Could not load daily inward volume.');
+          setDailyInward(null);
+          return;
+        }
+        setDailyInwardError('');
+        setDailyInward(result.data);
+      });
+  }, [warehouseId, dailyInwardCompanyWide, dailyInwardFrom, dailyInwardTo]);
+
   return (
     <div style={{ maxWidth: 1000, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
       <h1 style={{ textAlign: 'center' }}>Analytics</h1>
@@ -98,6 +160,59 @@ function AnalyticsPage() {
 
       {error && <p style={{ color: 'crimson', textAlign: 'center' }}>{error}</p>}
       {loading && <p style={{ textAlign: 'center', color: '#888' }}>Loading...</p>}
+
+      <h3 style={{ textAlign: 'center', marginBottom: 4 }}>Daily Inward Volume</h3>
+      <p style={{ textAlign: 'center', color: '#888', fontSize: 12, marginTop: 0, marginBottom: 8 }}>
+        Stock genuinely NEW to the warehouse — Receipt + Return In only. Putaway's own internal
+        staging→storage transfer isn't counted again here (every unit already counted once, at Receipt).
+        Outward isn't shown yet — Picking/Dispatch don't exist as real modules, so there's nothing genuine
+        to chart; this section grows a matching Outward pair the moment they do.
+      </p>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+        {canGoCompanyWide && (
+          <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input type="checkbox" checked={dailyInwardCompanyWide} onChange={(e) => setDailyInwardCompanyWide(e.target.checked)} />
+            All warehouses (company-wide)
+          </label>
+        )}
+        <label style={{ fontSize: 13 }}>From</label>
+        <input type="date" value={dailyInwardFrom} onChange={(e) => setDailyInwardFrom(e.target.value)} style={{ padding: 6 }} />
+        <label style={{ fontSize: 13 }}>To</label>
+        <input type="date" value={dailyInwardTo} onChange={(e) => setDailyInwardTo(e.target.value)} style={{ padding: 6 }} />
+        <span style={{ fontSize: 11, color: '#aaa' }}>(blank = last 30 days)</span>
+      </div>
+
+      {dailyInwardError && <p style={{ color: 'crimson', textAlign: 'center' }}>{dailyInwardError}</p>}
+      {dailyInward && (
+        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 32 }}>
+          <div style={{ flex: '1 1 380px', minWidth: 320 }}>
+            <p style={{ textAlign: 'center', fontSize: 13, fontWeight: 'bold', marginBottom: 4 }}>Units</p>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={dailyInward} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eee" vertical={false} />
+                <XAxis dataKey="date" tickFormatter={formatShortDate} tick={{ fontSize: 11, fill: '#888' }} axisLine={{ stroke: '#ddd' }} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: '#888' }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip labelFormatter={(label) => formatShortDate(String(label))} formatter={(v) => [v, 'Units']} />
+                <Bar dataKey="units" fill="#166534" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ flex: '1 1 380px', minWidth: 320 }}>
+            <p style={{ textAlign: 'center', fontSize: 13, fontWeight: 'bold', marginBottom: 4 }}>
+              Pallets <span style={{ fontWeight: 'normal', color: '#aaa' }}>(only counts palletized stock)</span>
+            </p>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={dailyInward} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#eee" vertical={false} />
+                <XAxis dataKey="date" tickFormatter={formatShortDate} tick={{ fontSize: 11, fill: '#888' }} axisLine={{ stroke: '#ddd' }} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: '#888' }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip labelFormatter={(label) => formatShortDate(String(label))} formatter={(v) => [v, 'Pallets']} />
+                <Bar dataKey="pallets" fill="#1d4ed8" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       <h3 style={{ marginBottom: 4 }}>Pallet Marrying — time spent loading cases onto a pallet</h3>
       <p style={{ color: '#888', fontSize: 12, marginTop: 0, marginBottom: 8 }}>

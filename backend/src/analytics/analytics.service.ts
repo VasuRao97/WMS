@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { MovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
 
@@ -254,5 +255,77 @@ export class AnalyticsService {
     }));
 
     return { marrying, putaway, abandoned, pickFace };
+  }
+
+  // Movement types that represent stock genuinely NEW to the warehouse
+  // boundary — RECEIPT (a fresh inbound receipt) and RETURN_IN (a customer
+  // return coming back). Deliberately EXCLUDES PUTAWAY_IN/
+  // PICK_FACE_REPLENISH_IN even though both are positive movements: those
+  // are purely INTERNAL transfers of stock that already arrived via
+  // RECEIPT, so summing them in here would double-count every unit that
+  // ever got put away (once as RECEIPT into staging, again as PUTAWAY_IN
+  // into storage). A real correctness point, flagged rather than silently
+  // assumed — see [[wms-inventory-design]] in memory.
+  private static readonly GENUINE_INWARD_TYPES: MovementType[] = ['RECEIPT', 'RETURN_IN'];
+
+  // Daily inward volume — units AND distinct pallets, per day, over a date
+  // range (default: the last 30 days ending today). 2026-09-13 follow-on
+  // ask from the Inventory ledger-export conversation. OUTWARD IS
+  // DELIBERATELY NOT INCLUDED — PICK/DISPATCH movements are schema-only
+  // today (no module writes them yet), so "outward" has nothing genuine to
+  // show; confirmed directly with the client to build inward-only now
+  // rather than hold the whole dashboard. Adding outward later needs zero
+  // changes here — just a second parallel query once Picking/Dispatch are
+  // real. "Pallets" is a real COUNT of distinct palletLoadId among that
+  // day's inward movements — zero on a day with no palletized activity,
+  // not a fabricated stand-in for non-palletized stock (confirmed
+  // directly: no invented proxy metric for the common non-palletized case).
+  //
+  // warehouseId is optional — company-wide when omitted, COMPANY_ADMIN/
+  // SUPER_ADMIN only, same convention as operatorProductivity above and the
+  // Inventory ledger export.
+  async dailyInward(user: any, warehouseId?: string, from?: string, to?: string) {
+    if (warehouseId) {
+      await this.assertWarehouseAccess(warehouseId, user);
+    } else if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
+      throw new BadRequestException('Select a warehouse.');
+    }
+
+    // Default window: the last 30 days ending today — a dashboard needs
+    // SOME bounded default (unlike the Ledger export's "blank = whole
+    // history," fine for a one-off dump but unreadable as a daily trend
+    // chart over years of flat history). Still overridable via explicit
+    // from/to, same date-input UX as the Ledger tab.
+    const toDate = to ? new Date(`${to}T23:59:59.999Z`) : new Date();
+    const fromDate = from ? new Date(`${from}T00:00:00.000Z`) : new Date(toDate.getTime() - 29 * 86400000);
+
+    const warehouseFilter = warehouseId ? { id: warehouseId } : companyFilter(user);
+    const movements = await this.prisma.stockMovement.findMany({
+      where: {
+        movementType: { in: AnalyticsService.GENUINE_INWARD_TYPES },
+        warehouse: warehouseFilter,
+        createdAt: { gte: fromDate, lte: toDate },
+      },
+      select: { createdAt: true, quantity: true, palletLoadId: true },
+    });
+
+    // Zero-fill every day in the range — a day with no receiving activity
+    // is a real, meaningful zero, not a gap to skip (a bar chart that
+    // silently omits down days misrepresents the trend).
+    const byDay = new Map<string, { units: number; pallets: Set<string> }>();
+    for (const d = new Date(fromDate); d <= toDate; d.setUTCDate(d.getUTCDate() + 1)) {
+      byDay.set(d.toISOString().slice(0, 10), { units: 0, pallets: new Set() });
+    }
+    for (const m of movements) {
+      const key = m.createdAt.toISOString().slice(0, 10);
+      const bucket = byDay.get(key);
+      if (!bucket) continue; // defensive — shouldn't happen, the range covers every movement queried
+      bucket.units += Number(m.quantity);
+      if (m.palletLoadId) bucket.pallets.add(m.palletLoadId);
+    }
+
+    return [...byDay.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, b]) => ({ date, units: b.units, pallets: b.pallets.size }));
   }
 }

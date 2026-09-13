@@ -16,4 +16,19 @@ export class AnalyticsController {
   operatorProductivity(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
     return this.analyticsService.operatorProductivity(user, warehouseId || undefined);
   }
+
+  // Daily inward volume (units + pallets) — warehouseId optional
+  // (company-wide for COMPANY_ADMIN/SUPER_ADMIN when omitted, enforced in
+  // the service); from/to are plain YYYY-MM-DD strings, both optional
+  // (default: the last 30 days).
+  @Get('daily-inward')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  dailyInward(
+    @Query('warehouseId') warehouseId: string | undefined,
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @CurrentUser() user: any,
+  ) {
+    return this.analyticsService.dailyInward(user, warehouseId || undefined, from || undefined, to || undefined);
+  }
 }

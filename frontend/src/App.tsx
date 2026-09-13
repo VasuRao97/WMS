@@ -29,6 +29,7 @@ const PalletsPage = lazy(() => import('./PalletsPage'));
 const AnalyticsPage = lazy(() => import('./AnalyticsPage'));
 const SimulationPage = lazy(() => import('./SimulationPage'));
 const AbcClassificationPage = lazy(() => import('./AbcClassificationPage'));
+const InventoryPage = lazy(() => import('./InventoryPage'));
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -55,8 +56,13 @@ const CAN_RUN_SIMULATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
 // server-side, but the page itself is just as readable as Insights/
 // Analytics for a Supervisor.
 const CAN_VIEW_ABC_CLASSIFICATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
+// Same tier as InventoryController's own @Roles() gate (MASTER_DATA_READ_ROLES)
+// — a report page like Insights/Analytics, not a master-data list, so it
+// gets the same "distinct destination, own constant" treatment even though
+// the role values are identical today.
+const CAN_VIEW_INVENTORY = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'pickface' | 'insights' | 'pallets' | 'analytics' | 'simulation' | 'abcclassification';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'pickface' | 'insights' | 'pallets' | 'analytics' | 'simulation' | 'abcclassification' | 'inventory';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -157,6 +163,11 @@ function App() {
             Analytics
           </button>
         )}
+        {CAN_VIEW_INVENTORY.includes(user?.role) && (
+          <button onClick={() => setTab('inventory')} style={{ fontWeight: tab === 'inventory' ? 'bold' : 'normal' }}>
+            Inventory
+          </button>
+        )}
         {CAN_VIEW_ABC_CLASSIFICATION.includes(user?.role) && (
           <button onClick={() => setTab('abcclassification')} style={{ fontWeight: tab === 'abcclassification' ? 'bold' : 'normal' }}>
             ABC Classification
@@ -213,6 +224,8 @@ function App() {
           <InsightsPage />
         ) : tab === 'analytics' ? (
           <AnalyticsPage />
+        ) : tab === 'inventory' ? (
+          <InventoryPage />
         ) : tab === 'abcclassification' ? (
           <AbcClassificationPage />
         ) : tab === 'simulation' ? (

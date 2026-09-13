@@ -5149,22 +5149,30 @@ stored inconsistently — `"01".."07"` on one aisle, `"1".."7"` on others (the s
 preservation behavior the Location range generator already documents, just landing differently
 across separate generation batches). The first version of `rackRankByWarehouse()` deduped by raw
 STRING, so it saw 14 "distinct" levels instead of 7, corrupting every bucket boundary — and even
-after that was traced, one bin's live badge still showed the wrong letter. Root cause turned out
-deeper: **the SAME (aisle, flank, rack, depth) position has genuine DUPLICATE `Location` rows on
-TNR8's Aisle 1** — 632 extra rows across 631 distinct `code` values (SPR and Ground/Floor both),
-different `id`s, identical `code`, differing only in Level-string spelling — almost certainly Aisle
-1 having been generated twice, once via each spelling convention. This is a real, pre-existing data
-integrity issue independent of Rack Rank — flagged to the client, NOT fixed/deleted without their
-decision (real TNR8 data, not throwaway). Two things were fixed on this feature's own side
-regardless of that larger issue: `rackRankByWarehouse()`'s Level grouping now dedupes/sorts by
-`Number(level)`, returning a canonical bare-number string (`"7"`, not `"07"`) — frontend lookups
-normalize a Location's own `level` the same way (`normLevel()`, both `LocationsPlanView.tsx` and
-`Locations3DView.tsx`) before joining, so either spelling resolves to the correct rank regardless of
-which duplicate row a lookup happens to land on. Separately, 2D's Level Rank badge is now gated on a
+after that was traced, one bin's live badge still showed the wrong letter. Fixed:
+`rackRankByWarehouse()`'s Level grouping now dedupes/sorts by `Number(level)`, returning a canonical
+bare-number string (`"7"`, not `"07"`) — frontend lookups normalize a Location's own `level` the
+same way (`normLevel()`, both `LocationsPlanView.tsx` and `Locations3DView.tsx`) before joining, so
+either spelling resolves to the correct rank. Separately, 2D's Level Rank badge is now gated on a
 SPECIFIC Level being selected (not "All Levels") — a box collapsing several real Levels into one
 (this view's own long-standing `L{min}-L{max}` summary) has no single Level Rank to honestly show;
 Aisle Rank has no such ambiguity (one value for the whole aisle) so only the second badge needed
 this gate.
+
+**A "632 duplicate Location rows" claim made while investigating this bug was itself wrong — corrected
+2026-09-13, same day, once the client asked what it actually meant.** The original diagnosis leapt
+from "the raw-string dedupe saw 14 level values instead of 7" straight to "so there must be real
+duplicate rows in the database," without ever running a real duplicate-detection query to confirm
+it. A direct re-check against the live TNR8 data (grouping by `code` across the whole warehouse, and
+separately by the real physical position `storageType+flankNumber+rack+block+depth+Number(level)`)
+found **zero** duplicates either way. `Location` also carries a real DB-level
+`@@unique([warehouseId, code])` constraint (see schema.prisma) — two rows sharing one `code` in the
+same warehouse is structurally impossible at the database layer, which the original claim's own
+framing ("different `id`s, identical `code`") directly contradicted; that alone should have been
+caught before writing it down. The real, and only real, bug here was the in-memory string-vs-numeric
+grouping bug fixed above — nothing on TNR8's actual data needs cleanup, and nothing was ever touched.
+Lesson: a query result that looks like a data-integrity finding still needs its own direct
+verification query before being written up as one, not just inferred from a symptom.
 
 **Frontend**: a 7th `ColorMode` (`'rackRank'`) in both 2D (`LocationsPlanView.tsx`) and 3D
 (`Locations3DView.tsx`). 2D shows Aisle Rank as the box's own fill color plus a top-right badge,
@@ -5186,13 +5194,9 @@ no Aisle Rank row (matching the unconfigured aisle axis). `tsc --noEmit`(backend
 both clean. **3D's mirrored logic was not independently click-tested this pass** — it shares the
 exact same `normLevel`/lookup functions verified in 2D, but hasn't been separately exercised live.
 
-**Real, unresolved open item — needs the client's decision, not a code fix**: TNR8's Aisle 1 has
-632 genuine duplicate Location rows (real `id`s, same `code`) — affects real counts (Total
-Locations, Storage Type Mapping's Mapped column, etc. are all somewhat inflated by this on Aisle 1
-specifically) beyond just Rack Rank's own display. Needs the client to confirm before any cleanup —
-identifying and deleting genuine duplicates (keeping one canonical row per code, verified to have no
-independent stock/movement history before deletion) on real TNR8 data is exactly the kind of
-action this project's own standing rules require explicit confirmation for.
+~~**Real, unresolved open item — needs the client's decision, not a code fix**: TNR8's Aisle 1 has
+632 genuine duplicate Location rows...~~ — **RETRACTED 2026-09-13, same day.** See the correction
+above: this was never real. No cleanup is needed and nothing on TNR8's real data was ever touched.
 
 ### Dock zone: `numberOneNearDock` — a real gap found live-testing Bin Rank against TNR8 (2026-09-12/13)
 A direct continuation of "Dock-relative Putaway placement — Topic 2" and "'Bin Rank'" above, found
@@ -5268,6 +5272,302 @@ dropdown" split to any new page — a page that's mostly CRUD over a list belong
 that's a daily task/workflow (like Gate & Yard or Inbound Orders) stays top-level. **`Dock Doors`
 joined the dropdown 2026-08-27** (live-testing follow-up) — same reasoning, occasional-edit master
 data, not a daily workflow.
+
+### Stillage gets its own real Putaway logic — a physical redesign plus a new bin-suggestion strategy (2026-09-13)
+Closes the last open item from the "step back, what's left in Putaway" review (ASRS above was item
+1; this was item 2 — "Stillage's own version of the Putaway logic"). Unlike ASRS, the client
+confirmed Stillage is real and wanted for a client: "we need stillage one." Design conversation
+first, worked through in stages (see the `wms-putaway-design` memory for the full round-by-round
+trail) — the client's own physical description drove every decision: self-stackable cage pallets
+("if we say its a 3 deep config @ 3 high, so there are total 9 stillages in that bin"), and the
+core rule — "FIFO is very tough so we need to empty the full bin first then only allow next putaway
+into this" — because cages stack directly on each other with no frame giving independent access
+per layer, unlike a real Rack/Drive-in level.
+
+**A genuine physical-model redesign, not just new placement logic** — mirrors Ground/Floor's own
+2026-09-06 "one row per real position" rewrite exactly, for the identical underlying reason. Before
+this, one `Location` row was a WHOLE Stillage bin (`depth×width×height` collapsed into one aggregate
+capacity number) — there was no way to know which part of a bin held what SKU. Now: `rack` is
+REUSED as the COLUMN number within a `stack` (same "meaning depends on storageType" convention
+Ground's own redesign already established for the identical field), `depth` is this position's
+place within its column (1=front..N=back, single-file — cages can't be dug past, the same physical
+constraint as a Drive-in lane), `width` describes the whole bin's total column count (repeated on
+every row), and `height` (stillages stacked vertically at each position) stays a real per-row
+CAPACITY number, not a further-split position — cages have no per-layer access, so this is the one
+dimension that genuinely can't become its own row. Code format: `ST-{aisle}-{stack}-C{rack}-D{depth}`.
+Confirmed a clean slate before touching any of this — a direct DB check found zero real `STILLAGE`
+rows or `WarehouseStorageType` config anywhere, so no backfill was needed (the client's "I did it
+for a client" referred to real-world/consulting experience with Stillage racking, not existing data
+in this system).
+
+**The class-based sharing rule, confirmed point by point**: "like we did for ground, A class can be
+given full 3x3 (we need to ask for the bin size at start), C can be kept in 1 column each (1 SKU per
+column of the bin)" — then B confirmed to follow A ("like A for now"). This maps exactly onto the
+EXISTING `WarehouseStorageType.maxSkusClassA/B/C` config with zero new schema — no coincidence, the
+client's own rule is structurally identical to Rack's already-built cap math, just applied at the
+BIN level instead of the lane level: A/B both use the schema's own default cap of 1 (one SKU may use
+the WHOLE bin, spanning as many columns as it needs — unbounded within its own bin, since the cap
+only ever restricts a DIFFERENT SKU); C uses the default cap of null/unbounded (any number of
+distinct SKUs, each confined to its own column — bounded for free by the bin's own real column
+count, since the occupant count can never exceed it). D falls through to C's cap, same "D behaves
+like C" convention as everywhere else in this codebase. Same-SKU top-up is aging-gated (same-day by
+default), confirmed explicitly ("same aging is fine for top up") — a multi-trip delivery keeps
+filling its own bin/column rather than needing a fresh one each trip. Outbound-proximity + the
+combined ABC×FMS priority-score placement Ground uses was also confirmed reused as-is ("2) yes").
+
+**New `PutawayTasksService.suggestStillageBin()`** — a fully separate method from
+`suggestRackBin()`/`suggestGroundBin()`, same "keep storage-type logic separate" discipline Drive-in
+and Ground were already split out with. Structurally closest to `suggestGroundBin()`'s own
+boundary-respecting branch (bin → columns → deepest-first fill within a chosen column), but
+deliberately simpler in two flagged ways: no "closed column" lifecycle tracking (dormant either way
+until Picking exists and starts writing negative movements — this just wasn't discussed for
+Stillage) and no row-axis (NORTH/SOUTH second dock wall) placement, only the aisle-axis combined
+priority score — Stillage never got its own dedicated row-axis dock-zone config the way Ground did.
+Both are easy follow-ons if ever asked for. `suggestBin()`'s dispatch chain extended: Rack → Ground →
+Stillage, tried in that order (same "simple, explicitly-flagged placeholder ordering" caveat the
+Rack→Ground order already carried).
+
+**A real, pre-existing bug found and fixed along the way, not introduced by this work**:
+`WarehousesService.getMappingSummary()`'s Storage Type Mapping table computed
+`positions = depth × width × height` per row for anything non-Rack — correct back when one row was
+the WHOLE bin, but a genuine over-count ever since Ground's OWN 2026-09-06 redesign made `depth` a
+per-row POSITION and `width` the bin's total column count (repeated per row) rather than per-row
+multipliers (e.g. a real 4-column × 3-deep Ground bin, 12 genuine positions, was being reported as
+96). Never caught earlier since this table is a QA/cosmetic aid, not itself load-bearing for any
+real placement decision — found while giving Stillage the identical redesign, which would have
+inherited the exact same bug immediately. Fixed: Rack AND Ground/Floor both count as 1 position per
+row (both individually addressable since their respective redesigns); Stillage counts as `height`
+per row.
+
+**Also fixed, same discovery**: `WarehousesService`'s own `STORAGE_TYPE_VALUES` (the Warehouse
+Master's storage-type BREAKDOWN list, i.e. `WarehouseStorageType` — a separate, independently-
+maintained list from `LocationsService`'s own per-bin options) had never actually included
+`STILLAGE` at all — a real, previously-unreachable gap, not a data issue, since `Location.storageType`
+is plain free text with no migration needed either way. Added, with the matching frontend dropdown
+option (`WarehousesPage.tsx`) and Excel template text (`Warehouse_Master_Import_Template.xlsx`,
+both `templates/` and `frontend/public/templates/` copies).
+
+**Frontend**: `locationBoxUtils.ts`'s `posOf()` extended to group Stillage by `stack~column`
+(zero-padded composite key), same convention Ground's own redesign already established — this one
+change is what lets both Plan Views render Stillage as a real grid. `LocationsPlanView.tsx` (2D) and
+`Locations3DView.tsx` (3D) both gained a dedicated STILLAGE branch mirroring their existing
+GROUND_FLOOR one almost verbatim (one box per real front-to-back position, side by side; `height`
+shown as per-box capacity text, not a spatial axis) — replacing the old single-box-per-bin fallback
+both files previously fell through to for this type. 3D's periodic cross-aisle logic and its
+per-bin outline border (`computeGroundBinOutlines`, "just give a border") were both generalized to
+cover Stillage bins (`stack`) alongside Ground's own (`block`+`depthTier`), with a distinct darker-
+pink outline color matching Stillage's own palette. `LocationsPage.tsx`'s generator form now
+requires Width/Depth/Height for Stillage (previously Width/Depth silently defaulted to 1 with no
+generator input at all, since a whole bin was one row); the manual edit form gained the same
+"Column *" field Ground's own edit form already has. Both Location Excel templates (import + the
+Warehouse breakdown's own Legend text) updated to match, including fixing the Location template's
+own pre-existing Ground/Stillage example rows, which had never carried a Rack/Column value since
+before Ground's 2026-09-06 redesign — a second real, pre-existing latent template bug found the same
+way as the getMappingSummary one, both fixed together.
+
+Verified two ways. A throwaway-company diagnostic script invoking the real, unmodified
+`LocationsService.generate()`/`PutawayTasksService.suggestBin()` directly against the live dev DB (no
+reimplementation): generating a 2-stack/3-column/2-deep bin produced exactly the expected 12 rows
+with the exact expected codes and per-row capacity (`height` alone, not depth×width×height); an
+A-class SKU's first 3 units all landed in ONE bin (stack 01), correctly spanning 2 different columns
+as it grew, matching "the whole bin, spanning as many columns as it needs"; a SECOND, different
+A-class SKU was correctly BLOCKED from that same bin and opened a fresh one (stack 02) instead; a
+C-class SKU was then correctly blocked from BOTH now-exclusively-claimed bins (NEEDS_BIN); a fresh
+warehouse's single bin correctly gave 3 different C-class SKUs one column each, correctly blocked a
+4th C-class SKU once all 3 columns were used (NEEDS_BIN); and a same-SKU top-up correctly reused its
+own existing column, deepest-first (depth 2, then depth 1). Then re-verified live through the actual
+rendered UI (a fresh throwaway company, registered through the real Register flow): confirmed the
+Warehouse Master's storage-type breakdown now offers Stillage and creates a real `WarehouseStorageType`
+row with the exact confirmed default caps (`maxSkusClassA: 1, maxSkusClassB: 1, maxSkusClassC: null`);
+generated a real 2×3×2 Stillage bin through the actual Locations generator form and confirmed all 12
+rows created with the correct codes; confirmed the Table View's Capacity column correctly shows 3
+per row (not the old inflated depth×width×height number); confirmed 2D Plan View renders a genuine
+6-row grid (`ST01-C1`..`C3`, `ST02-C1`..`C3`, each split into `D1`/`D2` boxes showing "×3 high") with
+correct Rows 1-6 numbering; confirmed click-to-inspect shows the correct Code/Zone Type/Storage
+Type/Dimensions/Status with "Empty — no current occupant"; confirmed 3D renders the aisle as a real,
+non-crashing volume (with visible internal box seams) both as an unselected footprint and swapped
+into per-bin detail, and confirmed switching to "A/B/C Class" color mode works with no console
+errors (correctly all-grey/Empty, since no stock exists yet). **3D's per-position box rendering was
+not independently click-tested this pass** (same caveat Rack Rank's own 3D build carried) — it
+shares the identical `posOf()`/box-splitting mechanism 2D's own click-tested grid already confirms
+correct, and mirrors Ground's several-times-verified 3D pattern exactly, but wasn't itself clicked
+through position by position. `tsc --noEmit`(backend)/`tsc -b`(frontend) both clean throughout. Both
+throwaway companies cleaned up afterward.
+
+**Genuinely still open, not part of this build**: Stillage's own row-axis (second dock-wall)
+placement refinement and "closed column" lifecycle tracking (both flagged above as easy follow-ons,
+not discussed); Insights' Storage Utilization report still deliberately excludes Stillage (a
+`laneKeyOf()`-style universe it never joined — left as-is, not extended, since that wasn't asked for
+either). The "TNR8 duplicate Location rows" item from the Rack Rank work above has since been
+retracted as a false alarm — see that section's own correction — so there is no longer any
+TNR8 data-integrity item pending.
+
+### Inventory — the first real "on-hand" screen (2026-09-13)
+Closes the long-flagged ROADMAP gap: "there is still no screen anywhere showing what's on hand at
+Location X." Client-provided a real sample sheet (SL/SKU code/Material desc/quantity/aging/Storage
+system/pallet no/bin no/category/last touched on/ABC/FMS) and asked for two views: full line-item
+(one row per bin/pallet) and a SKU-level rollup "so we can calculate ABC." Two things confirmed
+before building, per this project's align-before-coding convention: the ABC/FMS columns reuse the
+EXISTING monthly-computed classification (`SkuWarehouseClass`, real dispatch-history-derived) rather
+than a new on-hand-quantity-based methodology; and the view is scoped per warehouse, matching every
+other report page in this app (Insights/Analytics/Storage Utilization all are).
+
+**No new schema at all** — every column is a direct derivation off data already being written
+(`StockMovement`, `Location`, `Sku`, `SkuWarehouseClass`, `Pallet`/`PalletLoad`), same "always
+derive, never store a counter" philosophy as everywhere else in this codebase. New `inventory/`
+module (`InventoryService`/`Controller`) — `GET /inventory/line-items`/`GET /inventory/sku-summary`,
+both `?warehouseId=X`, gated `MASTER_DATA_READ_ROLES` matching Insights/Analytics' own tier. One
+shared `loadRawRows()` walks the warehouse's whole `StockMovement` history ONCE (ascending
+`createdAt`) to build per-(location,sku) balances, last-touched timestamp, and a "representative"
+`receivedDate`/pallet code (whichever the most recent stock-IN movement carried, since a bin can in
+theory receive from more than one pallet/date over its life via a same-SKU top-up) — both views are
+just this same accumulated data read two different ways, not two separate queries.
+
+**Column mapping**: `binCode` uses `displayCode()` (Rack Name when buildable, else raw `code` —
+same convention the Putaway task queue/Location Labels already use); `agingDays` is
+`NOW − receivedDate` in whole days (the same "how old is this stock" field `suggestBin()`'s own
+lane-aging logic already reads); `abcClass`/`fmsClass` follow the identical override-when-known
+chain `suggestBin()` itself uses (`SkuWarehouseClass` first, falling back to `Sku.abcClass`,
+unclassified defaults to C). **SKU Summary's own "aging" is a judgment call, flagged rather than
+silently assumed**: the OLDEST `receivedDate` found across all of that SKU's current stock, not an
+average — a genuinely stale lot should never hide behind newer stock of the same SKU at a rollup
+level. `binCount` (SKU Summary only) is how many distinct bins/pallets a SKU's total is spread
+across.
+
+**Frontend**: new standalone `InventoryPage.tsx`, top-level nav next to Analytics (same access tier
+as Insights/Analytics — `CAN_VIEW_INVENTORY`, its own constant even though the role values are
+identical today, same "distinct destinations that could diverge" convention this app already
+applies to Insights vs. Analytics). A warehouse picker, a Line Items/SKU Summary toggle (same
+pattern as Locations' own Table View/Plan View toggle), and a client-side search box matching every
+other list page's own convention. Deliberately **no Excel export** on this pass — Inventory reads as
+a report page (Insights/Analytics' own tier), and neither of those has export either; the
+master-data-list-page export convention wasn't extended here, a scope choice not an oversight.
+
+Verified two ways. Direct API checks against a throwaway company with real seeded `StockMovement`
+rows (two lots of one SKU at different ages/bins, one pallet-linked lot of a second SKU with a real
+`SkuWarehouseClass` override): Line Items showed all 3 rows with exactly correct
+quantity/aging/binCode(Rack Name)/palletCode/category/ABC×FMS per row; SKU Summary correctly summed
+the two-lot SKU to 15 units across 2 bins while reporting the OLDER lot's age (5 days, not the more
+recent 1-day one) — confirming the "worst case, not average" rule actually took effect, not just
+stating it. Then live through the actual rendered UI (logged in via the API+localStorage token
+trick): both views rendered identically to the API data, including the color-coded ABC/FMS badges;
+the search box correctly narrowed SKU Summary from 2 rows to 1 when searching "gadget." `tsc
+--noEmit`(backend)/`tsc -b`(frontend) both clean. Throwaway company cleaned up afterward.
+
+**Immediately flagged as next, not built this pass — see ROADMAP.md's matching open items**: (1) a
+transaction-level ledger export (every individual inward/outward `StockMovement`, downloadable for
+any date range, not just a current-balance snapshot); (2) an Analytics dashboard for daily inward/
+outward volume in units AND pallets. Both are real, distinct asks from this same conversation,
+deliberately not designed or built yet — the client explicitly asked to stop and hand off rather
+than keep building mid-session.
+
+### Inventory — transaction-level ledger export, item (1) above (2026-09-13, fresh session)
+
+Aligned before coding (see [[wms-align-before-coding]] in memory): signed `quantity` column (not
+split In/Out), raw rows only (no running balance), human-readable movement-type labels, From/To date
+inputs with no forced default (blank = whole history), third tab on the existing `InventoryPage.tsx`.
+One real correction mid-discussion: scope isn't a strict per-warehouse/company-wide binary — a
+COMPANY_ADMIN needs a company-wide download too. Resolved by reusing
+`AnalyticsService.operatorProductivity`'s existing convention rather than inventing a new one:
+`warehouseId` is optional — omitted means company-wide, but ONLY for COMPANY_ADMIN/SUPER_ADMIN; a
+`WAREHOUSE_SCOPED_ROLES` caller (Manager/Supervisor) omitting it gets a real
+`BadRequestException('Select a warehouse.')`, same as Analytics does today.
+
+**Backend**: `GET /inventory/ledger` (JSON) and `GET /inventory/ledger/export` (XLSX), both in
+`InventoryService`/`InventoryController`. One shared `loadLedgerRows()` queries `StockMovement`
+directly (no new schema) — date-range filters on `createdAt` (the real transaction timestamp, not
+`receivedDate`, which is carried-forward from the original receipt and doesn't move with the
+ledger). Excel export follows the same `json_to_sheet`/streamed-buffer convention as every other
+export in this codebase (Gate Entries' `exportRows()` was the closest precedent) — bakes in human
+movement-type labels ("Putaway In," not `PUTAWAY_IN`) server-side since the file leaves the app.
+`MOVEMENT_TYPE_LABELS` exists in two places on purpose: a backend copy (Excel-only) and a separate
+frontend copy (`MOVEMENT_TYPE_OPTIONS`/`labelFor`, for on-screen display) — mirrors this codebase's
+existing `STORAGE_TYPE_LABELS` (backend validation) vs. `STORAGE_TYPE_OPTIONS`/`labelFor` (frontend
+display) split, not a duplication bug.
+
+**Frontend**: third view (`'ledger'`) on `InventoryPage.tsx`, its own fetch effect (warehouseId
+optional, unlike Line Items/SKU Summary's always-required one), an "All warehouses (company-wide)"
+checkbox gated on `user?.role === 'COMPANY_ADMIN'`, From/To date inputs, an Export-to-Excel button
+(fetch+blob+download, same convention as `CustomersPage`'s own `handleExport`). Quantity column
+color-coded green (+) / red (−).
+
+Verified end-to-end via a throwaway company (`LEDTEST01`, fully cleaned up afterward — including its
+company-scoped `Sku` row, a cleanup-script gap caught and fixed mid-session): 2 warehouses, a
+COMPANY_ADMIN and a WAREHOUSE_MANAGER scoped to only one of them, 4 seeded `StockMovement` rows
+across 3 dates, real login via the actual `/auth/login` flow (not hand-crafted JWTs). Confirmed via
+curl: admin company-wide (no warehouseId) returns all 4 rows; manager omitting warehouseId gets a
+real 400; manager on their own warehouse gets 200; manager on the OTHER warehouse gets a real 403;
+date-range narrowed correctly to 2 rows. Excel export downloaded and inspected directly
+(`XLSX.readFile`) — correct headers, human labels, signed quantities. Then the same scenarios live
+in the browser: admin sees the checkbox and toggling it correctly changed 2→4 rows; manager's Ledger
+tab has NO company-wide checkbox at all and correctly fetched only their own warehouse. `tsc
+--noEmit`(backend)/`tsc -b`(frontend) both clean.
+
+Item (2), the daily inward/outward Analytics dashboard, is still untouched — see ROADMAP.md.
+
+### Ledger From/To Location columns (2026-09-13, same session, right after the export)
+
+Follow-on ask: "from location & to location in ledger if it makes sense." It does, but only cleanly
+for genuine transfers — `PUTAWAY_OUT`/`PUTAWAY_IN` and `PICK_FACE_REPLENISH_OUT`/`_IN` each share one
+`referenceId` (a `PutawayTrip`/`PickFaceTrip`, written together in one transaction at trip
+completion). Every other type (`RECEIPT`, `PICK`, `DISPATCH`, `RETURN_IN`, `ADJUSTMENT`) has no
+tracked partner location. Confirmed directly rather than assumed: for real pairs, keep today's 2 raw
+rows but enrich BOTH with the real source+destination (not collapsed into 1 combined row); for
+single-sided types, fill whichever side the movement's direction implies. One refinement made and
+flagged, not silently assumed: the original framing had `ADJUSTMENT` filling neither side, which
+would have silently dropped its location entirely (a regression from the old single "Bin/Location"
+column) — fixed by generalizing "fill by direction" to ANY non-paired type via the sign of
+`quantity` (positive → `toLocation`, negative → `fromLocation`), covering Adjustment too with zero
+special-casing.
+
+`InventoryService.loadLedgerRows()` builds a `(referenceType, referenceId) -> movementType ->
+binCode` map from the already-fetched rows (`PAIRED_PARTNER_TYPE`, paired types only — no second
+query) so each row can resolve its own `fromLocation`/`toLocation` from its trip partner (paired) or
+its own bin by quantity sign (everything else). The old single `binCode` field is gone, replaced by
+these two everywhere (JSON, Excel export, and the frontend table/search). Verified via a fresh
+throwaway company (`FROMTO01`, cleaned up) covering all 6 real scenarios — Receipt (to-only), a real
+Putaway pair (both legs show from=Staging/to=Storage), Pick (from-only), Adjustment both signs —
+confirmed via curl, the Excel export, and a live-browser screenshot. `tsc --noEmit`(backend)/`tsc
+-b`(frontend) both clean.
+
+### Analytics — Daily Inward Volume, the dashboard's inward half (2026-09-13, same session)
+
+Client's own answers: build inward-only now (outward deferred until Picking/Dispatch are real);
+**real charts**, not another table — the first chart-based page in this app, so `recharts@3.10.1`
+was added (officially supports React 19); pallet count stays honest — zero for non-palletized stock,
+no invented proxy metric.
+
+**A real correctness point caught before building**: "inward" means `RECEIPT` + `RETURN_IN` ONLY —
+genuinely new stock entering the warehouse boundary. `PUTAWAY_IN`/`PICK_FACE_REPLENISH_IN` are
+positive movements too, but they're purely INTERNAL transfers of stock that already arrived via
+`RECEIPT` — including them would double-count every unit that ever got put away (once as `RECEIPT`
+into staging, again as `PUTAWAY_IN` into storage). Flagged directly rather than silently building the
+double-counting version.
+
+**Backend**: `AnalyticsService.dailyInward()` / `GET /analytics/daily-inward` — `warehouseId`
+optional (company-wide for COMPANY_ADMIN/SUPER_ADMIN when omitted, same convention as
+`operatorProductivity` and the Ledger export), `from`/`to` optional (default: last 30 days ending
+today — a new, deliberately BOUNDED default, unlike the Ledger export's own "blank = whole history,"
+since an unbounded window would make a daily trend chart unreadable). One query over `StockMovement`
+grouped by UTC calendar day, zero-filled for every day in range — units = sum of signed quantity,
+pallets = count of DISTINCT `palletLoadId` among that day's genuinely-inbound rows (honestly zero on
+an all-non-palletized day).
+
+**Frontend**: `AnalyticsPage.tsx` gained a "Daily Inward Volume" section (own scope/date controls,
+mirroring the Ledger tab's pattern) with two separate single-series `recharts` `BarChart`s (Units,
+Pallets) — per the dataviz skill's "one axis" rule, two measures of different scale never share a
+dual-axis chart.
+
+Verified via a fresh throwaway company (`DAILYIN01`, fully cleaned up): a palletized Receipt (60
+units/1 pallet), a non-palletized Receipt immediately followed by its own full Putaway trip (Receipt
+40 + Putaway Out/In — confirmed the day shows 40, NOT 80, proving no double-count), a Return In (15
+units), a second warehouse's Receipt (confirmed invisible per-warehouse, present company-wide), and
+one intentionally quiet day (confirmed zero, not skipped). Confirmed via curl (JSON) and live in the
+browser (both charts render correctly); WAREHOUSE_MANAGER 400/200/403 access pattern also confirmed
+via curl. `tsc --noEmit`(backend)/`tsc -b`(frontend) both clean.
+
+Outward is still not built — needs Picking/Dispatch to exist and write real movements first; adding
+it needs zero changes here, just a second parallel query/chart pair.
 
 ## Status: what's built vs. what's next
 
