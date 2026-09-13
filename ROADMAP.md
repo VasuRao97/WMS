@@ -15,8 +15,12 @@ follow-on design conversation proposed, then BUILT, a Rack-specific ranking trea
 A/B/C + Level Rank F/M/S, two separate numbers rather than Ground's one blended score) — see
 CLAUDE.md's "Rack Rank" section. Building it surfaced a real, separate, UNRESOLVED data-integrity
 issue on TNR8's real warehouse: Aisle 1 has 632 duplicate `Location` rows (real `id`s, same `code`)
-— needs the client's decision before any cleanup, not something to fix unilaterally. Before that:
-the FMS×ABC combined-classification study (design
+— needs the client's decision before any cleanup, not something to fix unilaterally. Then, in a
+deliberate "step back — what's left in Putaway" review, **ASRS was removed as a storage type
+entirely** — the client's own call, since a real ASRS installation runs its own dedicated WCS/WES
+software (see CLAUDE.md's "ASRS removed as a storage type" section) — zero real data anywhere ever
+used it, so this was a pure code/template cleanup, no migration. Before all of that: the FMS×ABC
+combined-classification study (design
 settled through a real round-by-round conversation, then built 2026-09-08 — see CLAUDE.md's
 "FMS×ABC combined classification" section), its same-day display follow-up (a 4th occupancy-overlay
 color mode, "F/M/S Class," in 2D/3D/Simulation), Ground/Floor's own FMS×ABC placement (2026-09-09 —
@@ -29,15 +33,37 @@ reverted. Rack's aisle/level tiebreaks are independent (ABC picks aisle, FMS pic
 are blended into one score (AF nearest, CS farthest, real gradation in between). (A separate "Dock
 Proximity" mode was tried and fully reverted the same day, before ever being committed — a misread
 of the client's own ask, see CLAUDE.md's "A misread, built then reverted" note — Priority Gradient
-and Bin Rank are the two ABC×FMS visualizations that actually shipped.) Next candidates: the
-reslotting/consolidation suggestion engine (now doubly unblocked — Topics 1/2 AND FMS are all in
-place), asking whether Rack should get its own analogous Bin Rank treatment (flagged, not confirmed),
-or Inventory (the next module in the build order) — see "Immediate candidates" below.
+and Bin Rank are the two ABC×FMS visualizations that actually shipped.) Rack's own analogous ranking
+treatment (Aisle Rank + Level Rank) is now BUILT too, per the 2026-09-13 note above. Next
+candidates: the reslotting/consolidation suggestion engine (now doubly unblocked — Topics 1/2 AND
+FMS are all in place), Stillage's own Putaway logic (the only storage type with none at all), or
+Inventory (the next module in the build order) — see "Immediate candidates" below.
 
 See the 2026-09-06 session notes further down for that whole day's earlier work (Ground/Floor
 Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
 placement Topic 2, the "Rows 1-N" summary), and 2026-09-07 for the 3D Plan View/camera/depth-model
 work and the ProductCategory cleanup.
+
+## Session note (2026-09-13, same day, immediate follow-up — a Putaway step-back review, then ASRS removed)
+
+Right after Rack Rank shipped, a deliberate "step back — what's left across the whole Putaway
+area" review was requested rather than continuing to build. Produced a full categorized inventory
+(storage-type coverage, task-lifecycle gaps, assignment/fairness, Pick Face scope, the reslotting
+engine, the TNR8 data issue, role gating) — see CLAUDE.md's Putaway sections and the
+`wms-putaway-design` memory for the full detail behind each item.
+
+Working through it one by one, item 1 (ASRS's own bin-suggestion strategy, parked since the
+2026-09-02 Drive-in split) resolved immediately: **"i need to read about ASRS, we can actually
+delete from WMS for now, ASRS has its own dedicated software for this."** Confirmed zero real data
+impact first (a read-only diagnostic script found 0 `Location` rows and 0 `WarehouseStorageType`
+rows anywhere using `storageType: 'ASRS'`, across every company) — since `storageType` is a plain
+free-text `String`, not a Postgres enum, this needed no schema migration, purely a code/UI/template
+cleanup. Removed from the shared `RACK_STORAGE_TYPES` constant and its several documented
+independent frontend/backend copies, every Storage Type dropdown, the Rack Rank Level-Rank scoping,
+and all four Excel import templates (both `templates/` and `frontend/public/templates/` copies of
+Warehouse Master and Location Master) — including a real example row in the Warehouse template that
+had used `ASRS` as its sample value, changed to `Stillage`. See CLAUDE.md's "ASRS removed as a
+storage type" section for the full file-by-file detail and verification.
 
 ## Session note (2026-09-12/13 — dock zone `numberOneNearDock`, and a Rack ranking proposal)
 
@@ -902,7 +928,7 @@ Returns → Analytics
 | Master Data (Warehouses, SKUs, Customers, Locations, Users) | ✅ Built |
 | Yard & Gate Management | ✅ Built (basics + one competitor-research pass) |
 | **Inbound** | ✅ Basics built + two deep-dive passes — order maker (+ Excel bulk import + real ERP push), order matching, scan-based receiving, Complete Inward Process/Dock Out |
-| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). (2026-09-06) **Ground/Floor Putaway built end to end** — its own independent `suggestGroundBin()` (not shared with Rack's `suggestRackBin()`, a deliberate ask), a column-lifecycle rule feeding the still-unbuilt reslotting engine, per-class `respectsColumnBoundariesA/B/C/D` toggles, plus a real editor for the previously-dead `maxSkusClassA/B/C` field. Still open: **Stillage's own version of the multi-position logic** (the only storage type with none at all now), a cancel path, correcting an already-completed mis-putaway, ASRS's own bin-suggestion strategy, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), and Pick Face for Drive-in/ASRS/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
+| **Putaway** | ✅ Core logic built + live-verified (2026-08-28), three real bin-suggestion bugs found and fixed via live testing (2026-08-29) — BATCH/IMMEDIATE trigger modes, ABC/multi-deep-lane-aware bin suggestion (now reservation-aware, fullest-lane-preferring, and flank-correct), scan-driven staging→bin execution (claim/complete, no override, now accepts the human "Rack Name"), Multi-SKU Lane Exception workflow, receipt-level PUTAWAY_COMPLETE signal, a Truck No./PO Number filter, (2026-09-01) Pallet consolidation — "marrying" loose cases onto a pallet before Putaway, folded into the existing Inbound scan, shifting the task-creation trigger to "pallet closed" for that path — (2026-09-02) Drive-in split from SPR/ASRS into its own bin-suggestion strategy (whole-column absolute single-SKU, deepest-tier-first/bottom-up fill) — and (2026-09-02) operator-assignment fairness (live "who goes next" recommendation ranked by idle time among MHE-capable operators, oldest-staged-stock priority signal, Supervisor→Manager escalation if ignored — a live recommendation, not a hard task lock). — and (2026-09-05) **Pick Face for SPR**: a `Warehouse.pickFaceEnabled` toggle gates a daily reslotting job keeping each SPR pick face location (whole bottom level of a lane) stocked with the warehouse's current highest-priority A/B-class SKUs, refilling an empty slot from reserve or proactively evicting a lower-class occupant for a higher one (strict class-tier order, C never eligible, no fixed SKU-to-location binding — purely derived from live on-hand); new `PickFaceTask`/`PickFaceTrip` models (not a `PutawayTask` variant) with the same scan-driven claim/complete UX, dormant against real depletion until a future Picking module writes `MovementType.PICK` (schema-only today). (2026-09-06) **Ground/Floor Putaway built end to end** — its own independent `suggestGroundBin()` (not shared with Rack's `suggestRackBin()`, a deliberate ask), a column-lifecycle rule feeding the still-unbuilt reslotting engine, per-class `respectsColumnBoundariesA/B/C/D` toggles, plus a real editor for the previously-dead `maxSkusClassA/B/C` field. (2026-09-13) **ASRS removed as a storage type entirely** — the client's own call, real ASRS runs its own dedicated WCS/WES software, zero real data anywhere ever used it — and Rack got its own **Aisle Rank (A/B/C) + Level Rank (F/M/S)** display, two independent numbers since Rack's aisle/level are genuinely different kinds of cost unlike Ground's single lever. Still open: **Stillage's own version of the multi-position logic** (the only storage type with none at all now), a cancel path, correcting an already-completed mis-putaway, Ground/Block operator routing, unloading-team assignment fairness, Pallet reuse (needs Picking to ever actually deplete a load), and Pick Face for Drive-in/Ground/Stillage (deliberately deferred, SPR only for now) — see `wms-putaway-design` memory |
 | Inventory | ⬜ Not started — no live on-hand stock view exists anywhere yet |
 | Outbound | ⬜ Not started — schema exists, no logic/UI |
 | Picking | ⬜ Not started — **when this starts: Task Interleaving is a high-priority item, not a deferred one** (2026-09-07, from the top-WMS gap check — see the Deferred section for why) |
@@ -1093,12 +1119,14 @@ Pick one — these are the live options on the table, not a forced order:
    CLAUDE.md's "FMS×ABC combined classification — the placement matrix" section. Ground's own
    FMS-driven placement (a combined priority score + "Priority Gradient"/"Bin Rank" visuals) is also
    now **BUILT 2026-09-09** — see the two same-day session notes above. Stillage's own version is the
-   one genuine follow-on left (never discussed). **Rack (SPR/Drive-in/ASRS) getting its own ranking
+   one genuine follow-on left (never discussed). **Rack (SPR/Drive-in) getting its own ranking
    treatment — asked AND BUILT 2026-09-13** — see CLAUDE.md's "Rack Rank" section: **Aisle Rank
-   (A/B/C)**, geometric, needs an EAST/WEST dock zone, all three rack types; **Level Rank (F/M/S)**,
-   purely structural (low level = F/easy-reach, high = S), no dock zone needed, SPR/ASRS only
+   (A/B/C)**, geometric, needs an EAST/WEST dock zone, both rack types; **Level Rank (F/M/S)**,
+   purely structural (low level = F/easy-reach, high = S), no dock zone needed, SPR only
    (Drive-in excluded — no independent level choice there). Building it surfaced a real, unresolved
-   TNR8 data-integrity issue (632 duplicate Location rows on Aisle 1) — see item 8 below.
+   TNR8 data-integrity issue (632 duplicate Location rows on Aisle 1) — see item 8 below. **ASRS
+   itself was removed as a storage type the same day** (see CLAUDE.md's "ASRS removed as a storage
+   type" section) — the client's own call, real ASRS runs its own dedicated WCS/WES software.
 3. **Inventory (basic on-hand view)** — there is currently *no screen anywhere* to see "what's on
    hand at Location X." The ledger (`StockMovement`) has real data in it now, but nothing renders
    it. Even a read-only view would close a real, felt gap. Next in the stated module build order.

@@ -22,7 +22,8 @@ type PickFaceTask = {
   inProgressTrip?: { id: string; quantity: number } | null;
 };
 
-const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+// ASRS removed 2026-09-13 (see LocationsPage.tsx's own comment).
+const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN'];
 function displayCode(loc?: LocationRef | null): string {
   if (!loc) return '';
   if (loc.storageType && RACK_STORAGE_TYPES.includes(loc.storageType) && loc.flankNumber != null && loc.rack && loc.level) {

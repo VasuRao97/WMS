@@ -36,7 +36,8 @@ type PutawayTask = {
 
 // Rack storage types (mirrors backend RACK_STORAGE_TYPES) — only these get
 // a Rack Name; Ground/Stillage fall back to the raw code.
-const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+// ASRS removed 2026-09-13 (see LocationsPage.tsx's own comment).
+const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN'];
 // Human "Rack Name" (R{flank}-{rack}-L{level}[-D{depth}]) — the same
 // formula LocationsPlanView.tsx uses for the Plan View, extended with
 // Level (the Plan View can leave it out since it shows height spatially;

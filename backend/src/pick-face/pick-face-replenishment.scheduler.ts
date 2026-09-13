@@ -28,7 +28,7 @@ import { PutawayTasksService } from '../putaway/putaway-tasks.service';
 //     comment on PickFaceTask for the full reasoning).
 //
 // A no-op for any warehouse with pickFaceEnabled false, and for any
-// location tagged PICK_FACE that isn't storageType SPR (Drive-in/ASRS/
+// location tagged PICK_FACE that isn't storageType SPR (Drive-in/
 // Ground/Stillage pick faces are explicitly out of scope for this pass).
 // Real depletion (a PICK_FACE slot's on-hand actually reaching zero through
 // use) can't happen yet — MovementType.PICK is schema-only, never written

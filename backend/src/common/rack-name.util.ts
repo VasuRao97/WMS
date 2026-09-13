@@ -9,7 +9,13 @@
 // R01B" correction); pulled out here once Location Label generation
 // needed the exact same formula, per this codebase's "one function, many
 // callers" convention rather than a second copy.
-export const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+// ASRS removed 2026-09-13 — the client's own call: a real ASRS installation
+// runs its own dedicated WCS/WES software, so WMS-level bin/rank logic for
+// it was always going to be redundant. Confirmed zero real data anywhere
+// ever used storageType='ASRS' (a plain free-text field, not a Postgres
+// enum, so this needed no schema migration) before removing it — pure code
+// cleanup, not a data migration.
+export const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN'];
 
 export function buildRackName(loc: { storageType: string; flankNumber: number | null; rack: string | null; level: string | null; depth: number | null } | null | undefined): string | null {
   if (!loc || !RACK_STORAGE_TYPES.includes(loc.storageType) || loc.flankNumber == null || !loc.rack || !loc.level) return null;

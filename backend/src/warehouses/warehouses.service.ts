@@ -7,7 +7,7 @@ import { toNumberOrUndefined } from '../common/xlsx-parse.util';
 import { DEFAULT_EQUIPMENT_SUITABILITY, NOT_USED_ROW } from '../common/equipment-suitability-defaults';
 
 const NODE_TYPE_VALUES = ['FACTORY', 'DISTRIBUTOR', 'REGIONAL_DC', 'NATIONAL_DC', 'CNF', 'CROSS_DOCK'];
-const STORAGE_TYPE_VALUES = ['GROUND_FLOOR', 'SPR', 'DRIVE_IN', 'MIX', 'ASRS'];
+const STORAGE_TYPE_VALUES = ['GROUND_FLOOR', 'SPR', 'DRIVE_IN', 'MIX'];
 const DISPATCH_FLOW_VALUES = ['FULL_PALLET', 'CASE_PICK', 'BROKEN_CASE'];
 // Which Location.storageType values are individually-addressable rack bins
 // (1 pallet position each) vs. footprint-based (Ground/Stillage, derived
@@ -15,7 +15,9 @@ const DISPATCH_FLOW_VALUES = ['FULL_PALLET', 'CASE_PICK', 'BROKEN_CASE'];
 // Duplicated from LocationsService's own RACK_STORAGE_TYPES rather than
 // shared via common/ — matches this file's existing STORAGE_TYPE_VALUES,
 // which already keeps its own independent copy rather than importing one.
-const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+// ASRS removed 2026-09-13 (see common/rack-name.util.ts's own comment) —
+// the client runs any real ASRS on its own dedicated WCS/WES software.
+const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN'];
 
 const NODE_TYPE_LABELS: Record<string, string> = {
   FACTORY: 'Factory',
@@ -76,7 +78,7 @@ export class WarehousesService {
     for (const s of storageTypes) {
       const type = normalizeCode(s.storageType);
       if (!STORAGE_TYPE_VALUES.includes(type)) {
-        errors.push(`Storage Type must be one of: Ground/Floor, SPR, Drive-in, Mix, ASRS (got "${s.storageType}").`);
+        errors.push(`Storage Type must be one of: Ground/Floor, SPR, Drive-in, Mix (got "${s.storageType}").`);
       }
       if (!s.palletPositions || Number(s.palletPositions) <= 0) {
         errors.push('Pallet Positions must be a positive number when Storage Type is given.');

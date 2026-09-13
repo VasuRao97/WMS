@@ -31,11 +31,12 @@ const ZONE_TYPE_VALUES = Object.keys(ZONE_TYPE_LABELS);
 // not a Postgres enum) — deliberately excludes MIX, which only ever means
 // "warehouse hasn't broken this down yet" at the capacity-planning level; a
 // real physical bin is always concretely one of these five.
+// ASRS removed 2026-09-13 — see common/rack-name.util.ts's own comment (the
+// client's own call: real ASRS runs its own dedicated WCS/WES software).
 const STORAGE_TYPE_LABELS: Record<string, string> = {
   GROUND_FLOOR: 'Ground/Floor',
   SPR: 'SPR',
   DRIVE_IN: 'Drive-in',
-  ASRS: 'ASRS',
   STILLAGE: 'Stillage',
 };
 const STORAGE_TYPE_VALUES = Object.keys(STORAGE_TYPE_LABELS);
@@ -111,8 +112,8 @@ export class LocationsService {
     if (RACK_STORAGE_TYPES.includes(storageType)) {
       const rack = data.rack ? String(data.rack).trim() : '';
       const level = data.level ? String(data.level).trim() : '';
-      if (!rack) errors.push('Rack is required for rack-based storage (SPR/Drive-in/ASRS).');
-      if (!level) errors.push('Level is required for rack-based storage (SPR/Drive-in/ASRS).');
+      if (!rack) errors.push('Rack is required for rack-based storage (SPR/Drive-in).');
+      if (!level) errors.push('Level is required for rack-based storage (SPR/Drive-in).');
       fields.rack = rack || undefined;
       fields.level = level || undefined;
       fields.bin = data.bin ? String(data.bin).trim() : '1';
@@ -956,8 +957,9 @@ export class LocationsService {
 
     // Level Rank — purely structural, no dock zone needed at all: "low is
     // easy to reach" is a fixed physical fact, not dependent on where the
-    // dock is. SPR/ASRS only, matching suggestBin()'s own level-tiebreak
-    // scoping exactly.
+    // dock is. SPR only (Drive-in has no independent level choice; ASRS was
+    // removed 2026-09-13 — real ASRS runs its own dedicated WCS/WES
+    // software), matching suggestBin()'s own level-tiebreak scoping.
     //
     // Grouped by NUMERIC value, not raw string — a real bug caught live
     // against TNR8's own data: Level Range generation zero-pads ("01".."07"
@@ -976,7 +978,7 @@ export class LocationsService {
     const levelNumbers = [
       ...new Set(
         rackLocations
-          .filter((l) => l.storageType === 'SPR' || l.storageType === 'ASRS')
+          .filter((l) => l.storageType === 'SPR')
           .map((l) => l.level)
           .filter((lv): lv is string => lv != null)
           .map((lv) => Number(lv) || 0),

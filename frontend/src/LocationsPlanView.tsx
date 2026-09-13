@@ -174,10 +174,11 @@ type Box = {
 // stays distinct from storage type, not blended into it).
 // Exported so Locations3DView.tsx can use the identical mapping — one color
 // language across the 2D and 3D Plan Views, not two copies to keep in sync.
+// ASRS removed 2026-09-13 (see LocationsPage.tsx's own comment) — real ASRS
+// runs its own dedicated WCS/WES software.
 export const STORAGE_TYPE_COLORS: Record<string, { fill: string; stroke: string }> = {
   SPR: { fill: '#dbeafe', stroke: '#2563eb' },
   DRIVE_IN: { fill: '#ede9fe', stroke: '#7c3aed' },
-  ASRS: { fill: '#ccfbf1', stroke: '#0d9488' },
   GROUND_FLOOR: { fill: '#ffedd5', stroke: '#ea580c' },
   STILLAGE: { fill: '#fce7f3', stroke: '#db2777' },
 };
@@ -589,7 +590,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
     }
     return undefined;
   };
-  // Level Rank (SPR/ASRS only — Drive-in has no independent level choice,
+  // Level Rank (SPR only — Drive-in has no independent level choice,
   // see occupancyColors.ts's LevelRank comment) — a second, smaller badge so
   // both axes are visible on one bin without blending into one number.
   // Gated on a SPECIFIC Level being selected (not "All Levels") — a real
@@ -603,7 +604,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
   // ambiguity (one value for the whole aisle regardless of Level), so only
   // this second badge needs the gate.
   const getRankLabel2 = (box: Box): string | undefined => {
-    if (colorMode !== 'rackRank' || selectedLevel === 'all' || (box.storageType !== 'SPR' && box.storageType !== 'ASRS')) return undefined;
+    if (colorMode !== 'rackRank' || selectedLevel === 'all' || box.storageType !== 'SPR') return undefined;
     const location = locationById.get(box.key);
     return location?.level != null ? levelRankByLevel.get(normLevel(location.level)) : undefined;
   };
@@ -616,7 +617,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
           occupancy={occupancyByLocationId.get(selected.id)}
           binRankEntry={selected.storageType === 'GROUND_FLOOR' ? binRankEntryFor(selected) : undefined}
           aisleRankLabel={RACK_STORAGE_TYPES.includes(selected.storageType) && selected.aisle != null ? aisleRankByAisle.get(selected.aisle) : undefined}
-          levelRankLabel={(selected.storageType === 'SPR' || selected.storageType === 'ASRS') && selected.level != null ? levelRankByLevel.get(normLevel(selected.level)) : undefined}
+          levelRankLabel={selected.storageType === 'SPR' && selected.level != null ? levelRankByLevel.get(normLevel(selected.level)) : undefined}
           onClose={() => setSelected(null)}
         />
       )}
@@ -636,7 +637,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
                   ? "Colored by each bin's current occupant's combined ABC×FMS priority score — green (AF, best) through yellow to red (CS/D, worst); plain grey means empty. Ground/Floor's own placement uses this exact score to decide proximity to the outbound dock."
                   : colorMode === 'binRank'
                     ? "Ground/Floor bins only — numbered 1-9 and colored on the same green-to-red gradient, matching the ABC×FMS matrix cell each bin's own POSITION represents (1=AF nearest outbound, 9=CS farthest) — regardless of whether anything is in it. Needs an OUTBOUND Dock Zone configured in Company Settings; Rack bins always show plain grey here."
-                    : "Rack bins only (SPR/Drive-in/ASRS) — two independent badges, since aisle (travel distance) and level (reach effort) are genuinely different costs, not blended into one number. Top-right: Aisle Rank (A/B/C, same colors as A/B/C Class) — needs an EAST/WEST Dock Zone configured. Top-left: Level Rank (F/M/S, same colors as F/M/S Class, SPR/ASRS only — lowest level = F/easiest to reach, highest = S) — no dock zone needed, purely structural, but only shows once you pick one specific Level below (a box collapsing several Levels into one has no single Level Rank to show). Ground/Stillage bins always show plain grey here."}
+                    : "Rack bins only (SPR/Drive-in) — two independent badges, since aisle (travel distance) and level (reach effort) are genuinely different costs, not blended into one number. Top-right: Aisle Rank (A/B/C, same colors as A/B/C Class) — needs an EAST/WEST Dock Zone configured. Top-left: Level Rank (F/M/S, same colors as F/M/S Class, SPR only — lowest level = F/easiest to reach, highest = S) — no dock zone needed, purely structural, but only shows once you pick one specific Level below (a box collapsing several Levels into one has no single Level Rank to show). Ground/Stillage bins always show plain grey here."}
         {' '}Aisle 1 sits closest to the bottom-right corner; each further aisle is added to its left. A single-sided
         aisle draws as one flank on the right; a second flank (left) only appears when it was actually generated (a
         Second Range, or the "mirror" checkbox) — never guessed. Rows pair by position, not by raw number — each
@@ -713,7 +714,7 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
               ))}
             </span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: '#888' }}>Level Rank (top-left, SPR/ASRS only):</span>
+              <span style={{ fontSize: 11, color: '#888' }}>Level Rank (top-left, SPR only):</span>
               {(['F', 'M', 'S'] as const).map((cls) => (
                 <span key={cls} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <span style={{ width: 12, height: 12, borderRadius: 6, background: FMS_CLASS_COLORS[cls].fill, border: `1.5px solid ${FMS_CLASS_COLORS[cls].stroke}`, display: 'inline-block' }} />

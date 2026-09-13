@@ -5088,6 +5088,43 @@ for Drive-in since a Drive-in column has no independent level choice (top to bot
 SKU). Neither reuses Ground's 9-cell AF..CS labels — each gets its own real 3-tier scale matching
 the actual classification it's built from.
 
+### ASRS removed as a storage type — Putaway step-back review (2026-09-13, same day)
+Surfaced during a deliberate "step back, what's left in Putaway" review — the client's own call
+once ASRS's still-undecided bin-suggestion strategy came up again: **"i need to read about ASRS,
+we can actually delete from WMS for now, ASRS has its own dedicated software for this."** A real
+ASRS installation runs its own dedicated WCS/WES (warehouse control/execution system) — WMS-level
+bin/rank logic for it was always going to be redundant the moment a real one gets deployed.
+
+**Confirmed zero real data impact before touching anything** — a short read-only diagnostic script
+(created/run/deleted) found exactly 0 `Location` rows and 0 `WarehouseStorageType` rows anywhere
+using `storageType: 'ASRS'`, across every company. `Location.storageType`/`WarehouseStorageType.
+storageType` are plain free-text `String` columns, not Postgres enums, so this needed **no schema
+migration at all** — a pure code/UI cleanup, unlike the enum-swap dance a real Postgres enum value
+removal would need (see `DockZoneAisleEnd`'s own migration history for that pattern).
+
+**Removed from**: the shared `RACK_STORAGE_TYPES` constant (`common/rack-name.util.ts` — the single
+source most rack-scoped logic already read from) plus its handful of documented independent
+frontend/backend copies (`warehouses.service.ts`, `LocationsPage.tsx`, `PickFacePage.tsx`,
+`PutawayPage.tsx` — this codebase's standing "no shared code between frontend/backend, and even
+some same-side duplication is deliberate" convention meant these needed their own edits, not one
+central fix); every Storage Type dropdown (`LocationsPage.tsx`'s manual generator,
+`WarehousesPage.tsx`'s storage-type breakdown, `SimulationPage.tsx`'s sandbox config);
+`STORAGE_TYPE_COLORS`/`STORAGE_TYPE_LABELS` palettes; Rack Rank's own Level Rank scoping (was
+"SPR/ASRS", now correctly just "SPR" — Drive-in never had independent levels either); and the four
+Excel import templates (`Warehouse_Master_Import_Template.xlsx`/`Location_Master_Import_Template.
+xlsx`, both `templates/` and `frontend/public/templates/` copies) — both their Legend & Rules text
+listing valid Storage Type values, and one real example row in the Warehouse template that had used
+`ASRS` as its sample value (changed to `Stillage`, filling a gap in that template's own example
+variety rather than just picking an already-used value).
+
+Verified: `tsc --noEmit`(backend)/`tsc -b`(frontend) both clean; live in the browser (logged in via
+the API+localStorage token trick) confirmed the app loads with zero console errors and `GET
+/warehouses` still returns all 6 real warehouses correctly — nothing broke despite the removed
+constant touching several shared code paths. Historical/dated design-conversation comments
+elsewhere in this codebase that mention ASRS as part of past reasoning (e.g. the original Drive-in
+split's "ASRS explicitly deferred" note) were deliberately left untouched — they're a record of a
+past decision, not a statement of current behavior, same as every other dated comment in this file.
+
 ### Rack Rank — Aisle Rank (A/B/C) + Level Rank (F/M/S), Rack's own analogue to Bin Rank (2026-09-13)
 Closes the "Not yet done" item just above: whether Rack (SPR/Drive-in/ASRS) should get its own
 ranking display alongside Ground's Bin Rank. Genuinely different shape, not a copy — see the design

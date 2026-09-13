@@ -72,12 +72,14 @@ const NODE_TYPE_OPTIONS = [
   { value: 'CROSS_DOCK', label: 'Cross-dock' },
 ];
 
+// ASRS removed 2026-09-13 — the client's own call: a real ASRS installation
+// runs its own dedicated WCS/WES software (see LocationsPage.tsx's own
+// comment for the fuller reasoning).
 const STORAGE_TYPE_OPTIONS = [
   { value: 'GROUND_FLOOR', label: 'Ground/Floor' },
   { value: 'SPR', label: 'SPR' },
   { value: 'DRIVE_IN', label: 'Drive-in' },
   { value: 'MIX', label: 'Mix' },
-  { value: 'ASRS', label: 'ASRS' },
 ];
 
 const DISPATCH_FLOW_OPTIONS = [

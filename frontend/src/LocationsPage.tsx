@@ -74,14 +74,18 @@ export const ZONE_TYPE_OPTIONS = [
 // that value only ever means "warehouse hasn't broken this down yet" at the
 // WarehouseStorageType (capacity-planning) level; a real bin is always
 // concretely one of these five.
+// ASRS removed 2026-09-13 — the client's own call: a real ASRS installation
+// runs its own dedicated WCS/WES software, so WMS-level bin/rank logic for
+// it was always going to be redundant. Zero real data anywhere ever used
+// this value (storageType is a plain free-text field, not a Postgres enum,
+// so no schema migration was needed) — pure code cleanup.
 export const STORAGE_TYPE_OPTIONS = [
   { value: 'SPR', label: 'SPR (Selective Racking)' },
   { value: 'DRIVE_IN', label: 'Drive-in Racking' },
-  { value: 'ASRS', label: 'ASRS' },
   { value: 'GROUND_FLOOR', label: 'Ground/Floor (block-stacked)' },
   { value: 'STILLAGE', label: 'Stillage (stacked cages)' },
 ];
-export const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN', 'ASRS'];
+export const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN'];
 const ALL_STORAGE_TYPES = STORAGE_TYPE_OPTIONS.map((o) => o.value);
 
 // UI-only narrowing of which Storage Types make practical sense for a given
@@ -894,7 +898,7 @@ function LocationsPage() {
               <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: '#666' }}>
                 e.g. Aisle <strong>A01</strong>, Rack <strong>05</strong>, Level <strong>02</strong>, Bin <strong>01</strong> → code{' '}
                 <code>A01-R05-L02-B01</code>. Only fill Depth for multi-deep Drive-in lanes (e.g. Depth <strong>2</strong> = 2nd pallet
-                back in that lane) — leave it blank for single-deep SPR/ASRS.
+                back in that lane) — leave it blank for single-deep SPR.
               </p>
             )}
             {isGround && (

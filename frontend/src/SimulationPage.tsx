@@ -64,13 +64,14 @@ function SimulationPage() {
   // depth" / "which kind of storage", then a same-day follow-up: "add
   // feature of length also, just 3 is too less") — Aisles alone stays
   // fixed; Storage Type is restricted to the storage types Putaway's
-  // suggestBin() actually has real logic for (SPR/Drive-in/ASRS/Ground-
-  // Floor — Stillage would still always come back "needs bin" today).
+  // suggestBin() actually has real logic for (SPR/Drive-in/Ground-Floor —
+  // Stillage would still always come back "needs bin" today; ASRS was
+  // removed 2026-09-13, real ASRS runs its own dedicated WCS/WES software).
   // Sent along with every Run — the backend only rebuilds the sandbox's
   // layout if this doesn't already match what's there, so running again
   // with the same settings never wipes anything. "Length" is the UI label
   // for what the backend calls `racks` — how many rack positions run down
-  // one flank of an aisle for SPR/Drive-in/ASRS, but for Ground/Floor
+  // one flank of an aisle for SPR/Drive-in, but for Ground/Floor
   // (added 2026-09-06, see [[wms-putaway-design]]) the SAME field means how
   // many physical BINS run down one flank instead — reused rather than
   // adding a second field, same "meaning depends on storage type"
@@ -271,7 +272,6 @@ function SimulationPage() {
             <select value={storageType} onChange={(e) => setStorageType(e.target.value)} disabled={running} style={{ padding: 6 }}>
               <option value="SPR">SPR</option>
               <option value="DRIVE_IN">Drive-in</option>
-              <option value="ASRS">ASRS</option>
               <option value="GROUND_FLOOR">Ground/Floor</option>
             </select>
             {/* 2026-09-06 — Ground/Floor added (see [[wms-putaway-design]]).

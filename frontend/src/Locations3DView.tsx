@@ -824,10 +824,10 @@ function Locations3DView({
       if (!RACK_STORAGE_TYPES.includes(location.storageType)) return undefined;
       const aisleLetter = location.aisle != null ? aisleRankByAisle.get(location.aisle) : undefined;
       if (!aisleLetter) return undefined;
-      // SPR/ASRS combine both letters in one label (one Label3D slot per
+      // SPR combines both letters in one label (one Label3D slot per
       // box, see the file's own single-rankLabel LocationBox shape) —
       // Drive-in shows Aisle Rank alone, no Level Rank exists there at all.
-      const levelLetter = (location.storageType === 'SPR' || location.storageType === 'ASRS') && location.level != null ? levelRankByLevel.get(normLevel(location.level)) : undefined;
+      const levelLetter = location.storageType === 'SPR' && location.level != null ? levelRankByLevel.get(normLevel(location.level)) : undefined;
       return levelLetter ? `${aisleLetter}/${levelLetter}` : aisleLetter;
     }
     return undefined;
@@ -922,7 +922,7 @@ function Locations3DView({
                     ? 'Colored by occupant combined ABC×FMS priority score (selected aisles only):'
                     : colorMode === 'binRank'
                       ? 'Ground/Floor bins numbered 1-9 by dock proximity (footprints included, no selection needed):'
-                      : 'Rack bins (SPR/Drive-in/ASRS) — Aisle Rank colors every box (footprints included); a detailed SPR/ASRS box also shows Level Rank as the 2nd letter ("A/F"):'}
+                      : 'Rack bins (SPR/Drive-in) — Aisle Rank colors every box (footprints included); a detailed SPR box also shows Level Rank as the 2nd letter ("A/F"):'}
           </span>
           {colorMode === 'class' &&
             (['A', 'B', 'C'] as const).map((cls) => (
@@ -964,7 +964,7 @@ function Locations3DView({
                   </span>
                 ))}
               </span>
-              <span style={{ fontSize: 11, color: '#888' }}>Level Rank (SPR/ASRS only, shown as "A/F" on a detailed box): F=easiest reach, M=middle, S=hardest reach.</span>
+              <span style={{ fontSize: 11, color: '#888' }}>Level Rank (SPR only, shown as "A/F" on a detailed box): F=easiest reach, M=middle, S=hardest reach.</span>
             </span>
           )}
           {colorMode === 'category' &&
@@ -1074,7 +1074,7 @@ function Locations3DView({
             occupancy={occupancyByLocationId.get(selected.id)}
             binRankEntry={selected.storageType === 'GROUND_FLOOR' ? binRankByBin.get(binKeyOf(selected)) : undefined}
             aisleRankLabel={RACK_STORAGE_TYPES.includes(selected.storageType) && selected.aisle != null ? aisleRankByAisle.get(selected.aisle) : undefined}
-            levelRankLabel={(selected.storageType === 'SPR' || selected.storageType === 'ASRS') && selected.level != null ? levelRankByLevel.get(normLevel(selected.level)) : undefined}
+            levelRankLabel={selected.storageType === 'SPR' && selected.level != null ? levelRankByLevel.get(normLevel(selected.level)) : undefined}
             onClose={() => setSelected(null)}
           />
         )}

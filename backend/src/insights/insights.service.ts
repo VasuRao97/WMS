@@ -17,7 +17,7 @@ export class InsightsService {
   constructor(private prisma: PrismaService) {}
 
   // Scoped to exactly the same location set suggestBin() itself considers
-  // (ACTUAL_STORAGE, rack storage types only — SPR/Drive-in/ASRS) — this
+  // (ACTUAL_STORAGE, rack storage types only — SPR/Drive-in) — this
   // report is meant to answer "how well is Putaway using the space it's
   // allowed to use," so it has to look at the identical universe Putaway's
   // own placement logic does. Ground/Floor and Stillage are deliberately
