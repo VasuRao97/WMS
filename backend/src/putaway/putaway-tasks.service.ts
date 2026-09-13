@@ -1,8 +1,26 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
-import { buildRackName, displayCode, laneKeyOf, RACK_STORAGE_TYPES } from '../common/rack-name.util';
-import { buildOutboundProximityRanker, buildRowProximityRanker } from '../common/dock-zone.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  PUTAWAY_SCOPED_ROLES,
+} from '../common/tenant.util';
+import {
+  buildRackName,
+  displayCode,
+  laneKeyOf,
+  RACK_STORAGE_TYPES,
+} from '../common/rack-name.util';
+import {
+  buildOutboundProximityRanker,
+  buildRowProximityRanker,
+} from '../common/dock-zone.util';
 
 // Rack storage types share the LIFO
 // depth constraint (see
@@ -22,7 +40,19 @@ const TASK_INCLUDE = {
   // (Truck No.) added 2026-08-29 so the frontend can filter the task
   // queue by either — the same client-side-filter-over-already-fetched-
   // list pattern LocationsPage.tsx already uses.
-  receiptLine: { select: { id: true, skuId: true, receiptId: true, receipt: { select: { referenceNo: true, vehicle: { select: { vehicleNumber: true } } } } } },
+  receiptLine: {
+    select: {
+      id: true,
+      skuId: true,
+      receiptId: true,
+      receipt: {
+        select: {
+          referenceNo: true,
+          vehicle: { select: { vehicleNumber: true } },
+        },
+      },
+    },
+  },
   sku: { select: { id: true, code: true, description: true } },
   // Extra fields beyond `code` let the frontend build the human "Rack
   // Name" (R{flank}-{rack}-L{level}[-D{depth}]) instead of the raw DB
@@ -31,8 +61,28 @@ const TASK_INCLUDE = {
   // code with a "B" suffix instead ("1-R01B-..."), two different labels
   // for one location. See buildRackName() below and completeTrip(), which
   // now accepts this same string at the scan step too.
-  fromLocation: { select: { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true } },
-  toLocation: { select: { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true } },
+  fromLocation: {
+    select: {
+      id: true,
+      code: true,
+      storageType: true,
+      rack: true,
+      level: true,
+      depth: true,
+      flankNumber: true,
+    },
+  },
+  toLocation: {
+    select: {
+      id: true,
+      code: true,
+      storageType: true,
+      rack: true,
+      level: true,
+      depth: true,
+      flankNumber: true,
+    },
+  },
 } as const;
 
 // The Putaway module — see [[wms-putaway-design]] in memory for the full
@@ -58,7 +108,10 @@ export class PutawayTasksService {
   private sameAgeBucket(a: Date, b: Date, granularity: string | null): boolean {
     if (!granularity) return a.getTime() === b.getTime();
     if (granularity === 'DAY') return a.toDateString() === b.toDateString();
-    if (granularity === 'MONTH') return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+    if (granularity === 'MONTH')
+      return (
+        a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
+      );
     if (granularity === 'WEEK') {
       const weekStart = (d: Date) => {
         const x = new Date(d);
@@ -72,7 +125,14 @@ export class PutawayTasksService {
     return false;
   }
 
-  private maxSkusForClass(row: { maxSkusClassA: number | null; maxSkusClassB: number | null; maxSkusClassC: number | null }, abcClass: string): number | null {
+  private maxSkusForClass(
+    row: {
+      maxSkusClassA: number | null;
+      maxSkusClassB: number | null;
+      maxSkusClassC: number | null;
+    },
+    abcClass: string,
+  ): number | null {
     if (abcClass === 'A') return row.maxSkusClassA;
     if (abcClass === 'B') return row.maxSkusClassB;
     return row.maxSkusClassC;
@@ -92,10 +152,20 @@ export class PutawayTasksService {
   // collapses this formula to exactly 2×abcRank — the SAME relative
   // ordering as the old pure-ABC near/far split, so an unconfigured/
   // not-yet-classified SKU sees zero placement regression.
-  private combinedPriorityScore(abcClass: string, fmsClass: string | null): number {
+  private combinedPriorityScore(
+    abcClass: string,
+    fmsClass: string | null,
+  ): number {
     if (abcClass === 'D') return 6;
     const abcRank = abcClass === 'A' ? 1 : abcClass === 'B' ? 2 : 3;
-    const fmsRank = fmsClass === 'F' ? 1 : fmsClass === 'M' ? 2 : fmsClass === 'S' ? 3 : abcRank;
+    const fmsRank =
+      fmsClass === 'F'
+        ? 1
+        : fmsClass === 'M'
+          ? 2
+          : fmsClass === 'S'
+            ? 3
+            : abcRank;
     return abcRank + fmsRank;
   }
 
@@ -105,8 +175,21 @@ export class PutawayTasksService {
   // task has already been assigned to, so a re-suggestion can't loop back.
   // newStockDate — this putaway's own "age" (see resolveReceivedDate below)
   // for the same-SKU-top-up aging check.
-  async suggestBin(tx: any, params: { warehouseId: string; skuId: string; excludeLocationIds?: string[]; newStockDate?: Date | null }): Promise<string | null> {
-    const { warehouseId, skuId, excludeLocationIds = [], newStockDate = null } = params;
+  async suggestBin(
+    tx: any,
+    params: {
+      warehouseId: string;
+      skuId: string;
+      excludeLocationIds?: string[];
+      newStockDate?: Date | null;
+    },
+  ): Promise<string | null> {
+    const {
+      warehouseId,
+      skuId,
+      excludeLocationIds = [],
+      newStockDate = null,
+    } = params;
 
     const sku = await tx.sku.findUnique({ where: { id: skuId } });
     if (!sku) return null;
@@ -120,8 +203,14 @@ export class PutawayTasksService {
     // "don't trust the import" effort would never actually affect real
     // placement decisions. Unclassified (neither exists) still defaults to
     // C, unchanged — confirmed 2026-08-28.
-    const warehouseClass = await tx.skuWarehouseClass.findUnique({ where: { skuId_warehouseId: { skuId, warehouseId } } });
-    const abcClass = (warehouseClass?.abcClass || sku.abcClass || 'C').toUpperCase();
+    const warehouseClass = await tx.skuWarehouseClass.findUnique({
+      where: { skuId_warehouseId: { skuId, warehouseId } },
+    });
+    const abcClass = (
+      warehouseClass?.abcClass ||
+      sku.abcClass ||
+      'C'
+    ).toUpperCase();
     // FMS (Fast/Medium/Slow-moving) — 2026-09-08, see [[wms-abc-velocity-design]]
     // in memory for the full design conversation. A genuinely different axis
     // from ABC above (movement FREQUENCY, not quantity) — only ever set by
@@ -131,13 +220,24 @@ export class PutawayTasksService {
     // outboundRanker. Not read at all for a D-class SKU — see preferHighLevel().
     const fmsClass = warehouseClass?.fmsClass?.toUpperCase() || null;
 
-    const storageTypeRows = await tx.warehouseStorageType.findMany({ where: { warehouseId, categoryId: sku.categoryId } });
-    const eligibleStorageTypes: string[] = storageTypeRows.map((r: any) => r.storageType).filter((t: string) => t !== 'MIX');
+    const storageTypeRows = await tx.warehouseStorageType.findMany({
+      where: { warehouseId, categoryId: sku.categoryId },
+    });
+    const eligibleStorageTypes: string[] = storageTypeRows
+      .map((r: any) => r.storageType)
+      .filter((t: string) => t !== 'MIX');
     if (eligibleStorageTypes.length === 0) return null;
-    const storageTypeRowByType = new Map(storageTypeRows.map((r: any) => [r.storageType, r]));
+    const storageTypeRowByType = new Map(
+      storageTypeRows.map((r: any) => [r.storageType, r]),
+    );
 
     const rawLocations = await tx.location.findMany({
-      where: { warehouseId, zoneType: 'ACTUAL_STORAGE', storageType: { in: eligibleStorageTypes }, isActive: true },
+      where: {
+        warehouseId,
+        zoneType: 'ACTUAL_STORAGE',
+        storageType: { in: eligibleStorageTypes },
+        isActive: true,
+      },
     });
     if (rawLocations.length === 0) return null;
 
@@ -152,8 +252,13 @@ export class PutawayTasksService {
     // warehouses may never bother), fall back to the full untagged set —
     // confirmed explicitly: Putaway must never dead-end just because a
     // warehouse hasn't tagged its racks.
-    const categoryTaggedLocations = sku.categoryId ? rawLocations.filter((l: any) => l.categoryId === sku.categoryId) : [];
-    const locations = categoryTaggedLocations.length > 0 ? categoryTaggedLocations : rawLocations;
+    const categoryTaggedLocations = sku.categoryId
+      ? rawLocations.filter((l: any) => l.categoryId === sku.categoryId)
+      : [];
+    const locations =
+      categoryTaggedLocations.length > 0
+        ? categoryTaggedLocations
+        : rawLocations;
 
     const locationIds = locations.map((l: any) => l.id);
     // agingGranularity is read straight off the Warehouse row (moved off
@@ -163,15 +268,40 @@ export class PutawayTasksService {
     // WarehouseEquipmentSuitability being warehouse-scoped rather than a
     // single platform/company-wide value). No separate Company lookup
     // needed any more.
-    const [warehouse, movements, openTaskTargets, exception, dockZones, allAisleRows, allGroundPositionRows] = await Promise.all([
-      tx.warehouse.findUnique({ where: { id: warehouseId }, select: { agingGranularity: true } }),
+    const [
+      warehouse,
+      movements,
+      openTaskTargets,
+      exception,
+      dockZones,
+      allAisleRows,
+      allGroundPositionRows,
+    ] = await Promise.all([
+      tx.warehouse.findUnique({
+        where: { id: warehouseId },
+        select: { agingGranularity: true },
+      }),
       tx.stockMovement.findMany({
         where: { locationId: { in: locationIds } },
-        select: { locationId: true, skuId: true, quantity: true, receivedDate: true, createdAt: true },
+        select: {
+          locationId: true,
+          skuId: true,
+          quantity: true,
+          receivedDate: true,
+          createdAt: true,
+        },
         orderBy: { createdAt: 'asc' },
       }),
-      tx.putawayTask.findMany({ where: { toLocationId: { in: locationIds }, status: { in: ['PENDING', 'NEEDS_BIN'] } }, select: { toLocationId: true, skuId: true } }),
-      tx.multiSkuLaneException.findFirst({ where: { warehouseId, status: 'APPROVED' } }),
+      tx.putawayTask.findMany({
+        where: {
+          toLocationId: { in: locationIds },
+          status: { in: ['PENDING', 'NEEDS_BIN'] },
+        },
+        select: { toLocationId: true, skuId: true },
+      }),
+      tx.multiSkuLaneException.findFirst({
+        where: { warehouseId, status: 'APPROVED' },
+      }),
       // Dock-relative placement (Topic 2, 2026-09-06) — the warehouse's own
       // coarse dock-zone config, if any. See dock-zone.util.ts.
       tx.warehouseDockZone.findMany({ where: { warehouseId } }),
@@ -180,7 +310,15 @@ export class PutawayTasksService {
       // computed against the warehouse's real physical aisle order, not
       // just whichever aisles happen to be eligible for this one SKU, or a
       // narrow eligible subset could wrongly redefine which end is "far."
-      tx.location.findMany({ where: { warehouseId, zoneType: 'ACTUAL_STORAGE', aisle: { not: null } }, select: { aisle: true }, distinct: ['aisle'] }),
+      tx.location.findMany({
+        where: {
+          warehouseId,
+          zoneType: 'ACTUAL_STORAGE',
+          aisle: { not: null },
+        },
+        select: { aisle: true },
+        distinct: ['aisle'],
+      }),
       // Row-axis placement (step 2 of the 4-wall dock model, 2026-09-12) —
       // the FULL warehouse-wide (aisle, flankNumber, block) list for Ground,
       // same "not narrowed to this SKU's own eligible subset" discipline as
@@ -189,12 +327,19 @@ export class PutawayTasksService {
       // is "far"). Only Ground needs this today — see suggestGroundBin()'s
       // own comment for why Rack isn't touched yet.
       tx.location.findMany({
-        where: { warehouseId, storageType: 'GROUND_FLOOR', aisle: { not: null }, block: { not: null } },
+        where: {
+          warehouseId,
+          storageType: 'GROUND_FLOOR',
+          aisle: { not: null },
+          block: { not: null },
+        },
         select: { aisle: true, flankNumber: true, block: true },
       }),
     ]);
     const outboundRanker = buildOutboundProximityRanker(
-      allAisleRows.map((r: any) => r.aisle).filter((a: string | null): a is string => !!a),
+      allAisleRows
+        .map((r: any) => r.aisle)
+        .filter((a: string | null): a is string => !!a),
       dockZones,
     );
     // Row-axis: "Row 1..N" is only ever meaningful within ONE (aisle, flank)
@@ -231,7 +376,9 @@ export class PutawayTasksService {
         groundRowGroups.get(key)!.push(r.block);
       }
       for (const [key, positions] of groundRowGroups) {
-        const sorted = Array.from(new Set(positions)).sort((a, b) => (Number(a) || 0) - (Number(b) || 0));
+        const sorted = Array.from(new Set(positions)).sort(
+          (a, b) => (Number(a) || 0) - (Number(b) || 0),
+        );
         groundRowGroups.set(key, sorted);
         globalMaxRowIndex = Math.max(globalMaxRowIndex, sorted.length - 1);
       }
@@ -248,7 +395,8 @@ export class PutawayTasksService {
     // day would do" — exact-millisecond was "too much check." A warehouse
     // can still be configured to WEEK/MONTH via Company Settings' per-
     // warehouse "Aging Methodology" control.
-    const agingGranularity: string | null = warehouse?.agingGranularity ?? 'DAY';
+    const agingGranularity: string | null =
+      warehouse?.agingGranularity ?? 'DAY';
     const exceptionActive = !!exception;
 
     // balance + last receivedDate per (location, sku)
@@ -268,7 +416,8 @@ export class PutawayTasksService {
       const key = `${m.locationId}|${m.skuId}`;
       const newBalance = (balanceByLocSku.get(key) || 0) + Number(m.quantity);
       balanceByLocSku.set(key, newBalance);
-      if (Number(m.quantity) > 0 && m.receivedDate) lastReceivedDateByLocSku.set(key, m.receivedDate);
+      if (Number(m.quantity) > 0 && m.receivedDate)
+        lastReceivedDateByLocSku.set(key, m.receivedDate);
       let perLocation = skuBalancesByLocation.get(m.locationId);
       if (!perLocation) {
         perLocation = new Map<string, number>();
@@ -276,7 +425,9 @@ export class PutawayTasksService {
       }
       perLocation.set(m.skuId, newBalance);
     }
-    const targetedLocationIds = new Set(openTaskTargets.map((t: any) => t.toLocationId).filter(Boolean));
+    const targetedLocationIds = new Set(
+      openTaskTargets.map((t: any) => t.toLocationId).filter(Boolean),
+    );
     // 2026-08-29 fix: a bin already the destination of another still-open
     // (PENDING/NEEDS_BIN) task is "reserved" for that task's SKU even
     // before the trip physically completes — the occupant set below must
@@ -287,7 +438,8 @@ export class PutawayTasksService {
     // depths first (the reported bug — confirmed: same-age same-SKU stock
     // should fill out one lane's D2/D1 before ever opening a new level).
     const pendingSkuByLocation = new Map<string, string>();
-    for (const t of openTaskTargets) if (t.toLocationId) pendingSkuByLocation.set(t.toLocationId, t.skuId);
+    for (const t of openTaskTargets)
+      if (t.toLocationId) pendingSkuByLocation.set(t.toLocationId, t.skuId);
 
     // 2026-08-29 — "still incoming" lane reservation (client-requested,
     // Class B & C — see [[wms-putaway-design]]). A SKU still actively
@@ -306,7 +458,8 @@ export class PutawayTasksService {
     // maxSkusClass* cap itself — one consistent "the exception turns off
     // all mixing protection" behavior, not a second separate override.
     const allOccupantSkuIds = new Set<string>();
-    for (const [key, qty] of balanceByLocSku) if (qty > 0) allOccupantSkuIds.add(key.split('|')[1]);
+    for (const [key, qty] of balanceByLocSku)
+      if (qty > 0) allOccupantSkuIds.add(key.split('|')[1]);
     for (const sid of pendingSkuByLocation.values()) allOccupantSkuIds.add(sid);
     const stillIncomingSkuIds = new Set<string>();
     // 2026-09-06 hardening-pass perf fix: every occupant SKU's abcClass used
@@ -328,9 +481,11 @@ export class PutawayTasksService {
         }),
       ]);
       for (const l of occupantLines) {
-        if (Number(l.receivedQty) < Number(l.expectedQty)) stillIncomingSkuIds.add(l.skuId);
+        if (Number(l.receivedQty) < Number(l.expectedQty))
+          stillIncomingSkuIds.add(l.skuId);
       }
-      for (const s of occupantSkus) abcClassBySkuId.set(s.id, (s.abcClass || 'C').toUpperCase());
+      for (const s of occupantSkus)
+        abcClassBySkuId.set(s.id, (s.abcClass || 'C').toUpperCase());
     }
 
     // 2026-09-06 — Ground/Floor Putaway (see wms-putaway-design memory for
@@ -342,8 +497,15 @@ export class PutawayTasksService {
     // from SPR/ASRS with. Both methods are pure, synchronous, in-memory
     // logic — no further DB queries needed, everything they read was
     // already fetched above in this shared setup.
-    const rackLocations = locations.filter((l: any) => RACK_STORAGE_TYPES.includes(l.storageType));
-    const groundLocations = locations.filter((l: any) => l.storageType === 'GROUND_FLOOR');
+    const rackLocations = locations.filter((l: any) =>
+      RACK_STORAGE_TYPES.includes(l.storageType),
+    );
+    const groundLocations = locations.filter(
+      (l: any) => l.storageType === 'GROUND_FLOOR',
+    );
+    const stillageLocations = locations.filter(
+      (l: any) => l.storageType === 'STILLAGE',
+    );
     const ctx = {
       skuId,
       abcClass,
@@ -367,15 +529,17 @@ export class PutawayTasksService {
       movements,
     };
 
-    // Rack tried first, Ground as fallback — a simple, explicitly-flagged
-    // placeholder ordering for the (probably rare) case where one Category
-    // is eligible for BOTH storage types in the same warehouse; not a
-    // decision that's actually been discussed, and one more thing the
-    // future FMS×ABC study (see wms-abc-velocity-design memory) may
-    // eventually want to revisit rather than a fixed priority.
+    // Rack tried first, Ground then Stillage as fallbacks — a simple,
+    // explicitly-flagged placeholder ordering for the (probably rare) case
+    // where one Category is eligible for more than one storage type in the
+    // same warehouse; not a decision that's actually been discussed, and
+    // one more thing the future FMS×ABC study (see wms-abc-velocity-design
+    // memory) may eventually want to revisit rather than a fixed priority.
     const rackResult = this.suggestRackBin(rackLocations, ctx);
     if (rackResult) return rackResult;
-    return this.suggestGroundBin(groundLocations, ctx);
+    const groundResult = this.suggestGroundBin(groundLocations, ctx);
+    if (groundResult) return groundResult;
+    return this.suggestStillageBin(stillageLocations, ctx);
   }
 
   // ------------------------------------------------------------
@@ -412,7 +576,14 @@ export class PutawayTasksService {
       lanes.get(key)!.push(loc);
     }
 
-    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null; aisle: string | null; level: string | null; storageType: string };
+    type Candidate = {
+      locationId: string;
+      occupancyCount: number;
+      flankNumber: number | null;
+      aisle: string | null;
+      level: string | null;
+      storageType: string;
+    };
     const candidates: Candidate[] = [];
 
     for (const laneLocations of lanes.values()) {
@@ -426,7 +597,9 @@ export class PutawayTasksService {
       const occupantSkuIds = new Set<string>();
       for (const loc of laneLocations) {
         const perLocation = skuBalancesByLocation.get(loc.id);
-        if (perLocation) for (const [sid, qty] of perLocation) if (qty > 0) occupantSkuIds.add(sid);
+        if (perLocation)
+          for (const [sid, qty] of perLocation)
+            if (qty > 0) occupantSkuIds.add(sid);
         const pendingSku = pendingSkuByLocation.get(loc.id);
         if (pendingSku) occupantSkuIds.add(pendingSku);
       }
@@ -444,7 +617,11 @@ export class PutawayTasksService {
           const d = lastReceivedDateByLocSku.get(`${loc.id}|${skuId}`);
           if (d) existingDate = d;
         }
-        if (existingDate && newStockDate && !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)) {
+        if (
+          existingDate &&
+          newStockDate &&
+          !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)
+        ) {
           laneEligible = false; // must fully empty before a different-age batch can enter
         }
       } else if (storageType === 'DRIVE_IN') {
@@ -471,16 +648,24 @@ export class PutawayTasksService {
           // entirely — checked BEFORE the cap logic, not folded into it,
           // since it's an unconditional block, not another tier of the
           // same cap math.
-          const anyOccupantStillIncoming = [...occupantSkuIds].some((id) => stillIncomingSkuIds.has(id));
+          const anyOccupantStillIncoming = [...occupantSkuIds].some((id) =>
+            stillIncomingSkuIds.has(id),
+          );
           if (anyOccupantStillIncoming) {
             laneEligible = false;
           } else {
-            const occupantClasses = [...occupantSkuIds].map((id) => abcClassBySkuId.get(id) || 'C');
-            const caps = [abcClass, ...occupantClasses].map((cls) => this.maxSkusForClass(row, cls));
+            const occupantClasses = [...occupantSkuIds].map(
+              (id) => abcClassBySkuId.get(id) || 'C',
+            );
+            const caps = [abcClass, ...occupantClasses].map((cls) =>
+              this.maxSkusForClass(row, cls),
+            );
             // null = unbounded; the most restrictive (lowest, non-null) cap wins.
             const finiteCaps = caps.filter((c): c is number => c !== null);
-            const effectiveCap = finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
-            if (effectiveCap !== null && occupantSkuIds.size >= effectiveCap) laneEligible = false;
+            const effectiveCap =
+              finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
+            if (effectiveCap !== null && occupantSkuIds.size >= effectiveCap)
+              laneEligible = false;
           }
           // An A-class occupant's own cap (1) makes effectiveCap 1 the
           // moment it's present, which — combined with occupantSkuIds.size
@@ -490,7 +675,11 @@ export class PutawayTasksService {
       }
 
       if (!laneEligible) continue;
-      if (excludeLocationIds.includes(laneLocations[0].id) && laneLocations.length === 1) continue;
+      if (
+        excludeLocationIds.includes(laneLocations[0].id) &&
+        laneLocations.length === 1
+      )
+        continue;
 
       // Deepest-first fill: among this lane's positions, pick the one with
       // the HIGHEST depth that's currently empty, not already targeted by
@@ -502,13 +691,19 @@ export class PutawayTasksService {
       // levels, then the rest etc, progressive in that way" — matches how
       // an MHE actually loads, ground level first). A no-op for SPR/ASRS,
       // whose lanes only ever contain one level's positions to begin with.
-      const sorted = [...laneLocations].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0) || ((Number(a.level) || 0) - (Number(b.level) || 0)));
+      const sorted = [...laneLocations].sort(
+        (a, b) =>
+          (b.depth ?? 0) - (a.depth ?? 0) ||
+          (Number(a.level) || 0) - (Number(b.level) || 0),
+      );
       const target = sorted.find(
         (loc) =>
           (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 &&
           !targetedLocationIds.has(loc.id) &&
           !excludeLocationIds.includes(loc.id) &&
-          ![...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some((qty) => qty > 0),
+          ![...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some(
+            (qty) => qty > 0,
+          ),
       );
       if (!target) continue; // lane has no genuinely free position right now (sealed if full, or all free ones excluded/targeted)
 
@@ -522,10 +717,20 @@ export class PutawayTasksService {
       // lane at 2/3 full should win over a lane at 1/3 full for ANY
       // eligible incoming SKU, not just that lane's own original tenant.
       const occupancyCount = laneLocations.filter(
-        (loc: any) => [...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some((qty) => qty > 0) || pendingSkuByLocation.has(loc.id),
+        (loc: any) =>
+          [...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some(
+            (qty) => qty > 0,
+          ) || pendingSkuByLocation.has(loc.id),
       ).length;
 
-      candidates.push({ locationId: target.id, occupancyCount, flankNumber: target.flankNumber ?? null, aisle: target.aisle ?? null, level: target.level ?? null, storageType: target.storageType });
+      candidates.push({
+        locationId: target.id,
+        occupancyCount,
+        flankNumber: target.flankNumber ?? null,
+        aisle: target.aisle ?? null,
+        level: target.level ?? null,
+        storageType: target.storageType,
+      });
     }
 
     if (candidates.length === 0) return null;
@@ -590,17 +795,26 @@ export class PutawayTasksService {
     // today's ABC-only behavior, zero regression for a company not using
     // this yet, same "unconfigured falls back cleanly" shape as
     // outboundRanker itself.
-    const preferHighLevel = abcClass === 'D' ? true : fmsClass ? fmsClass === 'S' : preferFarAisle;
+    const preferHighLevel =
+      abcClass === 'D' ? true : fmsClass ? fmsClass === 'S' : preferFarAisle;
     candidates.sort((a, b) => {
-      if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
+      if (a.occupancyCount !== b.occupancyCount)
+        return b.occupancyCount - a.occupancyCount;
 
       if (outboundRanker) {
-        const ra = a.aisle != null ? outboundRanker(a.aisle) : Number.MAX_SAFE_INTEGER;
-        const rb = b.aisle != null ? outboundRanker(b.aisle) : Number.MAX_SAFE_INTEGER;
+        const ra =
+          a.aisle != null ? outboundRanker(a.aisle) : Number.MAX_SAFE_INTEGER;
+        const rb =
+          b.aisle != null ? outboundRanker(b.aisle) : Number.MAX_SAFE_INTEGER;
         if (ra !== rb) return preferFarAisle ? rb - ra : ra - rb;
       }
 
-      if (a.storageType !== 'DRIVE_IN' && b.storageType !== 'DRIVE_IN' && a.level != null && b.level != null) {
+      if (
+        a.storageType !== 'DRIVE_IN' &&
+        b.storageType !== 'DRIVE_IN' &&
+        a.level != null &&
+        b.level != null
+      ) {
         const la = Number(a.level) || 0;
         const lb = Number(b.level) || 0;
         if (la !== lb) return preferHighLevel ? lb - la : la - lb;
@@ -625,8 +839,12 @@ export class PutawayTasksService {
     let best = 'D';
     let bestRank = PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.length;
     for (const cls of classes) {
-      const rank = PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.indexOf(cls);
-      const effectiveRank = rank === -1 ? PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.indexOf('C') : rank;
+      const rank =
+        PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.indexOf(cls);
+      const effectiveRank =
+        rank === -1
+          ? PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS.indexOf('C')
+          : rank;
       if (effectiveRank < bestRank) {
         bestRank = effectiveRank;
         best = PutawayTasksService.GROUND_CLASS_RESTRICTIVENESS[effectiveRank];
@@ -657,7 +875,10 @@ export class PutawayTasksService {
   // dormant until Picking exists — no negative movement is ever written to
   // a Location yet — but correct and ready the moment it does, rather than
   // needing a second pass through this code later.
-  private computeClosedGroundLocationIds(movements: any[], groundLocationIds: Set<string>): Set<string> {
+  private computeClosedGroundLocationIds(
+    movements: any[],
+    groundLocationIds: Set<string>,
+  ): Set<string> {
     const closed = new Set<string>();
     const byLocation = new Map<string, any[]>();
     for (const m of movements) {
@@ -724,9 +945,13 @@ export class PutawayTasksService {
     if (!row) return null;
 
     const groundLocationIds = new Set(groundLocations.map((l: any) => l.id));
-    const closedLocationIds = this.computeClosedGroundLocationIds(movements, groundLocationIds);
+    const closedLocationIds = this.computeClosedGroundLocationIds(
+      movements,
+      groundLocationIds,
+    );
 
-    const binKeyOf = (loc: any) => `${loc.aisle}|${loc.block}|${loc.flankNumber}`;
+    const binKeyOf = (loc: any) =>
+      `${loc.aisle}|${loc.block}|${loc.flankNumber}`;
     const columnKeyOf = (loc: any) => `${binKeyOf(loc)}|${loc.rack}`;
 
     const bins = new Map<string, any[]>();
@@ -736,7 +961,14 @@ export class PutawayTasksService {
       bins.get(key)!.push(loc);
     }
 
-    type Candidate = { locationId: string; occupancyCount: number; flankNumber: number | null; aisle: string | null; block: string | null; storageType: string };
+    type Candidate = {
+      locationId: string;
+      occupancyCount: number;
+      flankNumber: number | null;
+      aisle: string | null;
+      block: string | null;
+      storageType: string;
+    };
     const candidates: Candidate[] = [];
 
     for (const binLocations of bins.values()) {
@@ -748,15 +980,23 @@ export class PutawayTasksService {
       const occupantSkuIds = new Set<string>();
       for (const loc of binLocations) {
         const perLocation = skuBalancesByLocation.get(loc.id);
-        if (perLocation) for (const [sid, qty] of perLocation) if (qty > 0) occupantSkuIds.add(sid);
+        if (perLocation)
+          for (const [sid, qty] of perLocation)
+            if (qty > 0) occupantSkuIds.add(sid);
         const pendingSku = pendingSkuByLocation.get(loc.id);
         if (pendingSku) occupantSkuIds.add(pendingSku);
       }
 
-      const occupantClasses = [...occupantSkuIds].map((id) => abcClassBySkuId.get(id) || 'C');
+      const occupantClasses = [...occupantSkuIds].map(
+        (id) => abcClassBySkuId.get(id) || 'C',
+      );
       const classesInPlay = [abcClass, ...occupantClasses];
-      const mostRestrictiveClass = this.mostRestrictiveGroundClass(classesInPlay);
-      const boundaryRespected = this.respectsColumnBoundaries(row, mostRestrictiveClass);
+      const mostRestrictiveClass =
+        this.mostRestrictiveGroundClass(classesInPlay);
+      const boundaryRespected = this.respectsColumnBoundaries(
+        row,
+        mostRestrictiveClass,
+      );
 
       let binEligible = true;
 
@@ -775,19 +1015,29 @@ export class PutawayTasksService {
         // A, since A's cap of 1 is already exclusive; meaningless once
         // boundaries aren't respected at all).
         if (!exceptionActive) {
-          const anyOccupantStillIncoming = [...occupantSkuIds].some((id) => stillIncomingSkuIds.has(id));
+          const anyOccupantStillIncoming = [...occupantSkuIds].some((id) =>
+            stillIncomingSkuIds.has(id),
+          );
           if (anyOccupantStillIncoming) {
             binEligible = false;
           } else {
-            const caps = classesInPlay.map((cls) => this.maxSkusForClass(row, cls));
+            const caps = classesInPlay.map((cls) =>
+              this.maxSkusForClass(row, cls),
+            );
             const finiteCaps = caps.filter((c): c is number => c !== null);
-            const effectiveCap = finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
+            const effectiveCap =
+              finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
             const columnsOccupied = new Set(
               binLocations
-                .filter((l: any) => (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(l.id))
+                .filter(
+                  (l: any) =>
+                    (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 ||
+                    pendingSkuByLocation.has(l.id),
+                )
                 .map((l: any) => l.rack),
             ).size;
-            if (effectiveCap !== null && columnsOccupied >= effectiveCap) binEligible = false;
+            if (effectiveCap !== null && columnsOccupied >= effectiveCap)
+              binEligible = false;
           }
         }
       } else {
@@ -815,18 +1065,26 @@ export class PutawayTasksService {
         // and isn't closed (confirmed this will be the RARE case — the
         // ordinary case is opening the next unused column, lowest column
         // number first).
-        const sortedColumns = [...columns.values()].sort((a, b) => (Number(a[0].rack) || 0) - (Number(b[0].rack) || 0));
+        const sortedColumns = [...columns.values()].sort(
+          (a, b) => (Number(a[0].rack) || 0) - (Number(b[0].rack) || 0),
+        );
         let bestColumn: any[] | null = null;
         for (const columnLocations of sortedColumns) {
-          if (columnLocations.some((l: any) => closedLocationIds.has(l.id))) continue;
+          if (columnLocations.some((l: any) => closedLocationIds.has(l.id)))
+            continue;
           const colOccupants = new Set<string>();
           for (const loc of columnLocations) {
             const perLocation = skuBalancesByLocation.get(loc.id);
-            if (perLocation) for (const [sid, qty] of perLocation) if (qty > 0) colOccupants.add(sid);
+            if (perLocation)
+              for (const [sid, qty] of perLocation)
+                if (qty > 0) colOccupants.add(sid);
           }
           if (colOccupants.size !== 1 || !colOccupants.has(skuId)) continue;
           const hasRoom = columnLocations.some(
-            (l: any) => (balanceByLocSku.get(`${l.id}|${skuId}`) || 0) <= 0 && !targetedLocationIds.has(l.id) && !excludeLocationIds.includes(l.id),
+            (l: any) =>
+              (balanceByLocSku.get(`${l.id}|${skuId}`) || 0) <= 0 &&
+              !targetedLocationIds.has(l.id) &&
+              !excludeLocationIds.includes(l.id),
           );
           if (!hasRoom) continue;
           let existingDate: Date | null = null;
@@ -834,16 +1092,24 @@ export class PutawayTasksService {
             const d = lastReceivedDateByLocSku.get(`${loc.id}|${skuId}`);
             if (d) existingDate = d;
           }
-          if (existingDate && newStockDate && !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)) continue;
+          if (
+            existingDate &&
+            newStockDate &&
+            !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)
+          )
+            continue;
           bestColumn = columnLocations;
           break;
         }
         if (!bestColumn) {
           bestColumn =
             sortedColumns.find((columnLocations) => {
-              if (columnLocations.some((l: any) => closedLocationIds.has(l.id))) return false;
+              if (columnLocations.some((l: any) => closedLocationIds.has(l.id)))
+                return false;
               const hasAnyOccupant = columnLocations.some(
-                (l: any) => (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(l.id),
+                (l: any) =>
+                  (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 ||
+                  pendingSkuByLocation.has(l.id),
               );
               return !hasAnyOccupant;
             }) ?? null;
@@ -852,11 +1118,15 @@ export class PutawayTasksService {
           // Deepest-first fill within the chosen column — same convention
           // Rack/Drive-in already use (an MHE pushes each new pallet all
           // the way to the back first).
-          const sortedPositions = [...bestColumn].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0));
+          const sortedPositions = [...bestColumn].sort(
+            (a, b) => (b.depth ?? 0) - (a.depth ?? 0),
+          );
           target =
             sortedPositions.find(
               (loc: any) =>
-                (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 && !targetedLocationIds.has(loc.id) && !excludeLocationIds.includes(loc.id),
+                (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 &&
+                !targetedLocationIds.has(loc.id) &&
+                !excludeLocationIds.includes(loc.id),
             ) ?? null;
         }
       } else {
@@ -866,16 +1136,23 @@ export class PutawayTasksService {
         // it, skipping closed columns exactly as the boundary-respecting
         // path does.
         const ranked = [...columns.values()]
-          .filter((columnLocations) => !columnLocations.some((l: any) => closedLocationIds.has(l.id)))
+          .filter(
+            (columnLocations) =>
+              !columnLocations.some((l: any) => closedLocationIds.has(l.id)),
+          )
           .map((columnLocations) => ({
             columnLocations,
             occupied: columnLocations.filter(
-              (l: any) => (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(l.id),
+              (l: any) =>
+                (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 ||
+                pendingSkuByLocation.has(l.id),
             ).length,
           }))
           .sort((a, b) => b.occupied - a.occupied);
         for (const { columnLocations } of ranked) {
-          const sortedPositions = [...columnLocations].sort((a, b) => (b.depth ?? 0) - (a.depth ?? 0));
+          const sortedPositions = [...columnLocations].sort(
+            (a, b) => (b.depth ?? 0) - (a.depth ?? 0),
+          );
           // Free-mixing means a column can hold several different SKUs at
           // once, so "is this position free" must check for NO occupant AT
           // ALL, not just "no stock of THIS SKU" — the same real distinction
@@ -887,7 +1164,9 @@ export class PutawayTasksService {
             (loc: any) =>
               !targetedLocationIds.has(loc.id) &&
               !excludeLocationIds.includes(loc.id) &&
-              ![...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some((qty: number) => qty > 0),
+              ![...(skuBalancesByLocation.get(loc.id)?.values() ?? [])].some(
+                (qty: number) => qty > 0,
+              ),
           );
           if (found) {
             target = found;
@@ -899,7 +1178,9 @@ export class PutawayTasksService {
       if (!target) continue;
 
       const occupancyCount = binLocations.filter(
-        (loc: any) => (skuBalancesByLocation.get(loc.id)?.size ?? 0) > 0 || pendingSkuByLocation.has(loc.id),
+        (loc: any) =>
+          (skuBalancesByLocation.get(loc.id)?.size ?? 0) > 0 ||
+          pendingSkuByLocation.has(loc.id),
       ).length;
 
       candidates.push({
@@ -944,7 +1225,9 @@ export class PutawayTasksService {
     // nearest overall). A real bug caught by the diagnostic script's own
     // shuffled-placement-order test, not assumed correct.
     const allRanks = outboundRanker
-      ? groundLocations.map((l: any) => (l.aisle != null ? outboundRanker(l.aisle) : null)).filter((r: number | null): r is number => r != null)
+      ? groundLocations
+          .map((l: any) => (l.aisle != null ? outboundRanker(l.aisle) : null))
+          .filter((r: number | null): r is number => r != null)
       : [];
     // outboundRanker() is 0-INDEXED (nearest aisle = rank 0, not 1) — a real
     // bug caught by the diagnostic script's own multi-aisle test (every SKU
@@ -961,9 +1244,15 @@ export class PutawayTasksService {
     // 1..N length, so a raw index isn't comparable across groups the way a
     // warehouse-wide aisle index is; dividing by that group's own max index
     // first is what makes the two axes combinable at all.
-    const rowFractionFor = (loc: { aisle: string | null; flankNumber: number | null; block: string | null }): number | null => {
+    const rowFractionFor = (loc: {
+      aisle: string | null;
+      flankNumber: number | null;
+      block: string | null;
+    }): number | null => {
       if (!rowRanker || loc.aisle == null || loc.block == null) return null;
-      const positions = groundRowGroups.get(`${loc.aisle}|${loc.flankNumber ?? 'x'}`);
+      const positions = groundRowGroups.get(
+        `${loc.aisle}|${loc.flankNumber ?? 'x'}`,
+      );
       if (!positions || positions.length === 0) return null;
       const raw = rowRanker(positions, loc.block, globalMaxRowIndex);
       // Normalized against globalMaxRowIndex (the longest row sequence
@@ -983,11 +1272,18 @@ export class PutawayTasksService {
     // hasn't added a row-axis zone yet. `null` (neither axis configured)
     // falls through to the existing flankNumber-only fallback below,
     // completely unchanged from before this step.
-    const combinedFractionFor = (loc: { aisle: string | null; flankNumber: number | null; block: string | null }): number | null => {
+    const combinedFractionFor = (loc: {
+      aisle: string | null;
+      flankNumber: number | null;
+      block: string | null;
+    }): number | null => {
       let aisleFraction: number | null = null;
-      if (outboundRanker && loc.aisle != null) aisleFraction = maxRank > 0 ? outboundRanker(loc.aisle) / maxRank : 0;
+      if (outboundRanker && loc.aisle != null)
+        aisleFraction = maxRank > 0 ? outboundRanker(loc.aisle) / maxRank : 0;
       const rowFraction = rowFractionFor(loc);
-      const parts = [aisleFraction, rowFraction].filter((v): v is number => v != null);
+      const parts = [aisleFraction, rowFraction].filter(
+        (v): v is number => v != null,
+      );
       if (parts.length === 0) return null;
       return parts.reduce((a, b) => a + b, 0) / parts.length;
     };
@@ -999,10 +1295,284 @@ export class PutawayTasksService {
     // that hasn't configured any dock zone sees zero regression.
     const preferFar = abcClass !== 'A' && abcClass !== 'B';
     candidates.sort((a, b) => {
-      if (a.occupancyCount !== b.occupancyCount) return b.occupancyCount - a.occupancyCount;
+      if (a.occupancyCount !== b.occupancyCount)
+        return b.occupancyCount - a.occupancyCount;
       const fracA = combinedFractionFor(a);
       const fracB = combinedFractionFor(b);
-      if (fracA != null && fracB != null && fracA !== fracB) return Math.abs(fracA - targetFraction) - Math.abs(fracB - targetFraction);
+      if (fracA != null && fracB != null && fracA !== fracB)
+        return (
+          Math.abs(fracA - targetFraction) - Math.abs(fracB - targetFraction)
+        );
+      const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
+      const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
+      return preferFar ? fb - fa : fa - fb;
+    });
+
+    return candidates[0].locationId;
+  }
+
+  // ------------------------------------------------------------
+  // STILLAGE bin suggestion — 2026-09-13, see the full design conversation
+  // in the wms-putaway-design memory. DELIBERATELY a fully separate method
+  // from suggestGroundBin()/suggestRackBin() above, same discipline Drive-in
+  // and Ground already got split out with. Stillage's physical shape is
+  // close to Ground's own — a BIN (`stack`) subdivides into COLUMNS
+  // (`stack`+`rack`, single-file LIFO lines `depth` positions deep) — but
+  // the client's own real-world rule is simpler than Ground's: always
+  // single-SKU-per-column (self-stacking cages make partial/FIFO retrieval
+  // within one column impractical — "FIFO is very tough so we need to
+  // empty the full bin first then only allow next putaway into this"), no
+  // free-mixing option at all (unlike Ground's respectsColumnBoundaries*
+  // toggle). Reuses WarehouseStorageType.maxSkusClassA/B/C directly, no new
+  // schema — the client's own confirmed rule ("A class can be given full
+  // 3x3... C can be kept in 1 column each") maps exactly onto this existing
+  // config: A/B (client's own "like A for now") both default to cap 1 (one
+  // SKU may use the WHOLE bin, spanning as many columns as it needs); C
+  // defaults to cap null/unbounded (any number of distinct SKUs, each
+  // confined to its own column — bounded for free by the bin's own real
+  // column count, since `occupantSkuIds.size` can never exceed it). D falls
+  // through to C's cap, same "D behaves like C" convention as everywhere
+  // else in this codebase (maxSkusForClass() already does this).
+  //
+  // Deliberately simpler than suggestGroundBin() in two ways, both flagged
+  // rather than silently matched: no "closed column" lifecycle tracking (a
+  // column that's had a real pick/dispatch decrease stays open here — this
+  // wasn't discussed for Stillage, and is dormant/inert either way until a
+  // Picking module exists and starts writing negative movements); and no
+  // row-axis (NORTH/SOUTH second dock wall) placement — only the aisle-axis
+  // combined ABC×FMS priority score (confirmed with the client, "yes" to
+  // reusing Ground's own placement mechanism), since Stillage never got its
+  // own dedicated row-axis config the way Ground did. Both are easy follow-
+  // ons if ever asked for, not a hard limitation of this shape.
+  // ------------------------------------------------------------
+  private suggestStillageBin(
+    stillageLocations: any[],
+    ctx: any,
+  ): string | null {
+    if (stillageLocations.length === 0) return null;
+    const {
+      skuId,
+      abcClass,
+      fmsClass,
+      storageTypeRowByType,
+      balanceByLocSku,
+      skuBalancesByLocation,
+      lastReceivedDateByLocSku,
+      pendingSkuByLocation,
+      targetedLocationIds,
+      stillIncomingSkuIds,
+      abcClassBySkuId,
+      exceptionActive,
+      agingGranularity,
+      newStockDate,
+      excludeLocationIds,
+      outboundRanker,
+    } = ctx;
+
+    const row: any = storageTypeRowByType.get('STILLAGE');
+    if (!row) return null;
+
+    const binKeyOf = (loc: any) => `${loc.aisle}|${loc.stack}`;
+    const columnKeyOf = (loc: any) => `${binKeyOf(loc)}|${loc.rack}`;
+
+    const bins = new Map<string, any[]>();
+    for (const loc of stillageLocations) {
+      const key = binKeyOf(loc);
+      if (!bins.has(key)) bins.set(key, []);
+      bins.get(key)!.push(loc);
+    }
+
+    type Candidate = {
+      locationId: string;
+      occupancyCount: number;
+      flankNumber: number | null;
+      aisle: string | null;
+      storageType: string;
+    };
+    const candidates: Candidate[] = [];
+
+    for (const binLocations of bins.values()) {
+      // Distinct occupant SKUs across the WHOLE BIN (every column pooled
+      // together) — same "whole shared unit, not per-position" resolution
+      // as Rack's own lane / Ground's own bin, just naming a stack instead.
+      const occupantSkuIds = new Set<string>();
+      for (const loc of binLocations) {
+        const perLocation = skuBalancesByLocation.get(loc.id);
+        if (perLocation)
+          for (const [sid, qty] of perLocation)
+            if (qty > 0) occupantSkuIds.add(sid);
+        const pendingSku = pendingSkuByLocation.get(loc.id);
+        if (pendingSku) occupantSkuIds.add(pendingSku);
+      }
+
+      let binEligible = true;
+
+      if (occupantSkuIds.size === 0) {
+        binEligible = true;
+      } else if (occupantSkuIds.size === 1 && occupantSkuIds.has(skuId)) {
+        // Same-SKU top-up — always eligible on distinct-SKU-count grounds
+        // (this SKU may keep using more of the bin's OWN columns, unbounded
+        // — the "whole bin" cap only ever restricts a DIFFERENT SKU from
+        // entering, never this one from growing); gated instead by the
+        // aging check at column-selection time below.
+        binEligible = true;
+      } else if (!exceptionActive) {
+        // Cross-SKU mixing — governed by maxSkusClassA/B/C, most-restrictive-
+        // class-wins across every occupant AND the incoming SKU, same cap
+        // math as Rack's own lanes. "Still incoming" reservation applies
+        // here too (B/C only, same reasoning as Rack/Ground — redundant for
+        // A/B since their cap of 1 is already exclusive).
+        const anyOccupantStillIncoming = [...occupantSkuIds].some((id) =>
+          stillIncomingSkuIds.has(id),
+        );
+        if (anyOccupantStillIncoming) {
+          binEligible = false;
+        } else {
+          const occupantClasses = [...occupantSkuIds].map(
+            (id) => abcClassBySkuId.get(id) || 'C',
+          );
+          const caps = [abcClass, ...occupantClasses].map((cls) =>
+            this.maxSkusForClass(row, cls),
+          );
+          const finiteCaps = caps.filter((c): c is number => c !== null);
+          const effectiveCap =
+            finiteCaps.length > 0 ? Math.min(...finiteCaps) : null;
+          if (effectiveCap !== null && occupantSkuIds.size >= effectiveCap)
+            binEligible = false;
+        }
+      }
+
+      if (!binEligible) continue;
+
+      // Column selection within this eligible bin — prefer topping up an
+      // existing same-SKU column whose age matches (the ordinary case for a
+      // multi-trip delivery), else open the next unused column, lowest
+      // column number first (same order Ground's own generator/renderer
+      // already use for columns).
+      const columns = new Map<string, any[]>();
+      for (const loc of binLocations) {
+        const key = columnKeyOf(loc);
+        if (!columns.has(key)) columns.set(key, []);
+        columns.get(key)!.push(loc);
+      }
+      const sortedColumns = [...columns.values()].sort(
+        (a, b) => (Number(a[0].rack) || 0) - (Number(b[0].rack) || 0),
+      );
+
+      let bestColumn: any[] | null = null;
+      for (const columnLocations of sortedColumns) {
+        const colOccupants = new Set<string>();
+        for (const loc of columnLocations) {
+          const perLocation = skuBalancesByLocation.get(loc.id);
+          if (perLocation)
+            for (const [sid, qty] of perLocation)
+              if (qty > 0) colOccupants.add(sid);
+        }
+        if (colOccupants.size !== 1 || !colOccupants.has(skuId)) continue;
+        const hasRoom = columnLocations.some(
+          (l: any) =>
+            (balanceByLocSku.get(`${l.id}|${skuId}`) || 0) <= 0 &&
+            !targetedLocationIds.has(l.id) &&
+            !excludeLocationIds.includes(l.id),
+        );
+        if (!hasRoom) continue;
+        let existingDate: Date | null = null;
+        for (const loc of columnLocations) {
+          const d = lastReceivedDateByLocSku.get(`${loc.id}|${skuId}`);
+          if (d) existingDate = d;
+        }
+        if (
+          existingDate &&
+          newStockDate &&
+          !this.sameAgeBucket(existingDate, newStockDate, agingGranularity)
+        )
+          continue; // must fully empty before a different-age batch can enter this column
+        bestColumn = columnLocations;
+        break;
+      }
+      if (!bestColumn) {
+        bestColumn =
+          sortedColumns.find((columnLocations) => {
+            const hasAnyOccupant = columnLocations.some(
+              (l: any) =>
+                (skuBalancesByLocation.get(l.id)?.size ?? 0) > 0 ||
+                pendingSkuByLocation.has(l.id),
+            );
+            return !hasAnyOccupant;
+          }) ?? null;
+      }
+
+      let target: any = null;
+      if (bestColumn) {
+        // Deepest-first fill within the chosen column — same convention
+        // Rack/Ground already use (an MHE pushes each new stack all the way
+        // to the back first).
+        const sortedPositions = [...bestColumn].sort(
+          (a, b) => (b.depth ?? 0) - (a.depth ?? 0),
+        );
+        target =
+          sortedPositions.find(
+            (loc: any) =>
+              (balanceByLocSku.get(`${loc.id}|${skuId}`) || 0) <= 0 &&
+              !targetedLocationIds.has(loc.id) &&
+              !excludeLocationIds.includes(loc.id),
+          ) ?? null;
+      }
+      if (!target) continue; // bin has no genuinely free/eligible position right now
+
+      const occupancyCount = binLocations.filter(
+        (loc: any) =>
+          (skuBalancesByLocation.get(loc.id)?.size ?? 0) > 0 ||
+          pendingSkuByLocation.has(loc.id),
+      ).length;
+
+      candidates.push({
+        locationId: target.id,
+        occupancyCount,
+        flankNumber: target.flankNumber ?? null,
+        aisle: target.aisle ?? null,
+        storageType: target.storageType,
+      });
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Same combined ABC×FMS priority-score + target-rank placement Ground
+    // uses (confirmed with the client — "yes" to reusing it) — aisle-axis
+    // only, since Stillage never got its own dedicated row-axis dock-zone
+    // config the way Ground did. See suggestGroundBin()'s own comment on
+    // combinedPriorityScore()/targetFraction for the full reasoning.
+    const priorityScore = this.combinedPriorityScore(abcClass, fmsClass);
+    const allRanks = outboundRanker
+      ? stillageLocations
+          .map((l: any) => (l.aisle != null ? outboundRanker(l.aisle) : null))
+          .filter((r: number | null): r is number => r != null)
+      : [];
+    const maxRank = allRanks.length > 0 ? Math.max(...allRanks) : 0;
+    const targetFraction = (priorityScore - 2) / 4;
+    const preferFar = abcClass !== 'A' && abcClass !== 'B'; // unconfigured-warehouse fallback direction, same as Rack/Ground
+
+    candidates.sort((a, b) => {
+      if (a.occupancyCount !== b.occupancyCount)
+        return b.occupancyCount - a.occupancyCount;
+      if (outboundRanker) {
+        const fracA =
+          a.aisle != null
+            ? maxRank > 0
+              ? outboundRanker(a.aisle) / maxRank
+              : 0
+            : null;
+        const fracB =
+          b.aisle != null
+            ? maxRank > 0
+              ? outboundRanker(b.aisle) / maxRank
+              : 0
+            : null;
+        if (fracA != null && fracB != null && fracA !== fracB)
+          return (
+            Math.abs(fracA - targetFraction) - Math.abs(fracB - targetFraction)
+          );
+      }
       const fa = a.flankNumber ?? Number.MAX_SAFE_INTEGER;
       const fb = b.flankNumber ?? Number.MAX_SAFE_INTEGER;
       return preferFar ? fb - fa : fa - fb;
@@ -1015,7 +1585,10 @@ export class PutawayTasksService {
   // for the simple localized-aging stand-in (one shared date per vehicle,
   // not per case — see [[wms-putaway-design]]).
   async resolveReceivedDate(tx: any, receiptId: string): Promise<Date | null> {
-    const receipt = await tx.inboundReceipt.findUnique({ where: { id: receiptId }, select: { gateEntry: { select: { dockedInAt: true } } } });
+    const receipt = await tx.inboundReceipt.findUnique({
+      where: { id: receiptId },
+      select: { gateEntry: { select: { dockedInAt: true } } },
+    });
     return receipt?.gateEntry?.dockedInAt ?? null;
   }
 
@@ -1028,24 +1601,43 @@ export class PutawayTasksService {
   // for Putaway — null when nothing is rated Primary there yet (matrix
   // unconfigured), in which case callers treat a "trip" as the whole
   // remaining quantity (no MHE-aware splitting to fall back on).
-  private async assumedCapacity(warehouseId: string): Promise<{ capacity: number; avgTripMinutes: number; equipmentTypeName: string } | null> {
-    const primaryRow = await this.prisma.warehouseEquipmentSuitability.findFirst({
-      where: { warehouseId, putawaySuitability: 'PRIMARY' },
-      include: { equipmentType: true },
-    });
+  private async assumedCapacity(warehouseId: string): Promise<{
+    capacity: number;
+    avgTripMinutes: number;
+    equipmentTypeName: string;
+  } | null> {
+    const primaryRow =
+      await this.prisma.warehouseEquipmentSuitability.findFirst({
+        where: { warehouseId, putawaySuitability: 'PRIMARY' },
+        include: { equipmentType: true },
+      });
     if (!primaryRow) return null;
     return {
       capacity: Number(primaryRow.equipmentType.genericPalletsPerTrip) || 1,
-      avgTripMinutes: Number(primaryRow.equipmentType.genericAvgTripMinutes || 0),
+      avgTripMinutes: Number(
+        primaryRow.equipmentType.genericAvgTripMinutes || 0,
+      ),
       equipmentTypeName: primaryRow.equipmentType.name,
     };
   }
 
-  async estimateTrips(warehouseId: string, quantity: number): Promise<{ trips: number; equipmentTypeName: string | null; estimatedMinutes: number | null }> {
+  async estimateTrips(
+    warehouseId: string,
+    quantity: number,
+  ): Promise<{
+    trips: number;
+    equipmentTypeName: string | null;
+    estimatedMinutes: number | null;
+  }> {
     const assumed = await this.assumedCapacity(warehouseId);
-    if (!assumed) return { trips: 1, equipmentTypeName: null, estimatedMinutes: null };
+    if (!assumed)
+      return { trips: 1, equipmentTypeName: null, estimatedMinutes: null };
     const trips = Math.max(1, Math.ceil(quantity / assumed.capacity));
-    return { trips, equipmentTypeName: assumed.equipmentTypeName, estimatedMinutes: trips * assumed.avgTripMinutes };
+    return {
+      trips,
+      equipmentTypeName: assumed.equipmentTypeName,
+      estimatedMinutes: trips * assumed.avgTripMinutes,
+    };
   }
 
   // ------------------------------------------------------------
@@ -1061,7 +1653,11 @@ export class PutawayTasksService {
   async createBatchTasksForReceipt(tx: any, receiptId: string) {
     const receipt = await tx.inboundReceipt.findUnique({
       where: { id: receiptId },
-      include: { lines: true, warehouse: { select: { id: true } }, stagingLocation: { select: { id: true } } },
+      include: {
+        lines: true,
+        warehouse: { select: { id: true } },
+        stagingLocation: { select: { id: true } },
+      },
     });
     if (!receipt) return;
     const receivedDate = await this.resolveReceivedDate(tx, receiptId);
@@ -1069,13 +1665,20 @@ export class PutawayTasksService {
     for (const line of receipt.lines) {
       const qty = Number(line.receivedQty);
       if (qty <= 0) continue;
-      const existingTask = await tx.putawayTask.findFirst({ where: { receiptLineId: line.id } });
+      const existingTask = await tx.putawayTask.findFirst({
+        where: { receiptLineId: line.id },
+      });
       if (existingTask) continue;
 
-      const fromLocationId = line.stagingLocationId ?? receipt.stagingLocationId;
+      const fromLocationId =
+        line.stagingLocationId ?? receipt.stagingLocationId;
       if (!fromLocationId) continue; // shouldn't happen — matchReceipt requires staging
 
-      const toLocationId = await this.suggestBin(tx, { warehouseId: receipt.warehouse.id, skuId: line.skuId, newStockDate: receivedDate });
+      const toLocationId = await this.suggestBin(tx, {
+        warehouseId: receipt.warehouse.id,
+        skuId: line.skuId,
+        newStockDate: receivedDate,
+      });
       await tx.putawayTask.create({
         data: {
           receiptLineId: line.id,
@@ -1097,19 +1700,45 @@ export class PutawayTasksService {
   // approveScan() write their RECEIPT StockMovement — only does anything
   // when the company is in IMMEDIATE trigger mode (a no-op otherwise, since
   // BATCH mode handles everything at the RECEIVED transition instead).
-  async handleAcceptedScan(tx: any, params: { receiptLineId: string; skuId: string; quantity: number; locationId: string; warehouseId: string; receiptId: string }) {
-    const warehouse = await tx.warehouse.findUnique({ where: { id: params.warehouseId }, select: { companyId: true } });
+  async handleAcceptedScan(
+    tx: any,
+    params: {
+      receiptLineId: string;
+      skuId: string;
+      quantity: number;
+      locationId: string;
+      warehouseId: string;
+      receiptId: string;
+    },
+  ) {
+    const warehouse = await tx.warehouse.findUnique({
+      where: { id: params.warehouseId },
+      select: { companyId: true },
+    });
     if (!warehouse) return;
-    const company = await tx.company.findUnique({ where: { id: warehouse.companyId }, select: { putawayTriggerMode: true, putawayDefaultBatchQty: true } });
+    const company = await tx.company.findUnique({
+      where: { id: warehouse.companyId },
+      select: { putawayTriggerMode: true, putawayDefaultBatchQty: true },
+    });
     if (!company || company.putawayTriggerMode !== 'IMMEDIATE') return;
 
-    const sku = await tx.sku.findUnique({ where: { id: params.skuId }, select: { putawayBatchQty: true } });
+    const sku = await tx.sku.findUnique({
+      where: { id: params.skuId },
+      select: { putawayBatchQty: true },
+    });
     const thresholdRaw = sku?.putawayBatchQty ?? company.putawayDefaultBatchQty;
     const threshold = thresholdRaw != null ? Number(thresholdRaw) : null;
     const receivedDate = await this.resolveReceivedDate(tx, params.receiptId);
 
-    const createTask = async (quantity: number, openForAccumulation: boolean) => {
-      const toLocationId = await this.suggestBin(tx, { warehouseId: params.warehouseId, skuId: params.skuId, newStockDate: receivedDate });
+    const createTask = async (
+      quantity: number,
+      openForAccumulation: boolean,
+    ) => {
+      const toLocationId = await this.suggestBin(tx, {
+        warehouseId: params.warehouseId,
+        skuId: params.skuId,
+        newStockDate: receivedDate,
+      });
       return tx.putawayTask.create({
         data: {
           receiptLineId: params.receiptLineId,
@@ -1129,10 +1758,15 @@ export class PutawayTasksService {
       return;
     }
 
-    const open = await tx.putawayTask.findFirst({ where: { receiptLineId: params.receiptLineId, openForAccumulation: true } });
+    const open = await tx.putawayTask.findFirst({
+      where: { receiptLineId: params.receiptLineId, openForAccumulation: true },
+    });
     if (open) {
       const newQty = Number(open.quantity) + params.quantity;
-      await tx.putawayTask.update({ where: { id: open.id }, data: { quantity: newQty, openForAccumulation: newQty < threshold } });
+      await tx.putawayTask.update({
+        where: { id: open.id },
+        data: { quantity: newQty, openForAccumulation: newQty < threshold },
+      });
       return;
     }
     await createTask(params.quantity, params.quantity < threshold);
@@ -1154,19 +1788,42 @@ export class PutawayTasksService {
   async createTaskForClosedPallet(tx: any, palletLoadId: string) {
     const load = await tx.palletLoad.findUnique({
       where: { id: palletLoadId },
-      include: { receiptLine: { include: { receipt: { include: { warehouse: { select: { id: true } }, stagingLocation: { select: { id: true } } } } } } },
+      include: {
+        receiptLine: {
+          include: {
+            receipt: {
+              include: {
+                warehouse: { select: { id: true } },
+                stagingLocation: { select: { id: true } },
+              },
+            },
+          },
+        },
+      },
     });
     if (!load || !load.receiptLine) return; // shouldn't happen — receiptLineId is set at the first scan married onto this load
 
-    const agg = await tx.stockMovement.aggregate({ where: { palletLoadId }, _sum: { quantity: true } });
+    const agg = await tx.stockMovement.aggregate({
+      where: { palletLoadId },
+      _sum: { quantity: true },
+    });
     const qty = Number(agg._sum.quantity || 0);
     if (qty <= 0) return; // a short-closed load nothing was ever scanned onto — nothing to put away
 
-    const fromLocationId = load.receiptLine.stagingLocationId ?? load.receiptLine.receipt.stagingLocationId;
+    const fromLocationId =
+      load.receiptLine.stagingLocationId ??
+      load.receiptLine.receipt.stagingLocationId;
     if (!fromLocationId) return; // shouldn't happen — matchReceipt requires staging before any scan can occur
 
-    const receivedDate = await this.resolveReceivedDate(tx, load.receiptLine.receiptId);
-    const toLocationId = await this.suggestBin(tx, { warehouseId: load.receiptLine.receipt.warehouse.id, skuId: load.skuId, newStockDate: receivedDate });
+    const receivedDate = await this.resolveReceivedDate(
+      tx,
+      load.receiptLine.receiptId,
+    );
+    const toLocationId = await this.suggestBin(tx, {
+      warehouseId: load.receiptLine.receipt.warehouse.id,
+      skuId: load.skuId,
+      newStockDate: receivedDate,
+    });
 
     await tx.putawayTask.create({
       data: {
@@ -1185,8 +1842,10 @@ export class PutawayTasksService {
   // Read
   // ------------------------------------------------------------
 
-  async findAll(user: any, warehouseId?: string) {
-    const where: any = { receiptLine: { receipt: { warehouse: { ...companyFilter(user) } } } };
+  async findAll(user: AuthUser, warehouseId?: string) {
+    const where: any = {
+      receiptLine: { receipt: { warehouse: { ...companyFilter(user) } } },
+    };
     if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
       where.receiptLine.receipt.warehouse.id = { in: ids };
@@ -1200,8 +1859,12 @@ export class PutawayTasksService {
     return tasks
       .filter((t: any) => !t.openForAccumulation)
       .map((t: any) => {
-        const movedQuantity = t.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((sum: number, tr: any) => sum + Number(tr.quantity), 0);
-        const inProgressTrip = t.trips.find((tr: any) => tr.status === 'IN_PROGRESS');
+        const movedQuantity = t.trips
+          .filter((tr: any) => tr.status === 'COMPLETED')
+          .reduce((sum: number, tr: any) => sum + Number(tr.quantity), 0);
+        const inProgressTrip = t.trips.find(
+          (tr: any) => tr.status === 'IN_PROGRESS',
+        );
         // At-a-glance discrepancy flag (2026-09-06) — true the moment ANY
         // of this task's completed trips landed somewhere other than the
         // original assignment (only possible at all once
@@ -1209,7 +1872,12 @@ export class PutawayTasksService {
         // can already see the task list — this is just a signal on data
         // they already have; the fuller "Discrepancies" list below is
         // Supervisor+ only.
-        const hasDiscrepancy = t.trips.some((tr: any) => tr.status === 'COMPLETED' && tr.scannedLocationId && tr.scannedLocationId !== t.toLocationId);
+        const hasDiscrepancy = t.trips.some(
+          (tr: any) =>
+            tr.status === 'COMPLETED' &&
+            tr.scannedLocationId &&
+            tr.scannedLocationId !== t.toLocationId,
+        );
         return { ...t, movedQuantity, inProgressTrip, hasDiscrepancy };
       });
   }
@@ -1224,19 +1892,39 @@ export class PutawayTasksService {
   // Supervisor+ only (PUTAWAY_DISCREPANCY_REVIEW_ROLES) — an Operator sees
   // the plain flag on their own row via findAll() above, not this fuller
   // audit view.
-  async getDiscrepancies(user: any, warehouseId?: string) {
-    const where: any = { status: 'COMPLETED', scannedLocationId: { not: null }, task: { receiptLine: { receipt: { warehouse: { ...companyFilter(user) } } } } };
+  async getDiscrepancies(user: AuthUser, warehouseId?: string) {
+    const where: any = {
+      status: 'COMPLETED',
+      scannedLocationId: { not: null },
+      task: {
+        receiptLine: { receipt: { warehouse: { ...companyFilter(user) } } },
+      },
+    };
     if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
       where.task.receiptLine.receipt.warehouse.id = { in: ids };
     }
     if (warehouseId) where.task.receiptLine.receipt.warehouseId = warehouseId;
 
-    const locationSelect = { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true };
+    const locationSelect = {
+      id: true,
+      code: true,
+      storageType: true,
+      rack: true,
+      level: true,
+      depth: true,
+      flankNumber: true,
+    };
     const trips = await this.prisma.putawayTrip.findMany({
       where,
       include: {
-        task: { select: { toLocationId: true, sku: { select: { code: true } }, toLocation: { select: locationSelect } } },
+        task: {
+          select: {
+            toLocationId: true,
+            sku: { select: { code: true } },
+            toLocation: { select: locationSelect },
+          },
+        },
         scannedLocation: { select: locationSelect },
         claimedBy: { select: { name: true } },
         discrepancyReviewedBy: { select: { name: true } },
@@ -1264,35 +1952,54 @@ export class PutawayTasksService {
   // VehicleGateEntry.inwardCompletedAt). Idempotent on a second call, same
   // convention as NotificationsService.acknowledge() — re-reviewing just
   // re-stamps who/when rather than erroring.
-  async reviewDiscrepancy(tripId: string, user: any) {
+  async reviewDiscrepancy(tripId: string, user: AuthUser) {
     const trip = await this.prisma.putawayTrip.findUnique({
       where: { id: tripId },
-      include: { task: { include: { receiptLine: { include: { receipt: { include: { warehouse: true } } } } } } },
+      include: {
+        task: {
+          include: {
+            receiptLine: {
+              include: { receipt: { include: { warehouse: true } } },
+            },
+          },
+        },
+      },
     });
     if (!trip) throw new NotFoundException('Trip not found.');
     const warehouse = (trip.task as any).receiptLine.receipt.warehouse;
-    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this trip.');
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)
+      throw new ForbiddenException('You do not have access to this trip.');
     if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouse.id)) throw new ForbiddenException('You do not have access to this trip.');
+      if (!ids.includes(warehouse.id))
+        throw new ForbiddenException('You do not have access to this trip.');
     }
     return this.prisma.putawayTrip.update({
       where: { id: tripId },
-      data: { discrepancyReviewedAt: new Date(), discrepancyReviewedById: user.userId },
+      data: {
+        discrepancyReviewedAt: new Date(),
+        discrepancyReviewedById: user.userId,
+      },
     });
   }
 
-  private async assertTaskAccess(id: string, user: any) {
+  private async assertTaskAccess(id: string, user: AuthUser) {
     const task = await this.prisma.putawayTask.findUnique({
       where: { id },
-      include: { ...TASK_INCLUDE, receiptLine: { include: { receipt: { include: { warehouse: true } } } }, trips: true },
+      include: {
+        ...TASK_INCLUDE,
+        receiptLine: { include: { receipt: { include: { warehouse: true } } } },
+        trips: true,
+      },
     });
     if (!task) throw new NotFoundException('Putaway task not found.');
     const warehouse = (task.receiptLine as any).receipt.warehouse;
-    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this task.');
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)
+      throw new ForbiddenException('You do not have access to this task.');
     if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouse.id)) throw new ForbiddenException('You do not have access to this task.');
+      if (!ids.includes(warehouse.id))
+        throw new ForbiddenException('You do not have access to this task.');
     }
     return task;
   }
@@ -1307,49 +2014,82 @@ export class PutawayTasksService {
   // PENDING task for that SKU at that staging location, and opens an
   // IN_PROGRESS trip sized by the warehouse's assumed equipment capacity
   // for this SKU (never more than what's left on the task).
-  async claimTrip(barcode: any, user: any) {
+  async claimTrip(barcode: any, user: AuthUser) {
     const trimmed = barcode != null ? String(barcode).trim() : '';
     if (!trimmed) throw new BadRequestException('A barcode is required.');
 
     const barcodeMatches = await this.prisma.skuBarcode.findMany({
-      where: { barcode: trimmed, sku: { companyId: user.companyId } },
+      // Non-null assertion: this scan-execution path is only ever reached by
+      // a company-scoped user in practice (SUPER_ADMIN has no warehouse
+      // floor to scan against) — same reasoning as companyFilter()'s own
+      // return type above.
+      where: { barcode: trimmed, sku: { companyId: user.companyId! } },
       select: { skuId: true },
     });
-    if (barcodeMatches.length === 0) throw new BadRequestException('Unrecognized barcode.');
+    if (barcodeMatches.length === 0)
+      throw new BadRequestException('Unrecognized barcode.');
     const skuIds = [...new Set(barcodeMatches.map((b: any) => b.skuId))];
 
-    const scopedWarehouseIds = PUTAWAY_SCOPED_ROLES.includes(user.role) ? await ownWarehouseIds(this.prisma, user.userId) : null;
+    const scopedWarehouseIds = PUTAWAY_SCOPED_ROLES.includes(user.role)
+      ? await ownWarehouseIds(this.prisma, user.userId)
+      : null;
 
     const candidateTasks = await this.prisma.putawayTask.findMany({
       where: {
         skuId: { in: skuIds },
         status: 'PENDING',
         openForAccumulation: false,
-        receiptLine: { receipt: { warehouse: { companyId: user.companyId, ...(scopedWarehouseIds ? { id: { in: scopedWarehouseIds } } : {}) } } },
+        receiptLine: {
+          receipt: {
+            warehouse: {
+              companyId: user.companyId!,
+              ...(scopedWarehouseIds ? { id: { in: scopedWarehouseIds } } : {}),
+            },
+          },
+        },
       },
       include: { trips: true },
       orderBy: { createdAt: 'asc' },
     });
 
     const task = candidateTasks.find((t: any) => {
-      const moved = t.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
-      const hasOpenTrip = t.trips.some((tr: any) => tr.status === 'IN_PROGRESS');
+      const moved = t.trips
+        .filter((tr: any) => tr.status === 'COMPLETED')
+        .reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
+      const hasOpenTrip = t.trips.some(
+        (tr: any) => tr.status === 'IN_PROGRESS',
+      );
       return moved < Number(t.quantity) && !hasOpenTrip;
     });
-    if (!task) throw new BadRequestException('No workable putaway task found for this SKU — it may already be fully claimed or completed.');
+    if (!task)
+      throw new BadRequestException(
+        'No workable putaway task found for this SKU — it may already be fully claimed or completed.',
+      );
 
-    const moved = task.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
+    const moved = task.trips
+      .filter((tr: any) => tr.status === 'COMPLETED')
+      .reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
     const remaining = Number(task.quantity) - moved;
-    const warehouseId = (await this.prisma.location.findUnique({ where: { id: task.fromLocationId }, select: { warehouseId: true } }))!.warehouseId;
+    const warehouseId = (await this.prisma.location.findUnique({
+      where: { id: task.fromLocationId },
+      select: { warehouseId: true },
+    }))!.warehouseId;
     const assumed = await this.assumedCapacity(warehouseId);
     // One trip moves whatever the assumed equipment can carry, capped at
     // what's actually left on the task — the last trip of a task is
     // naturally smaller than a full capacity load. No equipment configured
     // for this warehouse yet -> one trip covers everything remaining.
-    const tripQuantity = assumed ? Math.min(remaining, assumed.capacity) : remaining;
+    const tripQuantity = assumed
+      ? Math.min(remaining, assumed.capacity)
+      : remaining;
 
     return this.prisma.putawayTrip.create({
-      data: { taskId: task.id, quantity: tripQuantity, claimedById: user.userId, stagingBarcodeScanned: trimmed },
+      data: {
+        taskId: task.id,
+        quantity: tripQuantity,
+        claimedById: user.userId,
+        stagingBarcodeScanned: trimmed,
+      },
       include: { task: { include: TASK_INCLUDE } },
     });
   }
@@ -1362,11 +2102,26 @@ export class PutawayTasksService {
   // real Location Label alongside the Rack Name) — falls back to computing
   // buildRackName() over every active location in the warehouse only if
   // that fails, since Rack Name isn't a stored/indexable column.
-  private async resolveLocationInWarehouse(warehouseId: string, trimmed: string) {
-    const byCode = await this.prisma.location.findFirst({ where: { warehouseId, isActive: true, code: { equals: trimmed, mode: 'insensitive' } } });
+  private async resolveLocationInWarehouse(
+    warehouseId: string,
+    trimmed: string,
+  ) {
+    const byCode = await this.prisma.location.findFirst({
+      where: {
+        warehouseId,
+        isActive: true,
+        code: { equals: trimmed, mode: 'insensitive' },
+      },
+    });
     if (byCode) return byCode;
-    const candidates = await this.prisma.location.findMany({ where: { warehouseId, isActive: true } });
-    return candidates.find((l: any) => buildRackName(l)?.toUpperCase() === trimmed) ?? null;
+    const candidates = await this.prisma.location.findMany({
+      where: { warehouseId, isActive: true },
+    });
+    return (
+      candidates.find(
+        (l: any) => buildRackName(l)?.toUpperCase() === trimmed,
+      ) ?? null
+    );
   }
 
   // The location scan — completes a trip. By default, only a scan matching
@@ -1385,44 +2140,81 @@ export class PutawayTasksService {
   // forward unchanged — the PUTAWAY_IN lands at wherever the stock
   // PHYSICALLY is (the resolved target), never blindly at the original
   // assignment, so the ledger stays honest even when overridden.
-  async completeTrip(tripId: string, locationCode: any, user: any) {
-    const trip = await this.prisma.putawayTrip.findUnique({ where: { id: tripId }, include: { task: true } });
+  async completeTrip(tripId: string, locationCode: any, user: AuthUser) {
+    const trip = await this.prisma.putawayTrip.findUnique({
+      where: { id: tripId },
+      include: { task: true },
+    });
     if (!trip) throw new NotFoundException('Trip not found.');
-    if (trip.status !== 'IN_PROGRESS') throw new BadRequestException('This trip is not awaiting a location scan.');
-    if (trip.claimedById !== user.userId) throw new ForbiddenException('Only the operator who claimed this trip can complete it.');
+    if (trip.status !== 'IN_PROGRESS')
+      throw new BadRequestException(
+        'This trip is not awaiting a location scan.',
+      );
+    if (trip.claimedById !== user.userId)
+      throw new ForbiddenException(
+        'Only the operator who claimed this trip can complete it.',
+      );
 
     const task = trip.task as any;
-    if (!task.toLocationId) throw new BadRequestException('This task has no assigned bin yet.');
+    if (!task.toLocationId)
+      throw new BadRequestException('This task has no assigned bin yet.');
 
-    const trimmed = locationCode != null ? String(locationCode).trim().toUpperCase() : '';
+    const trimmed =
+      locationCode != null ? String(locationCode).trim().toUpperCase() : '';
     // Match against the task's own destination directly — accepting
     // EITHER the raw `code` or the human "Rack Name" (buildRackName
     // above), since 2026-08-29 the task screen shows Rack Name, not the
     // raw code, so whatever's displayed must be exactly what completes
     // the trip when typed/scanned back.
-    const assignedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
+    const assignedLocation = await this.prisma.location.findUnique({
+      where: { id: task.toLocationId },
+    });
     const assignedRackName = buildRackName(assignedLocation);
-    const matchesAssigned = !!assignedLocation && (assignedLocation.code.toUpperCase() === trimmed || (assignedRackName != null && assignedRackName.toUpperCase() === trimmed));
+    const matchesAssigned =
+      !!assignedLocation &&
+      (assignedLocation.code.toUpperCase() === trimmed ||
+        (assignedRackName != null &&
+          assignedRackName.toUpperCase() === trimmed));
 
     let targetLocation = assignedLocation;
     if (!matchesAssigned) {
-      const warehouse = await this.prisma.warehouse.findUnique({ where: { id: assignedLocation!.warehouseId }, select: { company: { select: { allowPutawayLocationOverride: true } } } });
+      const warehouse = await this.prisma.warehouse.findUnique({
+        where: { id: assignedLocation!.warehouseId },
+        select: { company: { select: { allowPutawayLocationOverride: true } } },
+      });
       if (!warehouse?.company.allowPutawayLocationOverride) {
-        throw new BadRequestException(`Wrong location — this must be put away at the assigned bin, not "${trimmed}".`);
+        throw new BadRequestException(
+          `Wrong location — this must be put away at the assigned bin, not "${trimmed}".`,
+        );
       }
-      const resolved = await this.resolveLocationInWarehouse(assignedLocation!.warehouseId, trimmed);
+      const resolved = await this.resolveLocationInWarehouse(
+        assignedLocation!.warehouseId,
+        trimmed,
+      );
       if (!resolved) {
-        throw new BadRequestException(`"${trimmed}" isn't a recognized location in this warehouse — scan a real bin's label.`);
+        throw new BadRequestException(
+          `"${trimmed}" isn't a recognized location in this warehouse — scan a real bin's label.`,
+        );
       }
       targetLocation = resolved;
     }
 
-    const receivedDate = await this.resolveReceivedDate(this.prisma, (await this.prisma.inboundReceiptLine.findUnique({ where: { id: task.receiptLineId }, select: { receiptId: true } }))!.receiptId);
+    const receivedDate = await this.resolveReceivedDate(
+      this.prisma,
+      (await this.prisma.inboundReceiptLine.findUnique({
+        where: { id: task.receiptLineId },
+        select: { receiptId: true },
+      }))!.receiptId,
+    );
 
     return this.prisma.$transaction(async (tx) => {
       const updatedTrip = await tx.putawayTrip.update({
         where: { id: tripId },
-        data: { status: 'COMPLETED', scannedLocationId: targetLocation!.id, completedAt: new Date() },
+        data: {
+          status: 'COMPLETED',
+          scannedLocationId: targetLocation!.id,
+          completedAt: new Date(),
+        },
       });
 
       // palletLoadId carried forward unchanged, same as receivedDate above
@@ -1463,10 +2255,17 @@ export class PutawayTasksService {
         },
       });
 
-      const allTrips = await tx.putawayTrip.findMany({ where: { taskId: task.id } });
-      const moved = allTrips.filter((t: any) => t.status === 'COMPLETED').reduce((s: number, t: any) => s + Number(t.quantity), 0);
+      const allTrips = await tx.putawayTrip.findMany({
+        where: { taskId: task.id },
+      });
+      const moved = allTrips
+        .filter((t: any) => t.status === 'COMPLETED')
+        .reduce((s: number, t: any) => s + Number(t.quantity), 0);
       if (moved >= Number(task.quantity)) {
-        await tx.putawayTask.update({ where: { id: task.id }, data: { status: 'COMPLETED' } });
+        await tx.putawayTask.update({
+          where: { id: task.id },
+          data: { status: 'COMPLETED' },
+        });
         await this.maybeCompleteReceiptPutaway(tx, task.receiptLineId);
       }
 
@@ -1478,32 +2277,76 @@ export class PutawayTasksService {
   // it is COMPLETED — closes the loop completeInward() already checks for
   // but nothing has ever set (see [[wms-putaway-design]]).
   private async maybeCompleteReceiptPutaway(tx: any, receiptLineId: string) {
-    const line = await tx.inboundReceiptLine.findUnique({ where: { id: receiptLineId }, select: { receiptId: true } });
+    const line = await tx.inboundReceiptLine.findUnique({
+      where: { id: receiptLineId },
+      select: { receiptId: true },
+    });
     if (!line) return;
-    const receiptTasks = await tx.putawayTask.findMany({ where: { receiptLine: { receiptId: line.receiptId } } });
-    if (receiptTasks.length === 0 || receiptTasks.some((t: any) => t.status !== 'COMPLETED')) return;
-    const receipt = await tx.inboundReceipt.findUnique({ where: { id: line.receiptId }, select: { status: true } });
+    const receiptTasks = await tx.putawayTask.findMany({
+      where: { receiptLine: { receiptId: line.receiptId } },
+    });
+    if (
+      receiptTasks.length === 0 ||
+      receiptTasks.some((t: any) => t.status !== 'COMPLETED')
+    )
+      return;
+    const receipt = await tx.inboundReceipt.findUnique({
+      where: { id: line.receiptId },
+      select: { status: true },
+    });
     if (receipt?.status === 'RECEIVED') {
-      await tx.inboundReceipt.update({ where: { id: line.receiptId }, data: { status: 'PUTAWAY_COMPLETE' } });
+      await tx.inboundReceipt.update({
+        where: { id: line.receiptId },
+        data: { status: 'PUTAWAY_COMPLETE' },
+      });
     }
   }
 
   // "Request different bin" — only when the suggested location is
   // physically unusable, never a manual pick. Re-suggests excluding every
   // location this task has already been assigned to.
-  async requestDifferentBin(taskId: string, reason: any, user: any) {
+  async requestDifferentBin(taskId: string, reason: any, user: AuthUser) {
     const task = await this.assertTaskAccess(taskId, user);
-    if (task.status === 'COMPLETED') throw new BadRequestException('This task is already completed.');
-    if (task.trips.some((t: any) => t.status === 'IN_PROGRESS')) throw new BadRequestException('Complete or abandon the in-progress trip before requesting a different bin.');
+    if (task.status === 'COMPLETED')
+      throw new BadRequestException('This task is already completed.');
+    if (task.trips.some((t: any) => t.status === 'IN_PROGRESS'))
+      throw new BadRequestException(
+        'Complete or abandon the in-progress trip before requesting a different bin.',
+      );
 
-    const priorReassignments = await this.prisma.putawayReassignment.findMany({ where: { taskId }, select: { previousLocationId: true, newLocationId: true } });
+    const priorReassignments = await this.prisma.putawayReassignment.findMany({
+      where: { taskId },
+      select: { previousLocationId: true, newLocationId: true },
+    });
     const excludeLocationIds = [
-      ...new Set([task.toLocationId, ...priorReassignments.flatMap((r: any) => [r.previousLocationId, r.newLocationId])].filter(Boolean) as string[]),
+      ...new Set(
+        [
+          task.toLocationId,
+          ...priorReassignments.flatMap((r: any) => [
+            r.previousLocationId,
+            r.newLocationId,
+          ]),
+        ].filter(Boolean) as string[],
+      ),
     ];
 
-    const warehouseId = (await this.prisma.location.findUnique({ where: { id: task.fromLocationId }, select: { warehouseId: true } }))!.warehouseId;
-    const receivedDate = await this.resolveReceivedDate(this.prisma, (await this.prisma.inboundReceiptLine.findUnique({ where: { id: task.receiptLineId }, select: { receiptId: true } }))!.receiptId);
-    const newLocationId = await this.suggestBin(this.prisma, { warehouseId, skuId: task.skuId, excludeLocationIds, newStockDate: receivedDate });
+    const warehouseId = (await this.prisma.location.findUnique({
+      where: { id: task.fromLocationId },
+      select: { warehouseId: true },
+    }))!.warehouseId;
+    const receivedDate = await this.resolveReceivedDate(
+      this.prisma,
+      (await this.prisma.inboundReceiptLine.findUnique({
+        where: { id: task.receiptLineId },
+        select: { receiptId: true },
+      }))!.receiptId,
+    );
+    const newLocationId = await this.suggestBin(this.prisma, {
+      warehouseId,
+      skuId: task.skuId,
+      excludeLocationIds,
+      newStockDate: receivedDate,
+    });
 
     return this.prisma.$transaction(async (tx) => {
       await tx.putawayReassignment.create({
@@ -1517,7 +2360,10 @@ export class PutawayTasksService {
       });
       return tx.putawayTask.update({
         where: { id: taskId },
-        data: { toLocationId: newLocationId ?? null, status: newLocationId ? 'PENDING' : 'NEEDS_BIN' },
+        data: {
+          toLocationId: newLocationId ?? null,
+          status: newLocationId ? 'PENDING' : 'NEEDS_BIN',
+        },
         include: TASK_INCLUDE,
       });
     });
@@ -1552,8 +2398,12 @@ export class PutawayTasksService {
   // up since, without permanently exiling them to the back (the client's
   // own correction — dropping someone to last just rewards avoiding
   // work with less of it).
-  async computeRecommendedOperator(warehouseIdOrIds: string | string[]): Promise<{ id: string; name: string; effectiveRankTime: Date } | null> {
-    const warehouseIds = Array.isArray(warehouseIdOrIds) ? warehouseIdOrIds : [warehouseIdOrIds];
+  async computeRecommendedOperator(
+    warehouseIdOrIds: string | string[],
+  ): Promise<{ id: string; name: string; effectiveRankTime: Date } | null> {
+    const warehouseIds = Array.isArray(warehouseIdOrIds)
+      ? warehouseIdOrIds
+      : [warehouseIdOrIds];
     if (warehouseIds.length === 0) return null;
     const operators = await this.prisma.user.findMany({
       // NOT `canOperateMhe: { not: false }` — on a nullable column, Postgres
@@ -1561,20 +2411,31 @@ export class PutawayTasksService {
       // false` evaluates to NULL, not true), which would wrongly drop
       // every operator who's never had this set at all. Explicit OR
       // instead, matching the real "true OR unset" intent.
-      where: { role: 'OPERATOR', isActive: true, OR: [{ canOperateMhe: true }, { canOperateMhe: null }], assignedWarehouses: { some: { id: { in: warehouseIds } } } },
+      where: {
+        role: 'OPERATOR',
+        isActive: true,
+        OR: [{ canOperateMhe: true }, { canOperateMhe: null }],
+        assignedWarehouses: { some: { id: { in: warehouseIds } } },
+      },
       select: { id: true, name: true, createdAt: true },
     });
     if (operators.length === 0) return null;
     const operatorIds = operators.map((o) => o.id);
 
-    const inProgress = await this.prisma.putawayTrip.findMany({ where: { claimedById: { in: operatorIds }, status: 'IN_PROGRESS' }, select: { claimedById: true } });
+    const inProgress = await this.prisma.putawayTrip.findMany({
+      where: { claimedById: { in: operatorIds }, status: 'IN_PROGRESS' },
+      select: { claimedById: true },
+    });
     const busyIds = new Set(inProgress.map((t: any) => t.claimedById));
     const freeOperators = operators.filter((o) => !busyIds.has(o.id));
     if (freeOperators.length === 0) return null;
     const freeIds = freeOperators.map((o) => o.id);
 
     const trips = await this.prisma.putawayTrip.findMany({
-      where: { claimedById: { in: freeIds }, status: { in: ['COMPLETED', 'ABANDONED'] } },
+      where: {
+        claimedById: { in: freeIds },
+        status: { in: ['COMPLETED', 'ABANDONED'] },
+      },
       select: { claimedById: true, claimedAt: true, completedAt: true },
     });
     const lastActivity = new Map<string, Date>();
@@ -1585,13 +2446,18 @@ export class PutawayTasksService {
     }
 
     const missedAlerts = await this.prisma.notificationLog.findMany({
-      where: { eventType: 'PUTAWAY_OPERATOR_MISSED_TURN', referenceType: 'User', referenceId: { in: freeIds } },
+      where: {
+        eventType: 'PUTAWAY_OPERATOR_MISSED_TURN',
+        referenceType: 'User',
+        referenceId: { in: freeIds },
+      },
       orderBy: { createdAt: 'desc' },
       select: { referenceId: true, createdAt: true },
     });
     const latestAlertByOperator = new Map<string, Date>();
     for (const a of missedAlerts) {
-      if (!latestAlertByOperator.has(a.referenceId!)) latestAlertByOperator.set(a.referenceId!, a.createdAt);
+      if (!latestAlertByOperator.has(a.referenceId!))
+        latestAlertByOperator.set(a.referenceId!, a.createdAt);
     }
 
     const ranked = freeOperators.map((o) => {
@@ -1600,10 +2466,13 @@ export class PutawayTasksService {
       // else just because they have no history yet).
       const freeSince = lastActivity.get(o.id) ?? o.createdAt;
       const alertAt = latestAlertByOperator.get(o.id);
-      const effectiveRankTime = alertAt && alertAt > freeSince ? alertAt : freeSince;
+      const effectiveRankTime =
+        alertAt && alertAt > freeSince ? alertAt : freeSince;
       return { id: o.id, name: o.name, effectiveRankTime };
     });
-    ranked.sort((a, b) => a.effectiveRankTime.getTime() - b.effectiveRankTime.getTime());
+    ranked.sort(
+      (a, b) => a.effectiveRankTime.getTime() - b.effectiveRankTime.getTime(),
+    );
     return ranked[0];
   }
 
@@ -1620,15 +2489,23 @@ export class PutawayTasksService {
   // PutawayTasksService.findAll()'s own convention exactly: omitted means
   // "every warehouse I'm actually scoped to" (via ownWarehouseIds for a
   // scoped role, company-wide for Admin), not "no filter at all."
-  async getRecommendation(user: any, warehouseId?: string) {
+  async getRecommendation(user: AuthUser, warehouseId?: string) {
     let warehouseIds: string[];
     if (warehouseId) {
-      const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+      const warehouse = await this.prisma.warehouse.findUnique({
+        where: { id: warehouseId },
+      });
       if (!warehouse) throw new NotFoundException('Warehouse not found.');
-      if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this warehouse.');
+      if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)
+        throw new ForbiddenException(
+          'You do not have access to this warehouse.',
+        );
       if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
         const ids = await ownWarehouseIds(this.prisma, user.userId);
-        if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+        if (!ids.includes(warehouseId))
+          throw new ForbiddenException(
+            'You do not have access to this warehouse.',
+          );
       }
       warehouseIds = [warehouseId];
     } else if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
@@ -1637,23 +2514,42 @@ export class PutawayTasksService {
       // COMPANY_ADMIN/SUPER_ADMIN with no explicit warehouse — every
       // warehouse in scope (company-wide, or all companies for Super
       // Admin), same breadth findAll() itself falls back to.
-      const warehouses = await this.prisma.warehouse.findMany({ where: companyFilter(user), select: { id: true } });
+      const warehouses = await this.prisma.warehouse.findMany({
+        where: companyFilter(user),
+        select: { id: true },
+      });
       warehouseIds = warehouses.map((w) => w.id);
     }
-    if (warehouseIds.length === 0) return { priorityTask: null, recommendedOperator: null };
+    if (warehouseIds.length === 0)
+      return { priorityTask: null, recommendedOperator: null };
 
     const priorityTask = await this.prisma.putawayTask.findFirst({
-      where: { status: 'PENDING', openForAccumulation: false, receiptLine: { receipt: { warehouseId: { in: warehouseIds } } } },
+      where: {
+        status: 'PENDING',
+        openForAccumulation: false,
+        receiptLine: { receipt: { warehouseId: { in: warehouseIds } } },
+      },
       include: TASK_INCLUDE,
       orderBy: { createdAt: 'asc' },
     });
-    const recommendedOperator = await this.computeRecommendedOperator(warehouseIds);
+    const recommendedOperator =
+      await this.computeRecommendedOperator(warehouseIds);
 
     return {
       priorityTask: priorityTask
-        ? { skuCode: priorityTask.sku.code, locationCode: displayCode(priorityTask.fromLocation), waitingSince: priorityTask.createdAt }
+        ? {
+            skuCode: priorityTask.sku.code,
+            locationCode: displayCode(priorityTask.fromLocation),
+            waitingSince: priorityTask.createdAt,
+          }
         : null,
-      recommendedOperator: recommendedOperator ? { id: recommendedOperator.id, name: recommendedOperator.name, freeSince: recommendedOperator.effectiveRankTime } : null,
+      recommendedOperator: recommendedOperator
+        ? {
+            id: recommendedOperator.id,
+            name: recommendedOperator.name,
+            freeSince: recommendedOperator.effectiveRankTime,
+          }
+        : null,
     };
   }
 }

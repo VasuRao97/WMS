@@ -689,10 +689,11 @@ model Location {
   zoneType    LocationZoneType
   // How this bin is physically built. Free text (not a Postgres enum), same
   // convention as WarehouseStorageType.storageType — validated in the service
-  // against GROUND_FLOOR | SPR | DRIVE_IN | ASRS | STILLAGE. Deliberately
-  // excludes "MIX": that value only ever means "warehouse hasn't broken this
-  // down yet" at the WarehouseStorageType (capacity-planning) level — a real,
-  // physical bin is always concretely one of the five, never "mixed" itself.
+  // against GROUND_FLOOR | SPR | DRIVE_IN | STILLAGE (ASRS removed 2026-09-13,
+  // see common/rack-name.util.ts's own comment). Deliberately excludes "MIX":
+  // that value only ever means "warehouse hasn't broken this down yet" at the
+  // WarehouseStorageType (capacity-planning) level — a real, physical bin is
+  // always concretely one of the four, never "mixed" itself.
   storageType String
   categoryId  String?
   category    ProductCategory? @relation(fields: [categoryId], references: [id])
@@ -712,15 +713,17 @@ model Location {
   section String?
 
   aisle String?
-  // Rack (SPR/DRIVE_IN/ASRS): bay/column within the rack row. Ground/Floor
+  // Rack (SPR/DRIVE_IN): bay/column within the rack row. Ground/Floor
   // (2026-09-06 — see the Ground design conversation in the
-  // wms-putaway-design memory): REUSED as the column NUMBER within one
-  // bin (`block` below) — a bin is a physical footprint that subdivides
-  // into `width`-many columns, each a single-file LIFO line `depth`
-  // positions deep (same physical shape as a Rack lane, just laid flat on
-  // the floor instead of racked). Deliberately reused rather than adding a
-  // new field, same "meaning depends on storageType" convention this
-  // model already uses for depth/width/height below.
+  // wms-putaway-design memory) AND Stillage (2026-09-13, same reuse for the
+  // identical physical reason): REUSED as the column NUMBER within one
+  // bin (`block`/`stack` below) — a bin is a physical footprint that
+  // subdivides into `width`-many columns, each a single-file LIFO line
+  // `depth` positions deep (same physical shape as a Rack lane — for
+  // Stillage, a lane of self-stacking cage units instead of pallets, but
+  // mechanically identical). Deliberately reused rather than adding a new
+  // field, same "meaning depends on storageType" convention this model
+  // already uses for depth/width/height below.
   rack  String?
   level String? // vertical tier within the rack (1 = ground)
   bin   String? // shelf-slot within a level, for shelving/small-parts bins
@@ -728,7 +731,12 @@ model Location {
   // subdivides into `rack`-numbered columns above; this field alone never
   // changes meaning, still identifies the bin as a whole.
   block String?
-  stack String? // stillage column id (cages stacked one on another)
+  // The whole physical Stillage bin id — same "identifies the bin as a
+  // whole, `rack` above names which COLUMN within it" role `block` plays
+  // for Ground/Floor (2026-09-13 redesign, see wms-putaway-design memory;
+  // originally this field meant "one column," back when a Stillage bin was
+  // still a single aggregate-capacity row).
+  stack String?
 
   // Global, warehouse-wide flank number — "R1", "R2", "R3"... one per whole
   // flank (everything on one side of one aisle), never resetting between
@@ -760,9 +768,19 @@ model Location {
   // at 1 for Ground going forward (no vertical pallet-on-pallet stacking —
   // confirmed explicitly, "all are on ground") — kept rather than removed,
   // now purely descriptive/vestigial for this storage type.
-  // Stillage (unchanged): width/depth = how many stillage columns sit side
-  // by side/front-to-back; height = how many cages stacked vertically in
-  // one column.
+  // Stillage (2026-09-13 redesign, see wms-putaway-design memory — same
+  // "one row per real position" move Ground/Floor already went through):
+  // ONE ROW PER STACK-HEIGHT POSITION now, not one aggregate row per whole
+  // bin. `depth` = this position's place within its column (1=front/aisle-
+  // facing..N=back, single-file — cages can't be dug past, the same
+  // physical constraint as a Drive-in lane); `width` describes the bin as
+  // a whole (how many columns it has, i.e. `rack`'s max value for that
+  // bin), set identically on every row of the same bin, same convention as
+  // Ground's own `width`. `height` (stillages stacked vertically AT one
+  // such position) is NOT split into further rows — cages sit directly on
+  // each other with no frame giving separate per-layer access, unlike
+  // Rack/Drive-in's own Level — so it stays a real per-row CAPACITY number
+  // (not a position), shared by every row of the same stack.
   depth  Int?
   width  Int?
   height Int?

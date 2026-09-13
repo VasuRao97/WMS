@@ -127,19 +127,30 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
     // client's ask named only "racks and ground," Stillage stays a minor,
     // still-deferred type elsewhere in this file, not worth a third dial.
     let z = 0;
-    let prevGroundBlock: string | undefined;
+    // Ground/Floor's own bin identity (`block`), OR — 2026-09-13 — a
+    // Stillage bin's own identity (`stack`), same "columns of the SAME bin
+    // sit flush, a genuinely new bin counts toward the periodic cross-aisle
+    // threshold" treatment; a Rack bay has no such multi-column grouping to
+    // begin with, so it's simply `undefined` there and never matches.
+    let prevBinIdentity: string | undefined;
     let binsSinceAisle = 0;
     positions.forEach((posVal, posIndex) => {
       const atPos = locs.filter((r) => posOf(r) === posVal);
       const storageType = atPos[0].storageType;
-      const groundBlock = storageType === 'GROUND_FLOOR' ? (atPos[0].block ?? undefined) : undefined;
-      const sameGroundBlockAsPrev = storageType === 'GROUND_FLOOR' && groundBlock != null && groundBlock === prevGroundBlock;
-      const flushStep = storageType === 'GROUND_FLOOR' ? GROUND_UNIT : RACK_BOX_SIZE;
+      const isGroundLike = storageType === 'GROUND_FLOOR' || storageType === 'STILLAGE';
+      const binIdentity = storageType === 'GROUND_FLOOR' ? atPos[0].block ?? undefined : storageType === 'STILLAGE' ? atPos[0].stack ?? undefined : undefined;
+      const sameBinAsPrev = isGroundLike && binIdentity != null && binIdentity === prevBinIdentity;
+      const flushStep = isGroundLike ? GROUND_UNIT : RACK_BOX_SIZE;
       if (posIndex > 0) {
-        if (sameGroundBlockAsPrev) {
+        if (sameBinAsPrev) {
           z += flushStep;
         } else {
           binsSinceAisle += 1;
+          // Threshold applies to Stillage using the Rack number too — the
+          // client's ask named only "racks and ground," Stillage stays a
+          // minor type here, not worth a third dial (unchanged decision,
+          // just now genuinely exercised since Stillage builds real
+          // per-column boxes).
           const threshold = storageType === 'GROUND_FLOOR' ? groundBinsPerCrossAisle : rackBaysPerCrossAisle;
           if (threshold != null && binsSinceAisle >= threshold) {
             z += POSITION_SPACING;
@@ -149,7 +160,7 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
           }
         }
       }
-      prevGroundBlock = groundBlock;
+      prevBinIdentity = binIdentity;
       rowZs.push(z);
 
       if (RACK_STORAGE_TYPES.includes(storageType)) {
@@ -198,19 +209,26 @@ function buildBoxesForAisle(rows: Location[], rackBaysPerCrossAisle: number | nu
           });
         });
       } else {
-        // Stillage — one row per stack, one box per row, sized by its own
-        // depth×width×height counts (same "text, not sub-boxes" universe 2D
-        // stays in for this type — here it's real dimensions instead of
-        // text, but still one box per row, no further splitting). Ground/
-        // Floor used to share this exact branch too, before its 2026-09-06
-        // rewrite split it out above.
-        atPos.forEach((row) => {
-          const w = (row.width ?? 1) * GROUND_UNIT;
-          const h = (row.height ?? 1) * GROUND_UNIT;
-          const d = (row.depth ?? 1) * GROUND_UNIT;
-          const x = sign * (WALKWAY_HALF_WIDTH + w / 2);
+        // STILLAGE (2026-09-13 redesign, see wms-putaway-design memory) —
+        // `atPos` is one COLUMN's own depth-series now (posOf() groups by
+        // stack+column), structurally identical to a Ground column (and a
+        // Rack bay), so this mirrors the GROUND_FLOOR branch above: fixed
+        // floor-level Y, GROUND_UNIT-sized boxes split along X per depth
+        // position — except `height` (stillages stacked vertically at each
+        // position) genuinely scales the box's own Y extent, since cages
+        // really do stack that high, unlike Ground which is always fixed
+        // at 1 layer. Ground/Floor shared this exact one-row-per-whole-bin
+        // branch too, before its own 2026-09-06 rewrite split it out above.
+        const depthKey = (r: Location) => String(r.depth ?? 1).padStart(4, '0');
+        const depths = uniqSorted(atPos.map(depthKey));
+        depths.forEach((dKey, depthIndex) => {
+          const atDepth = atPos.filter((r) => depthKey(r) === dKey);
+          const h = (atDepth[0].height ?? 1) * GROUND_UNIT;
+          const x = sign * (WALKWAY_HALF_WIDTH + GROUND_UNIT / 2 + depthIndex * GROUND_UNIT);
           const y = h / 2;
-          boxes.push({ key: row.id, location: row, x, y, z, w, h, d });
+          atDepth.forEach((row) => {
+            boxes.push({ key: row.id, location: row, x, y, z, w: GROUND_UNIT, h, d: GROUND_UNIT });
+          });
         });
       }
     });
@@ -297,58 +315,77 @@ function LocationBox({ box, isSelected, onSelect, color, rankLabel }: { box: Box
   );
 }
 
-type BinOutlineSpec = { key: string; x: number; y: number; z: number; w: number; h: number; d: number };
+type BinOutlineSpec = { key: string; storageType: string; x: number; y: number; z: number; w: number; h: number; d: number };
 
-// Groups every Ground/Floor box in one aisle's render back into its real
-// BIN (block + depthTier) — now that columns render flush against each
-// other with no gap between them (2026-09-06/07 fixes), one bin's own
-// boundary is no longer visually obvious on its own, since it isn't set
-// apart from its neighbor bins until a periodic cross-aisle happens to
-// land there. A real client ask (2026-09-07): "in ground storage, just
-// highlight each bin (just give a border)." Grouped by `(flankNumber,
-// block, depthTier)`, not `block` alone — a mirrored layout can genuinely
-// reuse the same block number on both flanks (two physically distinct
-// bins, not one), and a bin can now be followed by MORE bins stacked
-// back-to-back in the depth direction (`Location.depthTier`, same day,
-// same client conversation — "there should be 1 more 4 deep behind the
-// first bin") — each tier is its own separate bin, needing its own
-// separate outline too, not one outline spanning the whole stack.
-// Rack/Stillage are untouched — the ask was Ground-specific, and a Rack
-// bay already reads as its own distinct unit (one box per depth position,
-// no multi-column grouping to make legible the way a Ground bin needs).
+// Groups every Ground/Floor OR Stillage box in one aisle's render back into
+// its real BIN (block+depthTier, or stack) — now that columns render flush
+// against each other with no gap between them (2026-09-06/07 fixes for
+// Ground, 2026-09-13 for Stillage), one bin's own boundary is no longer
+// visually obvious on its own, since it isn't set apart from its neighbor
+// bins until a periodic cross-aisle happens to land there. A real client ask
+// (2026-09-07, Ground): "in ground storage, just highlight each bin (just
+// give a border)" — extended to Stillage 2026-09-13 once it got the
+// identical per-column box split. Grouped by `(flankNumber, block,
+// depthTier)` for Ground / `(flankNumber, stack)` for Stillage, not the bin
+// id alone — a mirrored layout can genuinely reuse the same block/stack
+// number on both flanks (two physically distinct bins, not one), and a
+// Ground bin can be followed by MORE bins stacked back-to-back in the depth
+// direction (`Location.depthTier`) — each tier is its own separate bin,
+// needing its own separate outline too, not one outline spanning the whole
+// stack. Rack is untouched — a Rack bay already reads as its own distinct
+// unit (one box per depth position, no multi-column grouping to make
+// legible the way a Ground/Stillage bin needs).
 function computeGroundBinOutlines(boxes: BoxSpec[]): BinOutlineSpec[] {
-  const groups = new Map<string, BoxSpec[]>();
+  const groups = new Map<string, { storageType: string; boxes: BoxSpec[] }>();
   for (const box of boxes) {
-    if (box.location.storageType !== 'GROUND_FLOOR' || box.location.block == null) continue;
-    const key = `${box.location.flankNumber ?? 'x'}~${box.location.block}~${box.location.depthTier ?? 1}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(box);
+    const loc = box.location;
+    let key: string | undefined;
+    if (loc.storageType === 'GROUND_FLOOR' && loc.block != null) {
+      key = `GF~${loc.flankNumber ?? 'x'}~${loc.block}~${loc.depthTier ?? 1}`;
+    } else if (loc.storageType === 'STILLAGE' && loc.stack != null) {
+      key = `ST~${loc.flankNumber ?? 'x'}~${loc.stack}`;
+    }
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, { storageType: loc.storageType, boxes: [] });
+    groups.get(key)!.boxes.push(box);
   }
-  return Array.from(groups.entries()).map(([key, group]) => {
+  return Array.from(groups.entries()).map(([key, { storageType, boxes: group }]) => {
     const minX = Math.min(...group.map((b) => b.x - b.w / 2));
     const maxX = Math.max(...group.map((b) => b.x + b.w / 2));
     const minY = Math.min(...group.map((b) => b.y - b.h / 2));
     const maxY = Math.max(...group.map((b) => b.y + b.h / 2));
     const minZ = Math.min(...group.map((b) => b.z - b.d / 2));
     const maxZ = Math.max(...group.map((b) => b.z + b.d / 2));
-    return { key, x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2, w: maxX - minX, h: maxY - minY, d: maxZ - minZ };
+    return {
+      key,
+      storageType,
+      x: (minX + maxX) / 2,
+      y: (minY + maxY) / 2,
+      z: (minZ + maxZ) / 2,
+      w: maxX - minX,
+      h: maxY - minY,
+      d: maxZ - minZ,
+    };
   });
 }
 
-// A darker shade of Ground/Floor's own orange stroke (not an unrelated
+// Darker shade of each storage type's own stroke color (not an unrelated
 // color) — bold enough to read as a distinct GROUPING border, one level up
 // from each individual position's own thin cell edge, while still visually
-// belonging to the same storage-type family. `raycast={() => null}`
-// (a standard R3F "click-through" override) keeps this purely decorative —
-// without it, this outline box would compete with the real per-position
-// boxes underneath for click-to-inspect, since it deliberately shares
-// almost the same volume as the bin's own boxes combined.
+// belonging to the same storage-type family.
+const BIN_OUTLINE_COLORS: Record<string, string> = { GROUND_FLOOR: '#9a3412', STILLAGE: '#9d174d' };
+
+// `raycast={() => null}` (a standard R3F "click-through" override) keeps
+// this purely decorative — without it, this outline box would compete with
+// the real per-position boxes underneath for click-to-inspect, since it
+// deliberately shares almost the same volume as the bin's own boxes
+// combined.
 function GroundBinOutline({ outline }: { outline: BinOutlineSpec }) {
   return (
     <mesh position={[outline.x, outline.y, outline.z]} raycast={() => null}>
       <boxGeometry args={[outline.w, outline.h, outline.d]} />
       <meshBasicMaterial visible={false} />
-      <Edges color="#9a3412" linewidth={2} />
+      <Edges color={BIN_OUTLINE_COLORS[outline.storageType] ?? '#9a3412'} linewidth={2} />
     </mesh>
   );
 }
@@ -643,6 +680,18 @@ function CameraRig({
   // kept animating toward the ORIGINAL mount-time target forever. This ref
   // pattern sidesteps the whole question of whether useFrame re-captures
   // its closure by never relying on the closure for the values at all.
+  // eslint-plugin-react-hooks' newer "compiler safety" rules (react-hooks/refs,
+  // react-hooks/immutability) flag every ref write below as unsafe-during-render
+  // — correct advice for code the React Compiler will actually transform, but
+  // this project has no React Compiler babel plugin wired up (see vite.config.ts),
+  // and this exact "read/write a ref during render to remember the previous
+  // render's values" shape is the officially-documented React pattern for it
+  // (https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+  // — not an accident. Disabled locally rather than restructured, so a real
+  // regression in this specific block still doesn't silently hide behind this
+  // exception fix (the comment above already explains why `focusRef` in
+  // particular must stay a plain render-time assignment, not an effect).
+  /* eslint-disable react-hooks/refs, react-hooks/immutability */
   const focusRef = useRef({ camPos, target });
   focusRef.current = { camPos, target };
   const animating = useRef(true);
@@ -654,6 +703,7 @@ function CameraRig({
     prevReset.current = resetSignal;
     animating.current = true;
   }
+  /* eslint-enable react-hooks/refs, react-hooks/immutability */
 
   // Real root cause of "I cannot see anything in it" (2026-09-06, caught by
   // the client's own live testing): `<Canvas camera={{ position: camPos }}>`

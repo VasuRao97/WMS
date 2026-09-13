@@ -640,8 +640,9 @@ function LocationsPage() {
             <code>Zone Type*</code>, <code>Storage Type*</code>, <code>Category</code>, <code>Zone</code>, <code>Section</code>,{' '}
             <code>Aisle*</code>, <code>Rack</code>, <code>Level</code>, <code>Bin</code>, <code>Block</code>, <code>Stack</code>,{' '}
             <code>Depth</code>, <code>Width</code>, <code>Height</code> — only fill the columns relevant to a row's Storage
-            Type (Rack/Level for rack storage; Block+Depth+Width for Ground/Floor; Stack+Height for Stillage), the rest can
-            be left blank. <code>Section</code> is one-per-Aisle — leave it blank for a row whose Aisle already has one set.
+            Type (Rack: Rack/Level, +Depth for a multi-deep lane; Ground/Floor: Block+Rack(column)+Depth+Width; Stillage:
+            Stack+Rack(column)+Depth+Width+Height), the rest can be left blank. <code>Section</code> is one-per-Aisle —
+            leave it blank for a row whose Aisle already has one set.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
             <a href="/templates/Location_Master_Import_Template.xlsx" download>Download Template</a>
@@ -755,10 +756,15 @@ function LocationsPage() {
 
               {genIsStillage && (
                 <>
+                  {/* 2026-09-13 redesign — a Stack now expands into one real
+                      row per stack-height POSITION (Width columns x Depth
+                      deep each), same "one row per real position" move
+                      Ground/Floor already went through — see
+                      wms-putaway-design memory. */}
                   <input placeholder="Stack Range * (e.g. 01-05)" value={genStackRange} onChange={(e) => setGenStackRange(e.target.value)} required style={{ width: 170 }} />
-                  <input placeholder="Height (stillages stacked) *" value={genHeight} onChange={(e) => setGenHeight(e.target.value)} required style={{ width: 210 }} />
-                  <input placeholder="Depth (columns deep, default 1)" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} style={{ width: 210 }} />
-                  <input placeholder="Width (columns wide, default 1)" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} style={{ width: 210 }} />
+                  <input placeholder="Width (columns in this stack) *" value={genWidth} onChange={(e) => setGenWidth(e.target.value)} required style={{ width: 210 }} />
+                  <input placeholder="Depth (columns deep per column) *" value={genDepth} onChange={(e) => setGenDepth(e.target.value)} required style={{ width: 220 }} />
+                  <input placeholder="Height (stillages stacked at each position) *" value={genHeight} onChange={(e) => setGenHeight(e.target.value)} required style={{ width: 260 }} />
                 </>
               )}
             </div>
@@ -785,8 +791,12 @@ function LocationsPage() {
             )}
             {genIsStillage && (
               <p style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: '#666' }}>
-                e.g. Aisle <strong>SA1</strong>, Stack Range <strong>01-05</strong>, Height <strong>3</strong> → creates 5 stacks
-                (<code>ST-SA1-01</code> … <code>ST-SA1-05</code>), each capacity 3.
+                e.g. Aisle <strong>SA1</strong>, Stack Range <strong>01-05</strong>, Width <strong>3</strong>, Depth <strong>2</strong>,
+                Height <strong>3</strong> → creates 5 stacks, each with 3 columns × 2 positions deep (30 real positions total, each
+                holding up to 3 stillages) — <code>ST-SA1-01-C1-D1</code> … <code>ST-SA1-01-C3-D2</code>, then <code>ST-SA1-02-...</code>,
+                and so on. A single SKU may use the WHOLE stack across every column (fast movers); a slower SKU is confined to just one
+                column at a time, so several different SKUs can share the same stack, each in its own column — the exact same "1 SKU per
+                column, always fill deepest-first" rule Drive-in already uses, since self-stacking cages can't be dug past mid-column.
               </p>
             )}
 
@@ -886,10 +896,16 @@ function LocationsPage() {
 
               {isStillage && (
                 <>
+                  {/* 2026-09-13 redesign (see wms-putaway-design memory) —
+                      one row per real stack-height POSITION now: `rack` is
+                      reused as the column number within the stack (same
+                      field/meaning Ground's own edit form already exposes),
+                      `depth` is this position's place within that column. */}
                   <input placeholder="Stack *" value={stack} onChange={(e) => setStack(e.target.value)} required style={{ width: 100 }} />
-                  <input placeholder="Height (stillages stacked) *" value={height} onChange={(e) => setHeight(e.target.value)} required style={{ width: 210 }} />
-                  <input placeholder="Depth (columns deep, default 1)" value={depth} onChange={(e) => setDepth(e.target.value)} style={{ width: 210 }} />
-                  <input placeholder="Width (columns wide, default 1)" value={width} onChange={(e) => setWidth(e.target.value)} style={{ width: 210 }} />
+                  <input placeholder="Column *" value={rack} onChange={(e) => setRack(e.target.value)} required style={{ width: 100 }} />
+                  <input placeholder="Width (columns in this stack, default 1)" value={width} onChange={(e) => setWidth(e.target.value)} style={{ width: 240 }} />
+                  <input placeholder="Depth (this position's place within its column, default 1)" value={depth} onChange={(e) => setDepth(e.target.value)} style={{ width: 300 }} />
+                  <input placeholder="Height (stillages stacked at this position) *" value={height} onChange={(e) => setHeight(e.target.value)} required style={{ width: 260 }} />
                 </>
               )}
             </div>
@@ -909,9 +925,10 @@ function LocationsPage() {
             )}
             {isStillage && (
               <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: '#666' }}>
-                e.g. Aisle <strong>S01</strong>, Stack <strong>04</strong>, Height <strong>3</strong> (3 stillages stacked one on
-                another) → code <code>ST-S01-04</code>, Capacity <strong>3</strong>. Depth/Width only matter if several stillage
-                columns sit side by side as one location.
+                e.g. Aisle <strong>S01</strong>, Stack <strong>04</strong>, Column <strong>1</strong>, Height <strong>3</strong> (3
+                stillages stacked one on another at this position) → code <code>ST-S01-04-C1</code>, Capacity <strong>3</strong>. The
+                range generator is the normal way to create a whole stack's real positions at once — use this manual edit form for
+                fixing up one already-generated position, not for building a new stack from scratch.
               </p>
             )}
 

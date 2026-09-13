@@ -79,6 +79,11 @@ const STORAGE_TYPE_OPTIONS = [
   { value: 'GROUND_FLOOR', label: 'Ground/Floor' },
   { value: 'SPR', label: 'SPR' },
   { value: 'DRIVE_IN', label: 'Drive-in' },
+  // STILLAGE added 2026-09-13 — this warehouse-level breakdown had never
+  // actually offered it before (LocationsService's own per-bin options have
+  // included it since day one); see backend warehouses.service.ts's own
+  // comment on STORAGE_TYPE_VALUES.
+  { value: 'STILLAGE', label: 'Stillage' },
   { value: 'MIX', label: 'Mix' },
 ];
 

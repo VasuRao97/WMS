@@ -14,26 +14,32 @@ import type { Location } from './LocationsPage';
 // on the backend (see CLAUDE.md).
 
 // Which field holds a Location's "position" within its aisle/flank depends
-// on storageType — Stillage uses `stack`; Rack AND Ground/Floor both key off
-// `rack`, since Ground's `rack` field is deliberately reused as its own
-// COLUMN number, sharing the exact same single-file-LIFO-lane meaning
-// `depth` already has with Rack (see schema.prisma's comment on
-// `Location.rack`/`Location.depth`) — a Ground column is structurally the
-// same kind of thing as a Rack bay, not a Rack concept forced onto Ground.
-// A block (bin) groups several columns together the way an Aisle groups
-// several bays; it isn't itself a "position" (2026-09-06, a real client
-// correction — "how is this 4x4? looks like 1x4... dont keep your rack as
-// ideal, we need to align separately": an earlier version treated a whole
-// BLOCK as one position and just stretched its box wider to suggest more
-// pallets, which never actually looked like a real 4×4 grid — a genuine
-// grid needs both axes shown as real positions, not one axis text and the
-// other a stretched box). `block~column` is returned as one composite key
-// (column zero-padded so "10" sorts after "9", not before "2" as a raw
-// string) so multiple blocks sharing the same column numbers stay distinct
-// — see `buildCell`'s (2D) and `buildBoxesForAisle`'s (3D) GROUND_FLOOR
-// branches for how each column then renders exactly like a Rack bay does.
+// on storageType — Rack, Ground/Floor, AND (2026-09-13) Stillage all key off
+// `rack`, since both Ground's and Stillage's `rack` field is deliberately
+// reused as its own COLUMN number, sharing the exact same single-file-LIFO-
+// lane meaning `depth` already has with Rack (see schema.prisma's comment on
+// `Location.rack`/`Location.depth`) — a Ground/Stillage column is
+// structurally the same kind of thing as a Rack bay, not a Rack concept
+// forced onto either. A block/stack (bin) groups several columns together
+// the way an Aisle groups several bays; it isn't itself a "position"
+// (2026-09-06, a real client correction on Ground — "how is this 4x4? looks
+// like 1x4... dont keep your rack as ideal, we need to align separately":
+// an earlier version treated a whole BLOCK as one position and just
+// stretched its box wider to suggest more pallets, which never actually
+// looked like a real 4×4 grid — a genuine grid needs both axes shown as
+// real positions, not one axis text and the other a stretched box). Stillage
+// got the identical redesign 2026-09-13, for the identical reason.
+// `block~column`/`stack~column` is returned as one composite key (column
+// zero-padded so "10" sorts after "9", not before "2" as a raw string) so
+// multiple blocks/stacks sharing the same column numbers stay distinct —
+// see `buildCell`'s (2D) and `buildBoxesForAisle`'s (3D) GROUND_FLOOR/
+// STILLAGE branches for how each column then renders exactly like a Rack
+// bay does.
 export function posOf(l: Location): string | undefined {
-  if (l.storageType === 'STILLAGE') return l.stack;
+  if (l.storageType === 'STILLAGE') {
+    if (l.stack == null || l.rack == null) return undefined;
+    return `${l.stack}~${l.rack.padStart(4, '0')}`;
+  }
   if (l.storageType === 'GROUND_FLOOR') {
     if (l.block == null || l.rack == null) return undefined;
     return `${l.block}~${l.rack.padStart(4, '0')}`;

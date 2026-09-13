@@ -192,7 +192,6 @@ type Cell = {
 
 function buildCell(posVal: string, rows: Location[]): Cell {
   const storageType = rows[0].storageType;
-  const typeLabel = labelFor(STORAGE_TYPE_OPTIONS, storageType);
 
   if (RACK_STORAGE_TYPES.includes(storageType)) {
     // Group by depth (missing depth ~= a single-deep position, i.e. one
@@ -272,14 +271,31 @@ function buildCell(posVal: string, rows: Location[]): Cell {
     return { posVal, boxes, totalWidth: boxes.reduce((s, b) => s + b.width, 0) };
   }
 
-  // Stillage: still one box, dimensions as text, one real row per stack —
-  // see the file-level comment above on why this stays deferred for now.
-  const d = rows[0].depth ?? 1;
-  const w = rows[0].width ?? 1;
-  const h = rows[0].height ?? 1;
-  const lines = [typeLabel, `${d}×${w}×${h}`, rows.length === 1 ? rows[0].code : `${rows.length} bins`];
-  const box: Box = { key: rows[0].id, lines, hasInactive: rows.some((r) => !r.isActive), width: CELL_W, storageType };
-  return { posVal, boxes: [box], totalWidth: CELL_W };
+  // STILLAGE (2026-09-13 redesign, see wms-putaway-design memory) — `rows`
+  // here is one COLUMN's worth of positions (posOf() now groups by
+  // stack+column, same as Ground/Floor's own 2026-09-06 rewrite) —
+  // structurally the same shape as a Ground column's own depth-series, so
+  // this mirrors the GROUND_FLOOR branch above: one box per real front-to-
+  // back position, side by side. `height` (stillages stacked vertically at
+  // each such position) isn't itself split into further boxes — cages sit
+  // directly on each other with no per-layer access — so it stays a
+  // per-box CAPACITY number shown as text, not a spatial axis.
+  const depthKey = (r: Location) => String(r.depth ?? 1).padStart(4, '0');
+  const depths = uniqSorted(rows.map(depthKey));
+  const stack = rows[0].stack;
+  const column = rows[0].rack;
+  const boxes: Box[] = depths.map((dKey) => {
+    const atDepth = rows.filter((r) => depthKey(r) === dKey);
+    const d = atDepth[0].depth ?? 1;
+    const h = atDepth[0].height ?? 1;
+    const lines = [`ST${stack}-C${column}`];
+    if (depths.length > 1) lines.push(`D${d}`);
+    lines.push(`×${h} high`);
+    const category = atDepth[0].category?.name;
+    if (category) lines.push(category);
+    return { key: atDepth[0].id, lines, hasInactive: atDepth.some((r) => !r.isActive), width: CELL_W, storageType };
+  });
+  return { posVal, boxes, totalWidth: boxes.reduce((s, b) => s + b.width, 0) };
 }
 
 type AisleBlock = {
@@ -749,12 +765,20 @@ function LocationsPlanView({ locations, warehouseLabel, colorMode, occupancy, bi
             // Place aisles right-to-left: Aisle 1 (index 0) hugs the right
             // edge, each next aisle's right edge sits AISLE_GAP to the left
             // of the previous aisle's left edge.
+            // A running accumulator mutated across a render-time .map() trips
+            // eslint-plugin-react-hooks' react-hooks/immutability rule (a real
+            // concern once code passes through the actual React Compiler
+            // transform — this project doesn't have that plugin wired up, see
+            // vite.config.ts) but is otherwise a plain, deterministic layout
+            // computation with no external state involved.
+            // eslint-disable-next-line react-hooks/immutability
             let cursorRight = totalWidth - PAD_X;
             return aisles.map((aisle) => {
               const aisleRightEdge = cursorRight;
               const walkwayRightX = aisleRightEdge - aisle.maxRightW;
               const walkwayLeftX = walkwayRightX - WALKWAY_W;
               const aisleLeftEdge = walkwayLeftX - aisle.maxLeftW;
+              // eslint-disable-next-line react-hooks/immutability -- see above
               cursorRight = aisleLeftEdge - AISLE_GAP;
 
               return (

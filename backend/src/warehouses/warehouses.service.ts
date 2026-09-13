@@ -1,17 +1,51 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
-import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  WAREHOUSE_SCOPED_ROLES,
+} from '../common/tenant.util';
 import { CODE_REGEX, PINCODE_REGEX } from '../common/validation.util';
 import { toNumberOrUndefined } from '../common/xlsx-parse.util';
-import { DEFAULT_EQUIPMENT_SUITABILITY, NOT_USED_ROW } from '../common/equipment-suitability-defaults';
+import {
+  DEFAULT_EQUIPMENT_SUITABILITY,
+  NOT_USED_ROW,
+} from '../common/equipment-suitability-defaults';
 
-const NODE_TYPE_VALUES = ['FACTORY', 'DISTRIBUTOR', 'REGIONAL_DC', 'NATIONAL_DC', 'CNF', 'CROSS_DOCK'];
-const STORAGE_TYPE_VALUES = ['GROUND_FLOOR', 'SPR', 'DRIVE_IN', 'MIX'];
+const NODE_TYPE_VALUES = [
+  'FACTORY',
+  'DISTRIBUTOR',
+  'REGIONAL_DC',
+  'NATIONAL_DC',
+  'CNF',
+  'CROSS_DOCK',
+];
+// STILLAGE added 2026-09-13 — a real, planned storage type this warehouse-
+// level breakdown had never actually offered (LocationsService's own
+// per-bin STORAGE_TYPE_VALUES has included it since day one; this list is
+// a separate, independently-maintained copy for the WarehouseStorageType
+// capacity-PLANNING level, same "no shared code" convention as everywhere
+// else in this codebase). Confirmed zero real data anywhere used it before
+// this — it was never reachable via this form.
+const STORAGE_TYPE_VALUES = [
+  'GROUND_FLOOR',
+  'SPR',
+  'DRIVE_IN',
+  'STILLAGE',
+  'MIX',
+];
 const DISPATCH_FLOW_VALUES = ['FULL_PALLET', 'CASE_PICK', 'BROKEN_CASE'];
-// Which Location.storageType values are individually-addressable rack bins
-// (1 pallet position each) vs. footprint-based (Ground/Stillage, derived
-// depth×width×height capacity) — used only by getMappingSummary() below.
+// Which Location.storageType values are individually-addressable RACK bins
+// (1 pallet position each, vs. Ground/Floor's own separate 1-position-per-row
+// check right below in getMappingSummary(), and Stillage's own height-based
+// one) — used only by getMappingSummary() below.
 // Duplicated from LocationsService's own RACK_STORAGE_TYPES rather than
 // shared via common/ — matches this file's existing STORAGE_TYPE_VALUES,
 // which already keeps its own independent copy rather than importing one.
@@ -35,17 +69,22 @@ export class WarehousesService {
   private validateWarehouseData(data: any): string[] {
     const errors: string[] = [];
     if (!data.code || !CODE_REGEX.test(data.code)) {
-      errors.push('Location Code is required: alphanumeric/hyphens only, max 30 characters.');
+      errors.push(
+        'Location Code is required: alphanumeric/hyphens only, max 30 characters.',
+      );
     }
     const nodeType = data.nodeType ? normalizeCode(data.nodeType) : '';
     if (!nodeType) {
       errors.push('Type of Node is required.');
     } else if (!NODE_TYPE_VALUES.includes(nodeType)) {
-      errors.push(`Type of Node must be one of: ${Object.values(NODE_TYPE_LABELS).join(', ')}`);
+      errors.push(
+        `Type of Node must be one of: ${Object.values(NODE_TYPE_LABELS).join(', ')}`,
+      );
     }
     if (!data.city) errors.push('City Name is required.');
     if (!data.address) errors.push('Address is required.');
-    if (!data.pincode || !PINCODE_REGEX.test(String(data.pincode))) errors.push('Pincode is required: 6 digits.');
+    if (!data.pincode || !PINCODE_REGEX.test(String(data.pincode)))
+      errors.push('Pincode is required: 6 digits.');
     // Required as of 2026-08-28 (Putaway kickoff conversation) — the client's
     // own call ("keep the dock entry field as mandatory, so this logic never
     // fails"), since this is the sole input driving
@@ -53,22 +92,49 @@ export class WarehousesService {
     // bulkImport() (same "one function, two callers" convention as
     // everywhere else), so an Excel import row without it is rejected the
     // same way a manual create is.
-    if (data.noOfDocks === undefined || data.noOfDocks === null || data.noOfDocks === '') {
+    if (
+      data.noOfDocks === undefined ||
+      data.noOfDocks === null ||
+      data.noOfDocks === ''
+    ) {
       errors.push('No of Docks is required.');
-    } else if (!Number.isInteger(Number(data.noOfDocks)) || Number(data.noOfDocks) < 1) {
+    } else if (
+      !Number.isInteger(Number(data.noOfDocks)) ||
+      Number(data.noOfDocks) < 1
+    ) {
       errors.push('No of Docks must be a whole number, 1 or more.');
     }
-    if (data.areaSqFt !== undefined && data.areaSqFt !== null && data.areaSqFt !== '' && Number(data.areaSqFt) <= 0) {
+    if (
+      data.areaSqFt !== undefined &&
+      data.areaSqFt !== null &&
+      data.areaSqFt !== '' &&
+      Number(data.areaSqFt) <= 0
+    ) {
       errors.push('Area sq ft must be a positive number.');
     }
-    if (data.yardCapacity !== undefined && data.yardCapacity !== null && data.yardCapacity !== '') {
+    if (
+      data.yardCapacity !== undefined &&
+      data.yardCapacity !== null &&
+      data.yardCapacity !== ''
+    ) {
       const n = Number(data.yardCapacity);
-      if (!Number.isInteger(n) || n < 0) errors.push('Parking Slots must be a whole number, 0 or more.');
+      if (!Number.isInteger(n) || n < 0)
+        errors.push('Parking Slots must be a whole number, 0 or more.');
     }
-    if (data.latitude !== undefined && data.latitude !== null && data.latitude !== '' && isNaN(Number(data.latitude))) {
+    if (
+      data.latitude !== undefined &&
+      data.latitude !== null &&
+      data.latitude !== '' &&
+      isNaN(Number(data.latitude))
+    ) {
       errors.push('Latitude must be a number.');
     }
-    if (data.longitude !== undefined && data.longitude !== null && data.longitude !== '' && isNaN(Number(data.longitude))) {
+    if (
+      data.longitude !== undefined &&
+      data.longitude !== null &&
+      data.longitude !== '' &&
+      isNaN(Number(data.longitude))
+    ) {
       errors.push('Longitude must be a number.');
     }
 
@@ -78,10 +144,14 @@ export class WarehousesService {
     for (const s of storageTypes) {
       const type = normalizeCode(s.storageType);
       if (!STORAGE_TYPE_VALUES.includes(type)) {
-        errors.push(`Storage Type must be one of: Ground/Floor, SPR, Drive-in, Mix (got "${s.storageType}").`);
+        errors.push(
+          `Storage Type must be one of: Ground/Floor, SPR, Drive-in, Stillage, Mix (got "${s.storageType}").`,
+        );
       }
       if (!s.palletPositions || Number(s.palletPositions) <= 0) {
-        errors.push('Pallet Positions must be a positive number when Storage Type is given.');
+        errors.push(
+          'Pallet Positions must be a positive number when Storage Type is given.',
+        );
       }
       for (const [field, label] of [
         ['lengthM', 'Dim L'],
@@ -97,14 +167,18 @@ export class WarehousesService {
       else hasSpecific = true;
     }
     if (hasMix && hasSpecific) {
-      errors.push('A warehouse cannot combine "Mix" with specific Storage Type entries — pick one approach.');
+      errors.push(
+        'A warehouse cannot combine "Mix" with specific Storage Type entries — pick one approach.',
+      );
     }
 
     const dispatchFlows = data.dispatchFlows || [];
     for (const f of dispatchFlows) {
       const type = normalizeCode(f.flowType);
       if (!DISPATCH_FLOW_VALUES.includes(type)) {
-        errors.push(`Dispatch Flow must be one of: Full Pallet, Case Pick, Broken Case (got "${f.flowType}").`);
+        errors.push(
+          `Dispatch Flow must be one of: Full Pallet, Case Pick, Broken Case (got "${f.flowType}").`,
+        );
       }
     }
     return errors;
@@ -121,18 +195,24 @@ export class WarehousesService {
     const resolved: any[] = [];
     const seenKeys = new Set<string>();
     for (const s of storageTypes || []) {
-      const categoryName = s.category ? String(s.category).trim() : 'Uncategorized';
+      const categoryName = s.category
+        ? String(s.category).trim()
+        : 'Uncategorized';
       const category = await this.prisma.productCategory.findFirst({
         where: { name: { equals: categoryName, mode: 'insensitive' } },
       });
       if (!category) {
-        errors.push(`Category "${categoryName}" not found — check the Product Category master list.`);
+        errors.push(
+          `Category "${categoryName}" not found — check the Product Category master list.`,
+        );
         continue;
       }
       const type = normalizeCode(s.storageType);
       const key = `${type}::${category.id}`;
       if (seenKeys.has(key)) {
-        errors.push(`Duplicate Storage Type + Category combination: ${s.storageType} / ${categoryName}.`);
+        errors.push(
+          `Duplicate Storage Type + Category combination: ${s.storageType} / ${categoryName}.`,
+        );
         continue;
       }
       seenKeys.add(key);
@@ -148,9 +228,16 @@ export class WarehousesService {
     return resolved;
   }
 
-  private buildCreateData(data: any, companyId: string, name: string, resolvedStorageTypes: any[]) {
+  private buildCreateData(
+    data: any,
+    companyId: string,
+    name: string,
+    resolvedStorageTypes: any[],
+  ) {
     const nodeType = normalizeCode(data.nodeType);
-    const dispatchFlowTypes = new Set<string>((data.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType)));
+    const dispatchFlowTypes = new Set<string>(
+      (data.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType)),
+    );
 
     return {
       code: data.code.toUpperCase(),
@@ -171,8 +258,12 @@ export class WarehousesService {
       contactName: data.contactName || undefined,
       contactPhone: data.contactPhone || undefined,
       company: { connect: { id: companyId } },
-      storageTypes: resolvedStorageTypes.length ? { create: resolvedStorageTypes } : undefined,
-      dispatchFlows: dispatchFlowTypes.size ? { create: [...dispatchFlowTypes].map((flowType) => ({ flowType })) } : undefined,
+      storageTypes: resolvedStorageTypes.length
+        ? { create: resolvedStorageTypes }
+        : undefined,
+      dispatchFlows: dispatchFlowTypes.size
+        ? { create: [...dispatchFlowTypes].map((flowType) => ({ flowType })) }
+        : undefined,
     };
   }
 
@@ -181,10 +272,16 @@ export class WarehousesService {
   // Yard Management design conversation (see schema.prisma's comment on
   // YardSlot). Only settable at creation for now — there's no Warehouse
   // Edit yet, so a capacity change/increase isn't handled here.
-  private async generateYardSlots(warehouseId: string, capacity: number | undefined) {
+  private async generateYardSlots(
+    warehouseId: string,
+    capacity: number | undefined,
+  ) {
     if (!capacity || capacity <= 0) return;
     await this.prisma.yardSlot.createMany({
-      data: Array.from({ length: capacity }, (_, i) => ({ warehouseId, code: `Y${i + 1}` })),
+      data: Array.from({ length: capacity }, (_, i) => ({
+        warehouseId,
+        code: `Y${i + 1}`,
+      })),
     });
   }
 
@@ -193,8 +290,13 @@ export class WarehousesService {
   // manually-deleted dock, or a pre-2026-08-28 non-numeric manual code,
   // shouldn't cause a number to be reused/collide). 0 if none exist yet.
   private async highestDockNumber(warehouseId: string): Promise<number> {
-    const doors = await this.prisma.dockDoor.findMany({ where: { warehouseId }, select: { code: true } });
-    const nums = doors.map((d) => parseInt(d.code, 10)).filter((n) => Number.isInteger(n));
+    const doors = await this.prisma.dockDoor.findMany({
+      where: { warehouseId },
+      select: { code: true },
+    });
+    const nums = doors
+      .map((d) => parseInt(d.code, 10))
+      .filter((n) => Number.isInteger(n));
     return nums.length ? Math.max(...nums) : 0;
   }
 
@@ -228,16 +330,35 @@ export class WarehousesService {
   // extra "mapped" positions per dock. Cosmetic only (that table is a QA
   // aid, nothing enforces off it), not worth a special-case exclusion for
   // now.
-  private async generateDockDoorsAndStaging(warehouseId: string, noOfDocks: number | undefined) {
+  private async generateDockDoorsAndStaging(
+    warehouseId: string,
+    noOfDocks: number | undefined,
+  ) {
     if (!noOfDocks || noOfDocks <= 0) return;
     const start = (await this.highestDockNumber(warehouseId)) + 1;
     for (let n = start; n <= noOfDocks; n++) {
       const [inboundLoc, outboundLoc] = await Promise.all([
         this.prisma.location.create({
-          data: { warehouse: { connect: { id: warehouseId } }, code: `Dock${n}-SA-IB`, zoneType: 'UNLOADING_STAGING', storageType: 'GROUND_FLOOR', depth: 1, width: 1, height: 1 },
+          data: {
+            warehouse: { connect: { id: warehouseId } },
+            code: `Dock${n}-SA-IB`,
+            zoneType: 'UNLOADING_STAGING',
+            storageType: 'GROUND_FLOOR',
+            depth: 1,
+            width: 1,
+            height: 1,
+          },
         }),
         this.prisma.location.create({
-          data: { warehouse: { connect: { id: warehouseId } }, code: `Dock${n}-SA-OB`, zoneType: 'LOADING_STAGING', storageType: 'GROUND_FLOOR', depth: 1, width: 1, height: 1 },
+          data: {
+            warehouse: { connect: { id: warehouseId } },
+            code: `Dock${n}-SA-OB`,
+            zoneType: 'LOADING_STAGING',
+            storageType: 'GROUND_FLOOR',
+            depth: 1,
+            width: 1,
+            height: 1,
+          },
         }),
       ]);
       await this.prisma.dockDoor.create({
@@ -265,35 +386,67 @@ export class WarehousesService {
     const types = await this.prisma.equipmentType.findMany();
     if (types.length === 0) return;
     await this.prisma.warehouseEquipmentSuitability.createMany({
-      data: types.map((t) => ({ warehouseId, equipmentTypeId: t.id, ...(DEFAULT_EQUIPMENT_SUITABILITY[t.name] ?? NOT_USED_ROW) })),
+      data: types.map((t) => ({
+        warehouseId,
+        equipmentTypeId: t.id,
+        ...(DEFAULT_EQUIPMENT_SUITABILITY[t.name] ?? NOT_USED_ROW),
+      })),
     });
   }
 
-  async create(data: any, user: any) {
+  async create(data: any, user: AuthUser) {
     if (!user.companyId) {
-      throw new ForbiddenException('Super admin accounts cannot create warehouses directly — log in as a company admin instead.');
+      throw new ForbiddenException(
+        'Super admin accounts cannot create warehouses directly — log in as a company admin instead.',
+      );
     }
     const errors = this.validateWarehouseData(data);
-    if (!data.name || !String(data.name).trim()) errors.push('Name is required.');
-    const resolvedStorageTypes = await this.resolveStorageTypes(data.storageTypes, errors);
+    if (!data.name || !String(data.name).trim())
+      errors.push('Name is required.');
+    const resolvedStorageTypes = await this.resolveStorageTypes(
+      data.storageTypes,
+      errors,
+    );
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const existing = await this.prisma.warehouse.findUnique({
-      where: { companyId_code: { companyId: user.companyId, code: data.code.toUpperCase() } },
+      where: {
+        companyId_code: {
+          companyId: user.companyId,
+          code: data.code.toUpperCase(),
+        },
+      },
     });
-    if (existing) throw new BadRequestException(`Location Code "${data.code}" already exists.`);
+    if (existing)
+      throw new BadRequestException(
+        `Location Code "${data.code}" already exists.`,
+      );
 
     const created = await this.prisma.warehouse.create({
-      data: this.buildCreateData(data, user.companyId, data.name, resolvedStorageTypes),
-      include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
+      data: this.buildCreateData(
+        data,
+        user.companyId,
+        data.name,
+        resolvedStorageTypes,
+      ),
+      include: {
+        storageTypes: { include: { category: true } },
+        dispatchFlows: true,
+      },
     });
-    await this.generateYardSlots(created.id, toNumberOrUndefined(data.yardCapacity));
-    await this.generateDockDoorsAndStaging(created.id, toNumberOrUndefined(data.noOfDocks));
+    await this.generateYardSlots(
+      created.id,
+      toNumberOrUndefined(data.yardCapacity),
+    );
+    await this.generateDockDoorsAndStaging(
+      created.id,
+      toNumberOrUndefined(data.noOfDocks),
+    );
     await this.generateEquipmentSuitability(created.id);
     return created;
   }
 
-  async findAll(user: any) {
+  async findAll(user: AuthUser) {
     const where: any = { ...companyFilter(user) };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
@@ -304,7 +457,11 @@ export class WarehousesService {
       // included here so Company Settings' Dock Configuration editor can
       // read a warehouse's current 0-2 zones straight off the already-
       // fetched list, same pattern agingGranularity already uses.
-      include: { storageTypes: { include: { category: true } }, dispatchFlows: true, dockZones: true },
+      include: {
+        storageTypes: { include: { category: true } },
+        dispatchFlows: true,
+        dockZones: true,
+      },
       orderBy: { code: 'asc' },
     });
   }
@@ -314,9 +471,11 @@ export class WarehousesService {
   // first row seen for a code (later repeats/blanks on those columns are
   // ignored either way); Storage Type / Dispatch Flow rows accumulate from
   // every row that carries them, independently of each other.
-  async bulkImport(groupedRows: any[], user: any) {
+  async bulkImport(groupedRows: any[], user: AuthUser) {
     if (!user.companyId) {
-      throw new ForbiddenException('Super admin accounts cannot import warehouses directly — log in as a company admin instead.');
+      throw new ForbiddenException(
+        'Super admin accounts cannot import warehouses directly — log in as a company admin instead.',
+      );
     }
     const results: any[] = [];
     const codesSeenInFile = new Set<string>();
@@ -324,31 +483,62 @@ export class WarehousesService {
     for (const group of groupedRows) {
       const upperCode = group.code ? String(group.code).toUpperCase() : '';
       const errors = this.validateWarehouseData(group);
-      const resolvedStorageTypes = await this.resolveStorageTypes(group.storageTypes, errors);
+      const resolvedStorageTypes = await this.resolveStorageTypes(
+        group.storageTypes,
+        errors,
+      );
 
       if (upperCode && codesSeenInFile.has(upperCode)) {
         errors.push(`Duplicate Location Code within this file: ${upperCode}`);
       }
       if (errors.length === 0 && upperCode) {
         const existing = await this.prisma.warehouse.findUnique({
-          where: { companyId_code: { companyId: user.companyId, code: upperCode } },
+          where: {
+            companyId_code: { companyId: user.companyId, code: upperCode },
+          },
         });
-        if (existing) errors.push(`Location Code already exists in the database: ${upperCode}`);
+        if (existing)
+          errors.push(
+            `Location Code already exists in the database: ${upperCode}`,
+          );
       }
       if (errors.length > 0) {
-        results.push({ code: group.code || '(blank)', status: 'error', errors });
+        results.push({
+          code: group.code || '(blank)',
+          status: 'error',
+          errors,
+        });
         continue;
       }
 
       const nodeType = normalizeCode(group.nodeType);
-      const name = group.city ? `${group.city} ${NODE_TYPE_LABELS[nodeType]}` : upperCode;
+      const name = group.city
+        ? `${group.city} ${NODE_TYPE_LABELS[nodeType]}`
+        : upperCode;
 
       try {
-        const created = await this.prisma.warehouse.create({ data: this.buildCreateData(group, user.companyId, name, resolvedStorageTypes) });
-        await this.generateYardSlots(created.id, toNumberOrUndefined(group.yardCapacity));
-        await this.generateDockDoorsAndStaging(created.id, toNumberOrUndefined(group.noOfDocks));
+        const created = await this.prisma.warehouse.create({
+          data: this.buildCreateData(
+            group,
+            user.companyId,
+            name,
+            resolvedStorageTypes,
+          ),
+        });
+        await this.generateYardSlots(
+          created.id,
+          toNumberOrUndefined(group.yardCapacity),
+        );
+        await this.generateDockDoorsAndStaging(
+          created.id,
+          toNumberOrUndefined(group.noOfDocks),
+        );
         await this.generateEquipmentSuitability(created.id);
-        const dispatchFlowCount = new Set((group.dispatchFlows || []).map((f: any) => normalizeCode(f.flowType))).size;
+        const dispatchFlowCount = new Set(
+          (group.dispatchFlows || []).map((f: any) =>
+            normalizeCode(f.flowType),
+          ),
+        ).size;
         results.push({
           code: upperCode,
           status: 'success',
@@ -357,7 +547,11 @@ export class WarehousesService {
         });
         codesSeenInFile.add(upperCode);
       } catch (err: any) {
-        results.push({ code: group.code || '(blank)', status: 'error', errors: [err.message || 'Unknown error'] });
+        results.push({
+          code: group.code || '(blank)',
+          status: 'error',
+          errors: [err.message || 'Unknown error'],
+        });
       }
     }
 
@@ -369,7 +563,7 @@ export class WarehousesService {
     };
   }
 
-  private async assertAccess(id: string, user: any) {
+  private async assertAccess(id: string, user: AuthUser) {
     const warehouse = await this.prisma.warehouse.findUnique({ where: { id } });
     if (!warehouse) throw new NotFoundException('Warehouse not found.');
     if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) {
@@ -378,14 +572,20 @@ export class WarehousesService {
     return warehouse;
   }
 
-  async deactivate(id: string, user: any) {
+  async deactivate(id: string, user: AuthUser) {
     await this.assertAccess(id, user);
-    return this.prisma.warehouse.update({ where: { id }, data: { isActive: false } });
+    return this.prisma.warehouse.update({
+      where: { id },
+      data: { isActive: false },
+    });
   }
 
-  async reactivate(id: string, user: any) {
+  async reactivate(id: string, user: AuthUser) {
     await this.assertAccess(id, user);
-    return this.prisma.warehouse.update({ where: { id }, data: { isActive: true } });
+    return this.prisma.warehouse.update({
+      where: { id },
+      data: { isActive: true },
+    });
   }
 
   // Per-warehouse Putaway "Aging Methodology" (2026-08-29) — how close two
@@ -396,10 +596,19 @@ export class WarehousesService {
   // node to node. Company-Admin-only, set via Company Settings' new
   // per-warehouse control (there's no general Warehouse Edit form this
   // could otherwise live on).
-  async setAgingGranularity(id: string, agingGranularity: string | null, user: any) {
+  async setAgingGranularity(
+    id: string,
+    agingGranularity: string | null,
+    user: AuthUser,
+  ) {
     await this.assertAccess(id, user);
-    if (agingGranularity !== null && !['DAY', 'WEEK', 'MONTH'].includes(agingGranularity)) {
-      throw new BadRequestException('Aging Methodology must be Day, Week, or Month.');
+    if (
+      agingGranularity !== null &&
+      !['DAY', 'WEEK', 'MONTH'].includes(agingGranularity)
+    ) {
+      throw new BadRequestException(
+        'Aging Methodology must be Day, Week, or Month.',
+      );
     }
     return this.prisma.warehouse.update({
       where: { id },
@@ -418,42 +627,65 @@ export class WarehousesService {
   // individual rows — a warehouse's dock config is naturally "0-2 rows as
   // a whole," one Save action, matching Aging Methodology's own single-
   // field-at-a-time simplicity.
-  async setDockZones(id: string, zones: { purpose: string; dockSide: string; numberOneNearDock?: boolean }[], user: any) {
+  async setDockZones(
+    id: string,
+    zones: { purpose: string; dockSide: string; numberOneNearDock?: boolean }[],
+    user: AuthUser,
+  ) {
     await this.assertAccess(id, user);
     if (zones.length > 2) {
-      throw new BadRequestException('A warehouse can have at most 2 dock zones.');
+      throw new BadRequestException(
+        'A warehouse can have at most 2 dock zones.',
+      );
     }
     for (const z of zones) {
       if (!['INBOUND', 'OUTBOUND', 'BOTH'].includes(z.purpose)) {
-        throw new BadRequestException('Dock zone purpose must be Inbound, Outbound, or Both.');
+        throw new BadRequestException(
+          'Dock zone purpose must be Inbound, Outbound, or Both.',
+        );
       }
       // 2026-09-12: renamed from LOW/HIGH/ROW_LOW/ROW_HIGH to real compass
       // directions — see schema.prisma's own comment on
       // DockCompassDirection for the full reasoning ("how can you know
       // which side dude? ... north south west east").
       if (!['EAST', 'WEST', 'SOUTH', 'NORTH'].includes(z.dockSide)) {
-        throw new BadRequestException('Dock zone side must be East, West, South, or North — see the Plan View\'s own compass marker.');
+        throw new BadRequestException(
+          "Dock zone side must be East, West, South, or North — see the Plan View's own compass marker.",
+        );
       }
       if (typeof z.numberOneNearDock !== 'boolean') {
-        throw new BadRequestException('Say whether Aisle/Row 1 or the highest number is nearest this dock (numberOneNearDock).');
+        throw new BadRequestException(
+          'Say whether Aisle/Row 1 or the highest number is nearest this dock (numberOneNearDock).',
+        );
       }
     }
     await this.prisma.$transaction([
       this.prisma.warehouseDockZone.deleteMany({ where: { warehouseId: id } }),
       ...zones.map((z) =>
         this.prisma.warehouseDockZone.create({
-          data: { warehouseId: id, purpose: z.purpose as any, dockSide: z.dockSide as any, numberOneNearDock: z.numberOneNearDock as boolean },
+          data: {
+            warehouseId: id,
+            purpose: z.purpose as any,
+            dockSide: z.dockSide as any,
+            numberOneNearDock: z.numberOneNearDock as boolean,
+          },
         }),
       ),
     ]);
-    return this.prisma.warehouseDockZone.findMany({ where: { warehouseId: id } });
+    return this.prisma.warehouseDockZone.findMany({
+      where: { warehouseId: id },
+    });
   }
 
   // Pick Face's warehouse-level on/off switch (2026-09-05 — see
   // [[wms-putaway-design]] and CLAUDE.md's "Pick Face" section) — same
   // "no general Warehouse Edit form, so it hangs off Company Settings'
   // per-warehouse picker" shape as setAgingGranularity above.
-  async setPickFaceEnabled(id: string, pickFaceEnabled: boolean, user: any) {
+  async setPickFaceEnabled(
+    id: string,
+    pickFaceEnabled: boolean,
+    user: AuthUser,
+  ) {
     await this.assertAccess(id, user);
     return this.prisma.warehouse.update({
       where: { id },
@@ -487,21 +719,32 @@ export class WarehousesService {
       respectsColumnBoundariesClassC?: boolean;
       respectsColumnBoundariesClassD?: boolean;
     },
-    user: any,
+    user: AuthUser,
   ) {
     await this.assertAccess(warehouseId, user);
-    if (!storageTypeRowId) throw new BadRequestException('storageTypeRowId is required.');
-    const row = await this.prisma.warehouseStorageType.findUnique({ where: { id: storageTypeRowId } });
+    if (!storageTypeRowId)
+      throw new BadRequestException('storageTypeRowId is required.');
+    const row = await this.prisma.warehouseStorageType.findUnique({
+      where: { id: storageTypeRowId },
+    });
     if (!row || row.warehouseId !== warehouseId) {
-      throw new BadRequestException('That storage-type row does not belong to this warehouse.');
+      throw new BadRequestException(
+        'That storage-type row does not belong to this warehouse.',
+      );
     }
 
-    const capField = (key: 'maxSkusClassA' | 'maxSkusClassB' | 'maxSkusClassC', label: string): number | null | undefined => {
+    const capField = (
+      key: 'maxSkusClassA' | 'maxSkusClassB' | 'maxSkusClassC',
+      label: string,
+    ): number | null | undefined => {
       const v = (data as any)[key];
       if (v === undefined) return undefined; // omitted -> leave untouched
       if (v === null || v === '') return null; // explicit clear -> unbounded
       const n = Number(v);
-      if (!Number.isInteger(n) || n <= 0) throw new BadRequestException(`${label} must be a positive whole number, or blank for no limit.`);
+      if (!Number.isInteger(n) || n <= 0)
+        throw new BadRequestException(
+          `${label} must be a positive whole number, or blank for no limit.`,
+        );
       return n;
     };
 
@@ -511,16 +754,36 @@ export class WarehousesService {
         maxSkusClassA: capField('maxSkusClassA', 'Class A limit'),
         maxSkusClassB: capField('maxSkusClassB', 'Class B limit'),
         maxSkusClassC: capField('maxSkusClassC', 'Class C limit'),
-        ...(data.respectsColumnBoundariesClassA !== undefined ? { respectsColumnBoundariesClassA: !!data.respectsColumnBoundariesClassA } : {}),
-        ...(data.respectsColumnBoundariesClassB !== undefined ? { respectsColumnBoundariesClassB: !!data.respectsColumnBoundariesClassB } : {}),
-        ...(data.respectsColumnBoundariesClassC !== undefined ? { respectsColumnBoundariesClassC: !!data.respectsColumnBoundariesClassC } : {}),
-        ...(data.respectsColumnBoundariesClassD !== undefined ? { respectsColumnBoundariesClassD: !!data.respectsColumnBoundariesClassD } : {}),
+        ...(data.respectsColumnBoundariesClassA !== undefined
+          ? {
+              respectsColumnBoundariesClassA:
+                !!data.respectsColumnBoundariesClassA,
+            }
+          : {}),
+        ...(data.respectsColumnBoundariesClassB !== undefined
+          ? {
+              respectsColumnBoundariesClassB:
+                !!data.respectsColumnBoundariesClassB,
+            }
+          : {}),
+        ...(data.respectsColumnBoundariesClassC !== undefined
+          ? {
+              respectsColumnBoundariesClassC:
+                !!data.respectsColumnBoundariesClassC,
+            }
+          : {}),
+        ...(data.respectsColumnBoundariesClassD !== undefined
+          ? {
+              respectsColumnBoundariesClassD:
+                !!data.respectsColumnBoundariesClassD,
+            }
+          : {}),
       },
       include: { category: true },
     });
   }
 
-  async removeAll(user: any) {
+  async removeAll(user: AuthUser) {
     const warehouses = await this.prisma.warehouse.findMany({
       where: companyFilter(user),
       select: {
@@ -565,7 +828,17 @@ export class WarehousesService {
     const blocked: string[] = [];
     for (const wh of warehouses) {
       const c = wh._count;
-      const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers + c.pallets;
+      const totalLinked =
+        c.assignedUsers +
+        c.shipToAssignments +
+        c.locations +
+        c.inboundReceipts +
+        c.outboundOrders +
+        c.stockMovements +
+        c.gateEntries +
+        c.vehicles +
+        c.drivers +
+        c.pallets;
       if (totalLinked > 0) blocked.push(wh.code);
       else deletable.push(wh.id);
     }
@@ -581,22 +854,36 @@ export class WarehousesService {
       // rows either. Safe to just clean them up alongside storageTypes/
       // dispatchFlows rather than blocking on them.
       await this.prisma.$transaction([
-        this.prisma.warehouseStorageType.deleteMany({ where: { warehouseId: { in: deletable } } }),
-        this.prisma.warehouseDispatchFlow.deleteMany({ where: { warehouseId: { in: deletable } } }),
-        this.prisma.yardSlot.deleteMany({ where: { warehouseId: { in: deletable } } }),
-        this.prisma.dockDoor.deleteMany({ where: { warehouseId: { in: deletable } } }),
-        this.prisma.gatePassSequence.deleteMany({ where: { warehouseId: { in: deletable } } }),
+        this.prisma.warehouseStorageType.deleteMany({
+          where: { warehouseId: { in: deletable } },
+        }),
+        this.prisma.warehouseDispatchFlow.deleteMany({
+          where: { warehouseId: { in: deletable } },
+        }),
+        this.prisma.yardSlot.deleteMany({
+          where: { warehouseId: { in: deletable } },
+        }),
+        this.prisma.dockDoor.deleteMany({
+          where: { warehouseId: { in: deletable } },
+        }),
+        this.prisma.gatePassSequence.deleteMany({
+          where: { warehouseId: { in: deletable } },
+        }),
         this.prisma.warehouse.deleteMany({ where: { id: { in: deletable } } }),
       ]);
     }
-    return { deletedCount: deletable.length, blockedCount: blocked.length, blockedCodes: blocked };
+    return {
+      deletedCount: deletable.length,
+      blockedCount: blocked.length,
+      blockedCodes: blocked,
+    };
   }
 
   // Single-record delete — "Delete All" alone wasn't enough once real data
   // built up (only one or two rows need removing, not the whole list); same
   // blocking-check shape as removeAll's per-row check, just for one id.
   // Confirmed 2026-08-25.
-  async remove(id: string, user: any) {
+  async remove(id: string, user: AuthUser) {
     await this.assertAccess(id, user);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { id },
@@ -620,15 +907,29 @@ export class WarehousesService {
     });
     if (!warehouse) throw new NotFoundException('Warehouse not found.');
     const c = warehouse._count;
-    const totalLinked = c.assignedUsers + c.shipToAssignments + c.locations + c.inboundReceipts + c.outboundOrders + c.stockMovements + c.gateEntries + c.vehicles + c.drivers + c.pallets;
+    const totalLinked =
+      c.assignedUsers +
+      c.shipToAssignments +
+      c.locations +
+      c.inboundReceipts +
+      c.outboundOrders +
+      c.stockMovements +
+      c.gateEntries +
+      c.vehicles +
+      c.drivers +
+      c.pallets;
     if (totalLinked > 0) {
       throw new BadRequestException(
         `Cannot permanently delete "${warehouse.code}" — it has ${totalLinked} linked record(s) (users, ship-tos, locations, gate entries, vehicles, drivers, or transactions). Deactivate it instead.`,
       );
     }
     await this.prisma.$transaction([
-      this.prisma.warehouseStorageType.deleteMany({ where: { warehouseId: id } }),
-      this.prisma.warehouseDispatchFlow.deleteMany({ where: { warehouseId: id } }),
+      this.prisma.warehouseStorageType.deleteMany({
+        where: { warehouseId: id },
+      }),
+      this.prisma.warehouseDispatchFlow.deleteMany({
+        where: { warehouseId: id },
+      }),
       this.prisma.yardSlot.deleteMany({ where: { warehouseId: id } }),
       this.prisma.dockDoor.deleteMany({ where: { warehouseId: id } }),
       this.prisma.gatePassSequence.deleteMany({ where: { warehouseId: id } }),
@@ -637,14 +938,16 @@ export class WarehousesService {
     return { deleted: true, code: warehouse.code };
   }
 
-  async getCustomerSummary(user: any) {
+  async getCustomerSummary(user: AuthUser) {
     const where: any = { ...companyFilter(user) };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
     }
     const warehouses = await this.prisma.warehouse.findMany({
       where,
-      include: { shipToAssignments: { select: { customerId: true, deliveryZone: true } } },
+      include: {
+        shipToAssignments: { select: { customerId: true, deliveryZone: true } },
+      },
       orderBy: { code: 'asc' },
     });
     return warehouses.map((w) => ({
@@ -653,8 +956,11 @@ export class WarehousesService {
       name: w.name,
       shipToCount: w.shipToAssignments.length,
       customerCount: new Set(w.shipToAssignments.map((s) => s.customerId)).size,
-      localCount: w.shipToAssignments.filter((s) => s.deliveryZone === 'LOCAL').length,
-      upcountryCount: w.shipToAssignments.filter((s) => s.deliveryZone === 'UPCOUNTRY').length,
+      localCount: w.shipToAssignments.filter((s) => s.deliveryZone === 'LOCAL')
+        .length,
+      upcountryCount: w.shipToAssignments.filter(
+        (s) => s.deliveryZone === 'UPCOUNTRY',
+      ).length,
     }));
   }
 
@@ -663,16 +969,29 @@ export class WarehousesService {
   // Locations — "did we forget to generate something" QA (2026-08-25
   // design pass), not the reverse: a Location whose (storageType,
   // categoryId) doesn't match any planned row at all isn't flagged as
-  // "extra", it's just invisible to this summary. Rack Locations count as 1
-  // pallet position each (individually addressable); Ground/Stillage use
-  // their derived depth×width×height capacity, same as attachCapacity().
+  // "extra", it's just invisible to this summary. Rack AND Ground/Floor
+  // Locations both count as 1 pallet position each — both are individually
+  // addressable, one row per real position, since Ground's 2026-09-06
+  // redesign. Stillage (redesigned the same way, 2026-09-13) counts as
+  // `height` per row (one row = one stack-height position, holding up to
+  // `height`-many stillages — not individually addressable further).
+  // 2026-09-13 fix: this used to multiply depth×width×height per row for
+  // BOTH Ground and Stillage — correct back when one row was the WHOLE bin,
+  // but a real over-count bug ever since Ground's own redesign made `depth`
+  // a per-row POSITION and `width` the bin's total column count (repeated
+  // on every row) rather than per-row multipliers — e.g. a real 4-column×
+  // 3-deep Ground bin (12 genuine positions) was being reported as 96. Not
+  // caught earlier since this table is a QA/cosmetic aid, not itself load-
+  // bearing for any real placement decision — found and fixed while adding
+  // the identical redesign for Stillage, which would have inherited the
+  // exact same bug immediately.
   // Confirmed decisions: a Location with no Category set still counts,
   // matched into the "Uncategorized" bucket like everywhere else that
   // resolves a blank category; deactivated Locations still count (the
   // physical bin exists either way, active or not); a warehouse-level
   // "Mix" row is skipped entirely — it isn't broken down by real storage
   // type yet, so there's nothing concrete to compare it against.
-  async getMappingSummary(user: any) {
+  async getMappingSummary(user: AuthUser) {
     const where: any = { ...companyFilter(user) };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
@@ -684,10 +1003,19 @@ export class WarehousesService {
     });
     if (warehouses.length === 0) return [];
 
-    const uncategorized = await this.prisma.productCategory.findFirst({ where: { name: { equals: 'Uncategorized', mode: 'insensitive' } } });
+    const uncategorized = await this.prisma.productCategory.findFirst({
+      where: { name: { equals: 'Uncategorized', mode: 'insensitive' } },
+    });
     const locations = await this.prisma.location.findMany({
       where: { warehouseId: { in: warehouses.map((w) => w.id) } },
-      select: { warehouseId: true, storageType: true, categoryId: true, depth: true, width: true, height: true },
+      select: {
+        warehouseId: true,
+        storageType: true,
+        categoryId: true,
+        depth: true,
+        width: true,
+        height: true,
+      },
     });
 
     const mappedMap = new Map<string, number>(); // `${warehouseId}::${storageType}::${categoryId}` -> pallet positions
@@ -695,7 +1023,13 @@ export class WarehousesService {
       const categoryId = loc.categoryId || uncategorized?.id;
       if (!categoryId) continue; // no Category anywhere to attribute this to — shouldn't happen once seeded, skip defensively
       const key = `${loc.warehouseId}::${loc.storageType}::${categoryId}`;
-      const positions = RACK_STORAGE_TYPES.includes(loc.storageType) ? 1 : (loc.depth || 1) * (loc.width || 1) * (loc.height || 1);
+      const positions =
+        RACK_STORAGE_TYPES.includes(loc.storageType) ||
+        loc.storageType === 'GROUND_FLOOR'
+          ? 1
+          : loc.storageType === 'STILLAGE'
+            ? loc.height || 1
+            : (loc.depth || 1) * (loc.width || 1) * (loc.height || 1);
       mappedMap.set(key, (mappedMap.get(key) || 0) + positions);
     }
 
@@ -706,7 +1040,8 @@ export class WarehousesService {
           storageType: s.storageType,
           category: s.category.name,
           planned: Number(s.palletPositions),
-          mapped: mappedMap.get(`${w.id}::${s.storageType}::${s.categoryId}`) || 0,
+          mapped:
+            mappedMap.get(`${w.id}::${s.storageType}::${s.categoryId}`) || 0,
         }));
       return {
         warehouseId: w.id,
@@ -726,14 +1061,17 @@ export class WarehousesService {
   // Dispatch Flows have no natural per-row slot to repeat into, so they're
   // joined as one comma-separated column instead, same value on every row for
   // that warehouse.
-  async exportRows(user: any) {
+  async exportRows(user: AuthUser) {
     const where: any = { ...companyFilter(user) };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       where.id = { in: await ownWarehouseIds(this.prisma, user.userId) };
     }
     const warehouses = await this.prisma.warehouse.findMany({
       where,
-      include: { storageTypes: { include: { category: true } }, dispatchFlows: true },
+      include: {
+        storageTypes: { include: { category: true } },
+        dispatchFlows: true,
+      },
       orderBy: { code: 'asc' },
     });
     const rows: any[] = [];
@@ -743,30 +1081,38 @@ export class WarehousesService {
         'Location Code': w.code,
         'Type of Node': w.nodeType || '',
         'City Name': w.city || '',
-        'Address': w.address || '',
-        'Pincode': w.pincode || '',
-        'Latitude': w.latitude ?? '',
-        'Longitude': w.longitude ?? '',
+        Address: w.address || '',
+        Pincode: w.pincode || '',
+        Latitude: w.latitude ?? '',
+        Longitude: w.longitude ?? '',
         '3PL Name': w.threePlName || '',
         'No of Docks': w.noOfDocks ?? '',
         'Area sq ft': w.areaSqFt ?? '',
         'Parking Slots': w.yardCapacity ?? '',
-        'GSTIN': w.gstin || '',
+        GSTIN: w.gstin || '',
         'Working Days': w.workingDays || '',
         'Working Hours': w.workingHours || '',
         'Contact Name': w.contactName || '',
         'Contact Phone': w.contactPhone || '',
-        'Active': w.isActive ? 'TRUE' : 'FALSE',
+        Active: w.isActive ? 'TRUE' : 'FALSE',
         'Dispatch Flow': dispatchFlows,
       };
       if (w.storageTypes.length === 0) {
-        rows.push({ ...base, 'Storage Type': '', 'Category': '', 'Pallet Positions': '', 'Dim L (m)': '', 'Dim W (m)': '', 'Dim H (m)': '' });
+        rows.push({
+          ...base,
+          'Storage Type': '',
+          Category: '',
+          'Pallet Positions': '',
+          'Dim L (m)': '',
+          'Dim W (m)': '',
+          'Dim H (m)': '',
+        });
       } else {
         for (const s of w.storageTypes) {
           rows.push({
             ...base,
             'Storage Type': s.storageType,
-            'Category': s.category.name,
+            Category: s.category.name,
             'Pallet Positions': s.palletPositions,
             'Dim L (m)': s.lengthM ?? '',
             'Dim W (m)': s.widthM ?? '',
