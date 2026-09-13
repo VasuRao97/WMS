@@ -19,7 +19,17 @@ function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem('token')}` };
 }
 
-function currentUser(): any {
+// Shape of the `user` object /auth/login and /auth/register store into
+// localStorage (see backend/src/auth/auth.service.ts's
+// `{ id, email, role, companyId }`) — not the full User row.
+interface CurrentUser {
+  id: string;
+  email: string;
+  role: string;
+  companyId: string | null;
+}
+
+function currentUser(): CurrentUser | null {
   return localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null;
 }
 

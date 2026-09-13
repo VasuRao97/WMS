@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
@@ -8,7 +20,11 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { stripHeaderAsterisks, toBool } from '../common/xlsx-parse.util';
-import { MASTER_DATA_READ_ROLES, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  MASTER_DATA_READ_ROLES,
+  MASTER_DATA_WRITE_ROLES,
+} from '../common/tenant.util';
 
 @Controller('customers')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -17,76 +33,96 @@ export class CustomersController {
 
   @Post()
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  create(@Body() body: any, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.customersService.create(body, user);
   }
 
   @Get()
   @Roles(...MASTER_DATA_READ_ROLES)
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: AuthUser) {
     return this.customersService.findAll(user);
   }
 
   @Get('export')
   @Roles(...MASTER_DATA_READ_ROLES)
-  async export(@Res() res: Response, @CurrentUser() user: any) {
+  async export(@Res() res: Response, @CurrentUser() user: AuthUser) {
     const rows = await this.customersService.exportRows(user);
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Customer Master');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     res.set({
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': 'attachment; filename="Customer_Master_Export.xlsx"',
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition':
+        'attachment; filename="Customer_Master_Export.xlsx"',
     });
     res.send(buffer);
   }
 
   @Patch(':id/deactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  deactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.customersService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  reactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.customersService.reactivate(id, user);
   }
 
   @Delete('all')
   @Roles('COMPANY_ADMIN')
-  removeAll(@CurrentUser() user: any) {
+  removeAll(@CurrentUser() user: AuthUser) {
     return this.customersService.removeAll(user);
   }
 
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
+  remove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.customersService.remove(id, user);
   }
 
   @Post('import')
   @Roles(...MASTER_DATA_WRITE_ROLES)
   @UseInterceptors(FileInterceptor('file'))
-  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+  async importFile(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthUser,
+  ) {
     let workbook: XLSX.WorkBook;
     try {
       workbook = XLSX.read(file.buffer, { type: 'buffer' });
     } catch {
-      return { totalCustomers: 0, successCount: 0, failCount: 0, results: [{ code: '(file)', status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+      return {
+        totalCustomers: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            code: '(file)',
+            status: 'error',
+            errors: ['File could not be read — is it a valid .xlsx file?'],
+          },
+        ],
+      };
     }
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     // No-op today (this template has no " *" suffixes yet) — kept consistent
     // with the Warehouse/SKU import controllers in case this template gets
     // the same required-field markers later.
-    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+    const rawRows: any[] = stripHeaderAsterisks(
+      XLSX.utils.sheet_to_json(sheet, { defval: '' }),
+    );
 
     const grouped = new Map<string, any>();
 
     for (const r of rawRows) {
-      const code = r['Bill To ID'] ? String(r['Bill To ID']).trim().toUpperCase() : '';
+      const code = r['Bill To ID']
+        ? String(r['Bill To ID']).trim().toUpperCase()
+        : '';
       if (!code) continue;
 
       if (!grouped.has(code)) {
@@ -97,10 +133,18 @@ export class CustomersController {
           email: r['Email'] ? String(r['Email']).trim() : undefined,
           phone: r['Phone'] ? String(r['Phone']).trim() : undefined,
           pan: r['PAN'] ? String(r['PAN']).trim() : undefined,
-          billingAddress: r['Billing Address'] ? String(r['Billing Address']).trim() : undefined,
-          pincode: r['Billing Pincode'] ? String(r['Billing Pincode']).trim() : undefined,
-          state: r['Billing State'] ? String(r['Billing State']).trim() : undefined,
-          gstNumber: r['Billing GST Number'] ? String(r['Billing GST Number']).trim() : undefined,
+          billingAddress: r['Billing Address']
+            ? String(r['Billing Address']).trim()
+            : undefined,
+          pincode: r['Billing Pincode']
+            ? String(r['Billing Pincode']).trim()
+            : undefined,
+          state: r['Billing State']
+            ? String(r['Billing State']).trim()
+            : undefined,
+          gstNumber: r['Billing GST Number']
+            ? String(r['Billing GST Number']).trim()
+            : undefined,
           shipToLocations: [] as any[],
         });
       }
@@ -108,13 +152,23 @@ export class CustomersController {
       const customer = grouped.get(code);
       if (r['Ship To Address']) {
         customer.shipToLocations.push({
-          shipToCode: r['Ship To ID'] ? String(r['Ship To ID']).trim() : undefined,
+          shipToCode: r['Ship To ID']
+            ? String(r['Ship To ID']).trim()
+            : undefined,
           address: String(r['Ship To Address']).trim(),
-          pincode: r['Ship To Pincode'] ? String(r['Ship To Pincode']).trim() : '',
+          pincode: r['Ship To Pincode']
+            ? String(r['Ship To Pincode']).trim()
+            : '',
           state: r['Ship To State'] ? String(r['Ship To State']).trim() : '',
-          gstNumber: r['Ship To GST Number'] ? String(r['Ship To GST Number']).trim() : undefined,
-          warehouseCode: r['Ship To Warehouse Code'] ? String(r['Ship To Warehouse Code']).trim() : undefined,
-          deliveryZone: r['Ship To Local/Upcountry'] ? String(r['Ship To Local/Upcountry']).trim().toUpperCase() : undefined,
+          gstNumber: r['Ship To GST Number']
+            ? String(r['Ship To GST Number']).trim()
+            : undefined,
+          warehouseCode: r['Ship To Warehouse Code']
+            ? String(r['Ship To Warehouse Code']).trim()
+            : undefined,
+          deliveryZone: r['Ship To Local/Upcountry']
+            ? String(r['Ship To Local/Upcountry']).trim().toUpperCase()
+            : undefined,
           isDefault: toBool(r['Ship To Default']),
         });
       }

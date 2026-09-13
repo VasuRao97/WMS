@@ -1,10 +1,24 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { EquipmentService } from './equipment.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { EQUIPMENT_READ_ROLES, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  EQUIPMENT_READ_ROLES,
+  MASTER_DATA_WRITE_ROLES,
+} from '../common/tenant.util';
 
 @Controller('equipment')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -13,7 +27,7 @@ export class EquipmentController {
 
   @Post()
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  create(@Body() body: any, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.equipmentService.create(body, user);
   }
 
@@ -24,7 +38,11 @@ export class EquipmentController {
   // warehouse, Primary-ranked first. See EquipmentService.findAll's comment.
   @Get()
   @Roles(...EQUIPMENT_READ_ROLES)
-  findAll(@CurrentUser() user: any, @Query('warehouseId') warehouseId?: string, @Query('activity') activity?: string) {
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query('warehouseId') warehouseId?: string,
+    @Query('activity') activity?: string,
+  ) {
     return this.equipmentService.findAll(user, warehouseId, activity);
   }
 
@@ -35,31 +53,45 @@ export class EquipmentController {
   // before ':id' or Nest matches it as an :id param.
   @Get('suitability-matrix')
   @Roles(...EQUIPMENT_READ_ROLES)
-  getSuitabilityMatrix(@CurrentUser() user: any, @Query('warehouseId') warehouseId: string) {
+  getSuitabilityMatrix(
+    @CurrentUser() user: AuthUser,
+    @Query('warehouseId') warehouseId: string,
+  ) {
     return this.equipmentService.getSuitabilityMatrix(user, warehouseId);
   }
 
   @Patch('suitability-matrix')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  updateSuitabilityMatrix(@CurrentUser() user: any, @Body() body: { warehouseId: string; rows: any[] }) {
-    return this.equipmentService.updateSuitabilityMatrix(user, body.warehouseId, body.rows);
+  updateSuitabilityMatrix(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { warehouseId: string; rows: any[] },
+  ) {
+    return this.equipmentService.updateSuitabilityMatrix(
+      user,
+      body.warehouseId,
+      body.rows,
+    );
   }
 
   @Patch(':id')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  update(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+  update(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.equipmentService.update(id, body, user);
   }
 
   @Patch(':id/deactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  deactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.equipmentService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  reactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.equipmentService.reactivate(id, user);
   }
 
@@ -67,13 +99,13 @@ export class EquipmentController {
   // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')
   @Roles('COMPANY_ADMIN')
-  removeAll(@CurrentUser() user: any) {
+  removeAll(@CurrentUser() user: AuthUser) {
     return this.equipmentService.removeAll(user);
   }
 
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
+  remove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.equipmentService.remove(id, user);
   }
 }

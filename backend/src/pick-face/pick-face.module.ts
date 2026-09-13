@@ -11,6 +11,10 @@ import { PrismaService } from '../prisma/prisma.service';
   // second copy of the ACTUAL_STORAGE bin-suggestion logic.
   imports: [PutawayModule],
   controllers: [PickFaceTasksController],
-  providers: [PickFaceTasksService, PickFaceReplenishmentScheduler, PrismaService],
+  providers: [
+    PickFaceTasksService,
+    PickFaceReplenishmentScheduler,
+    PrismaService,
+  ],
 })
 export class PickFaceModule {}

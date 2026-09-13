@@ -38,6 +38,9 @@
     "rxjs": "^7.8.1",
     "xlsx": "^0.18.5"
   },
+  "overrides": {
+    "multer": "^2.3.0"
+  },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",

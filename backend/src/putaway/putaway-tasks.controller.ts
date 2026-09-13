@@ -1,10 +1,23 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { PutawayTasksService } from './putaway-tasks.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { PUTAWAY_EXECUTE_ROLES, PUTAWAY_DISCREPANCY_REVIEW_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  PUTAWAY_EXECUTE_ROLES,
+  PUTAWAY_DISCREPANCY_REVIEW_ROLES,
+} from '../common/tenant.util';
 
 // Putaway task queue + scan-driven execution (2026-08-28, skeleton logic —
 // see [[wms-putaway-design]] in memory for the full design conversation).
@@ -17,7 +30,10 @@ export class PutawayTasksController {
 
   @Get()
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  findAll(@CurrentUser() user: any, @Query('warehouseId') warehouseId?: string) {
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query('warehouseId') warehouseId?: string,
+  ) {
     return this.putawayTasksService.findAll(user, warehouseId);
   }
 
@@ -26,7 +42,10 @@ export class PutawayTasksController {
   // fires the actual alerts/escalations on a timer.
   @Get('recommendation')
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  getRecommendation(@Query('warehouseId') warehouseId: string | undefined, @CurrentUser() user: any) {
+  getRecommendation(
+    @Query('warehouseId') warehouseId: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.putawayTasksService.getRecommendation(user, warehouseId);
   }
 
@@ -34,7 +53,7 @@ export class PutawayTasksController {
   // whatever SKU the barcode resolves to.
   @Post('claim')
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  claim(@Body('barcode') barcode: string, @CurrentUser() user: any) {
+  claim(@Body('barcode') barcode: string, @CurrentUser() user: AuthUser) {
     return this.putawayTasksService.claimTrip(barcode, user);
   }
 
@@ -42,13 +61,21 @@ export class PutawayTasksController {
   // can complete it; only a matching location scan is ever accepted.
   @Patch('trips/:tripId/complete')
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  complete(@Param('tripId') tripId: string, @Body('locationCode') locationCode: string, @CurrentUser() user: any) {
+  complete(
+    @Param('tripId') tripId: string,
+    @Body('locationCode') locationCode: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.putawayTasksService.completeTrip(tripId, locationCode, user);
   }
 
   @Patch(':id/request-different-bin')
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  requestDifferentBin(@Param('id') id: string, @Body('reason') reason: string, @CurrentUser() user: any) {
+  requestDifferentBin(
+    @Param('id') id: string,
+    @Body('reason') reason: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.putawayTasksService.requestDifferentBin(id, reason, user);
   }
 
@@ -57,13 +84,19 @@ export class PutawayTasksController {
   // separate tier from the rest of this controller.
   @Get('discrepancies')
   @Roles(...PUTAWAY_DISCREPANCY_REVIEW_ROLES)
-  getDiscrepancies(@CurrentUser() user: any, @Query('warehouseId') warehouseId?: string) {
+  getDiscrepancies(
+    @CurrentUser() user: AuthUser,
+    @Query('warehouseId') warehouseId?: string,
+  ) {
     return this.putawayTasksService.getDiscrepancies(user, warehouseId);
   }
 
   @Patch('discrepancies/:tripId/review')
   @Roles(...PUTAWAY_DISCREPANCY_REVIEW_ROLES)
-  reviewDiscrepancy(@Param('tripId') tripId: string, @CurrentUser() user: any) {
+  reviewDiscrepancy(
+    @Param('tripId') tripId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.putawayTasksService.reviewDiscrepancy(tripId, user);
   }
 }

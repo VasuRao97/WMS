@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
+import { type AuthUser, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
 
 // Putaway simulation (2026-09-06 — see [[wms-putaway-design]]) — same role
 // tier as generating Locations/managing SKUs, since this writes real
@@ -17,13 +17,13 @@ export class SimulationController {
 
   @Post('sandbox')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  ensureSandbox(@CurrentUser() user: any) {
+  ensureSandbox(@CurrentUser() user: AuthUser) {
     return this.simulationService.ensureSandbox(user);
   }
 
   @Post('sandbox/reset')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  resetSandbox(@CurrentUser() user: any) {
+  resetSandbox(@CurrentUser() user: AuthUser) {
     return this.simulationService.resetSandbox(user);
   }
 
@@ -36,8 +36,14 @@ export class SimulationController {
     @Body('depth') depth: number,
     @Body('racks') racks: number,
     @Body('depthTiers') depthTiers: number,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.simulationService.runPutawaySimulation(user, unitCount, { storageType, levels, depth, racks, depthTiers });
+    return this.simulationService.runPutawaySimulation(user, unitCount, {
+      storageType,
+      levels,
+      depth,
+      racks,
+      depthTiers,
+    });
   }
 }

@@ -1,6 +1,11 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { type AuthUser } from '../common/tenant.util';
 
 // The first Company-settings surface this project has ever had (2026-08-27)
 // — every other per-company toggle (E-Way Bill requirement, yard-full
@@ -14,14 +19,16 @@ import { PrismaService } from '../prisma/prisma.service';
 export class CompaniesService {
   constructor(private prisma: PrismaService) {}
 
-  private requireCompany(user: any): string {
+  private requireCompany(user: AuthUser): string {
     if (!user.companyId) {
-      throw new ForbiddenException('Super admin accounts have no single company to configure settings for.');
+      throw new ForbiddenException(
+        'Super admin accounts have no single company to configure settings for.',
+      );
     }
     return user.companyId;
   }
 
-  async getSettings(user: any) {
+  async getSettings(user: AuthUser) {
     const companyId = this.requireCompany(user);
     return this.prisma.company.findUnique({
       where: { id: companyId },
@@ -60,7 +67,7 @@ export class CompaniesService {
   // A separate, narrow endpoint rather than loosening the real settings one
   // — that one carries the ERP API key and detention costs, genuinely
   // admin-only data, so it can't just get a broader role gate.
-  async getLayoutSettings(user: any) {
+  async getLayoutSettings(user: AuthUser) {
     const companyId = this.requireCompany(user);
     return this.prisma.company.findUnique({
       where: { id: companyId },
@@ -68,7 +75,7 @@ export class CompaniesService {
     });
   }
 
-  async updateSettings(data: any, user: any) {
+  async updateSettings(data: any, user: AuthUser) {
     const companyId = this.requireCompany(user);
     const errors: string[] = [];
 
@@ -85,30 +92,60 @@ export class CompaniesService {
     // Free Hours is the one field where 0 is a legitimate, meaningful value
     // (a company deciding it wants no grace period at all) — allowed down
     // to 0, unlike the strictly-positive fields above.
-    if (data.detentionFreeHours !== undefined && data.detentionFreeHours !== null && data.detentionFreeHours !== '' && Number(data.detentionFreeHours) < 0) {
+    if (
+      data.detentionFreeHours !== undefined &&
+      data.detentionFreeHours !== null &&
+      data.detentionFreeHours !== '' &&
+      Number(data.detentionFreeHours) < 0
+    ) {
       errors.push('Detention Free Hours cannot be negative.');
     }
     // Putaway trigger mode (2026-08-28, wiring the real toggle for the
     // first time — the schema field/logic have existed since the Putaway
     // build itself, but had no settings endpoint touching them at all).
-    if (data.putawayTriggerMode !== undefined && data.putawayTriggerMode !== null && !['BATCH', 'IMMEDIATE'].includes(data.putawayTriggerMode)) {
+    if (
+      data.putawayTriggerMode !== undefined &&
+      data.putawayTriggerMode !== null &&
+      !['BATCH', 'IMMEDIATE'].includes(data.putawayTriggerMode)
+    ) {
       errors.push('Putaway Trigger Mode must be BATCH or IMMEDIATE.');
     }
-    if (data.putawayDefaultBatchQty !== undefined && data.putawayDefaultBatchQty !== null && data.putawayDefaultBatchQty !== '' && Number(data.putawayDefaultBatchQty) <= 0) {
-      errors.push('Putaway Default Batch Qty must be a positive number when given.');
+    if (
+      data.putawayDefaultBatchQty !== undefined &&
+      data.putawayDefaultBatchQty !== null &&
+      data.putawayDefaultBatchQty !== '' &&
+      Number(data.putawayDefaultBatchQty) <= 0
+    ) {
+      errors.push(
+        'Putaway Default Batch Qty must be a positive number when given.',
+      );
     }
     // Pallet consolidation (2026-09-01) — same override-then-fall-back-to-
     // company-default chain as putawayDefaultBatchQty above.
-    if (data.defaultMaxCasesPerPallet !== undefined && data.defaultMaxCasesPerPallet !== null && data.defaultMaxCasesPerPallet !== '' && Number(data.defaultMaxCasesPerPallet) <= 0) {
-      errors.push('Default Max Cases Per Pallet must be a positive number when given.');
+    if (
+      data.defaultMaxCasesPerPallet !== undefined &&
+      data.defaultMaxCasesPerPallet !== null &&
+      data.defaultMaxCasesPerPallet !== '' &&
+      Number(data.defaultMaxCasesPerPallet) <= 0
+    ) {
+      errors.push(
+        'Default Max Cases Per Pallet must be a positive number when given.',
+      );
     }
     // Putaway operator-assignment fairness (2026-09-02) — a real dial, not
     // an optional/unconfigured setting (has a DB default of 2), so this is
     // always a concrete non-negative whole number, never cleared to null —
     // same "0 is a legitimate choice" allowance as Detention Free Hours.
-    if (data.putawayAssignmentGraceMinutes !== undefined && data.putawayAssignmentGraceMinutes !== null && data.putawayAssignmentGraceMinutes !== '') {
+    if (
+      data.putawayAssignmentGraceMinutes !== undefined &&
+      data.putawayAssignmentGraceMinutes !== null &&
+      data.putawayAssignmentGraceMinutes !== ''
+    ) {
       const n = Number(data.putawayAssignmentGraceMinutes);
-      if (!Number.isInteger(n) || n < 0) errors.push('Putaway Assignment Grace Minutes must be a whole number, 0 or more.');
+      if (!Number.isInteger(n) || n < 0)
+        errors.push(
+          'Putaway Assignment Grace Minutes must be a whole number, 0 or more.',
+        );
     }
     // ABC velocity reassessment (2026-09-06 — see [[wms-abc-velocity-design]])
     // — the three cutoff percentages must sum to exactly 100, checked using
@@ -117,28 +154,79 @@ export class CompaniesService {
     // untouched) — so submitting just one changed percentage still validates
     // correctly against the other two's current values, not against a
     // missing/undefined field.
-    const abcPercentFields = ['abcClassAPercent', 'abcClassBPercent', 'abcClassCPercent'] as const;
+    const abcPercentFields = [
+      'abcClassAPercent',
+      'abcClassBPercent',
+      'abcClassCPercent',
+    ] as const;
     if (abcPercentFields.some((f) => data[f] !== undefined)) {
-      const current = await this.prisma.company.findUnique({ where: { id: companyId }, select: { abcClassAPercent: true, abcClassBPercent: true, abcClassCPercent: true } });
-      const effective = abcPercentFields.map((f) => (data[f] !== undefined && data[f] !== null && data[f] !== '' ? Number(data[f]) : Number(current![f])));
-      if (effective.some((n) => isNaN(n) || n < 0)) errors.push('ABC Class percentages must be non-negative numbers.');
-      else if (Math.round(effective.reduce((s, n) => s + n, 0) * 100) / 100 !== 100) errors.push(`ABC Class A/B/C percentages must add up to 100 (currently ${effective.reduce((s, n) => s + n, 0)}).`);
+      const current = await this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: {
+          abcClassAPercent: true,
+          abcClassBPercent: true,
+          abcClassCPercent: true,
+        },
+      });
+      const effective = abcPercentFields.map((f) =>
+        data[f] !== undefined && data[f] !== null && data[f] !== ''
+          ? Number(data[f])
+          : Number(current![f]),
+      );
+      if (effective.some((n) => isNaN(n) || n < 0))
+        errors.push('ABC Class percentages must be non-negative numbers.');
+      else if (
+        Math.round(effective.reduce((s, n) => s + n, 0) * 100) / 100 !==
+        100
+      )
+        errors.push(
+          `ABC Class A/B/C percentages must add up to 100 (currently ${effective.reduce((s, n) => s + n, 0)}).`,
+        );
     }
-    if (data.abcAssessmentWindowMonths !== undefined && data.abcAssessmentWindowMonths !== null && data.abcAssessmentWindowMonths !== '') {
+    if (
+      data.abcAssessmentWindowMonths !== undefined &&
+      data.abcAssessmentWindowMonths !== null &&
+      data.abcAssessmentWindowMonths !== ''
+    ) {
       const n = Number(data.abcAssessmentWindowMonths);
-      if (!Number.isInteger(n) || n <= 0) errors.push('ABC Assessment Window (months) must be a positive whole number.');
+      if (!Number.isInteger(n) || n <= 0)
+        errors.push(
+          'ABC Assessment Window (months) must be a positive whole number.',
+        );
     }
     // FMS velocity classification (2026-09-08 — see [[wms-abc-velocity-design]])
     // — same effective-value sum-to-100 validation as ABC's own three
     // percentages above, its own separate set of fields (not shared with
     // ABC's), since an order-count distribution doesn't have to shape the
     // same way a quantity distribution does.
-    const fmsPercentFields = ['fmsClassFPercent', 'fmsClassMPercent', 'fmsClassSPercent'] as const;
+    const fmsPercentFields = [
+      'fmsClassFPercent',
+      'fmsClassMPercent',
+      'fmsClassSPercent',
+    ] as const;
     if (fmsPercentFields.some((f) => data[f] !== undefined)) {
-      const current = await this.prisma.company.findUnique({ where: { id: companyId }, select: { fmsClassFPercent: true, fmsClassMPercent: true, fmsClassSPercent: true } });
-      const effective = fmsPercentFields.map((f) => (data[f] !== undefined && data[f] !== null && data[f] !== '' ? Number(data[f]) : Number(current![f])));
-      if (effective.some((n) => isNaN(n) || n < 0)) errors.push('FMS Class percentages must be non-negative numbers.');
-      else if (Math.round(effective.reduce((s, n) => s + n, 0) * 100) / 100 !== 100) errors.push(`FMS Class F/M/S percentages must add up to 100 (currently ${effective.reduce((s, n) => s + n, 0)}).`);
+      const current = await this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: {
+          fmsClassFPercent: true,
+          fmsClassMPercent: true,
+          fmsClassSPercent: true,
+        },
+      });
+      const effective = fmsPercentFields.map((f) =>
+        data[f] !== undefined && data[f] !== null && data[f] !== ''
+          ? Number(data[f])
+          : Number(current![f]),
+      );
+      if (effective.some((n) => isNaN(n) || n < 0))
+        errors.push('FMS Class percentages must be non-negative numbers.');
+      else if (
+        Math.round(effective.reduce((s, n) => s + n, 0) * 100) / 100 !==
+        100
+      )
+        errors.push(
+          `FMS Class F/M/S percentages must add up to 100 (currently ${effective.reduce((s, n) => s + n, 0)}).`,
+        );
     }
     // 3D Plan View cross-aisle spacing (2026-09-07) — null is a legitimate
     // explicit clear ("never insert a periodic aisle, always flush"), same
@@ -151,7 +239,8 @@ export class CompaniesService {
       const v = data[field];
       if (v !== undefined && v !== null && v !== '') {
         const n = Number(v);
-        if (!Number.isInteger(n) || n <= 0) errors.push(`${label} must be a positive whole number when given.`);
+        if (!Number.isInteger(n) || n <= 0)
+          errors.push(`${label} must be a positive whole number when given.`);
       }
     }
     if (errors.length > 0) throw new BadRequestException(errors);
@@ -163,47 +252,145 @@ export class CompaniesService {
         // "unconfigured" — e.g. a company deciding it doesn't want
         // detention alerting at all sends detentionAlertHours: null,
         // distinct from leaving the key out of the request entirely.
-        detentionCostPerDay: data.detentionCostPerDay === undefined ? undefined : data.detentionCostPerDay === null || data.detentionCostPerDay === '' ? null : Number(data.detentionCostPerDay),
-        detentionFreeHours: data.detentionFreeHours === undefined ? undefined : data.detentionFreeHours === null || data.detentionFreeHours === '' ? null : Number(data.detentionFreeHours),
-        detentionAlertHours: data.detentionAlertHours === undefined ? undefined : data.detentionAlertHours === null || data.detentionAlertHours === '' ? null : Number(data.detentionAlertHours),
-        detentionEscalationHours: data.detentionEscalationHours === undefined ? undefined : data.detentionEscalationHours === null || data.detentionEscalationHours === '' ? null : Number(data.detentionEscalationHours),
+        detentionCostPerDay:
+          data.detentionCostPerDay === undefined
+            ? undefined
+            : data.detentionCostPerDay === null ||
+                data.detentionCostPerDay === ''
+              ? null
+              : Number(data.detentionCostPerDay),
+        detentionFreeHours:
+          data.detentionFreeHours === undefined
+            ? undefined
+            : data.detentionFreeHours === null || data.detentionFreeHours === ''
+              ? null
+              : Number(data.detentionFreeHours),
+        detentionAlertHours:
+          data.detentionAlertHours === undefined
+            ? undefined
+            : data.detentionAlertHours === null ||
+                data.detentionAlertHours === ''
+              ? null
+              : Number(data.detentionAlertHours),
+        detentionEscalationHours:
+          data.detentionEscalationHours === undefined
+            ? undefined
+            : data.detentionEscalationHours === null ||
+                data.detentionEscalationHours === ''
+              ? null
+              : Number(data.detentionEscalationHours),
         // 2026-08-27, ERP push — a plain boolean toggle, same "omitted
         // means unchanged" convention as everything else here.
-        allowErpInboundPush: data.allowErpInboundPush === undefined ? undefined : !!data.allowErpInboundPush,
+        allowErpInboundPush:
+          data.allowErpInboundPush === undefined
+            ? undefined
+            : !!data.allowErpInboundPush,
         // Putaway (2026-08-28) — same "omitted means unchanged, explicit
         // null clears it back to unconfigured" convention as detention.
         // putawayTriggerMode has no real "unconfigured" state (it's a
         // required enum with a DB default), so an empty/null value here is
         // simply ignored (left unchanged) rather than attempted as a clear.
-        putawayTriggerMode: data.putawayTriggerMode ? data.putawayTriggerMode : undefined,
-        putawayDefaultBatchQty: data.putawayDefaultBatchQty === undefined ? undefined : data.putawayDefaultBatchQty === null || data.putawayDefaultBatchQty === '' ? null : Number(data.putawayDefaultBatchQty),
-        defaultMaxCasesPerPallet: data.defaultMaxCasesPerPallet === undefined ? undefined : data.defaultMaxCasesPerPallet === null || data.defaultMaxCasesPerPallet === '' ? null : Number(data.defaultMaxCasesPerPallet),
+        putawayTriggerMode: data.putawayTriggerMode
+          ? data.putawayTriggerMode
+          : undefined,
+        putawayDefaultBatchQty:
+          data.putawayDefaultBatchQty === undefined
+            ? undefined
+            : data.putawayDefaultBatchQty === null ||
+                data.putawayDefaultBatchQty === ''
+              ? null
+              : Number(data.putawayDefaultBatchQty),
+        defaultMaxCasesPerPallet:
+          data.defaultMaxCasesPerPallet === undefined
+            ? undefined
+            : data.defaultMaxCasesPerPallet === null ||
+                data.defaultMaxCasesPerPallet === ''
+              ? null
+              : Number(data.defaultMaxCasesPerPallet),
         // No "unconfigured" state for this one (real DB default of 2) —
         // omitted leaves it unchanged, a blank/null value is simply
         // ignored rather than attempted as a clear, same as putawayTriggerMode.
-        putawayAssignmentGraceMinutes: data.putawayAssignmentGraceMinutes !== undefined && data.putawayAssignmentGraceMinutes !== null && data.putawayAssignmentGraceMinutes !== '' ? Number(data.putawayAssignmentGraceMinutes) : undefined,
+        putawayAssignmentGraceMinutes:
+          data.putawayAssignmentGraceMinutes !== undefined &&
+          data.putawayAssignmentGraceMinutes !== null &&
+          data.putawayAssignmentGraceMinutes !== ''
+            ? Number(data.putawayAssignmentGraceMinutes)
+            : undefined,
         // Putaway location override (2026-09-06) — a plain boolean toggle,
         // same "omitted means unchanged" convention as allowErpInboundPush.
-        allowPutawayLocationOverride: data.allowPutawayLocationOverride === undefined ? undefined : !!data.allowPutawayLocationOverride,
+        allowPutawayLocationOverride:
+          data.allowPutawayLocationOverride === undefined
+            ? undefined
+            : !!data.allowPutawayLocationOverride,
         // ABC velocity reassessment (2026-09-06) — abcReassessmentEnabled is
         // a plain toggle; the three percentages and the window have real DB
         // defaults (same "no unconfigured state" shape as
         // putawayAssignmentGraceMinutes) — omitted leaves them unchanged, a
         // blank/null value is simply ignored rather than attempted as a
         // clear.
-        abcReassessmentEnabled: data.abcReassessmentEnabled === undefined ? undefined : !!data.abcReassessmentEnabled,
-        abcClassAPercent: data.abcClassAPercent !== undefined && data.abcClassAPercent !== null && data.abcClassAPercent !== '' ? Number(data.abcClassAPercent) : undefined,
-        abcClassBPercent: data.abcClassBPercent !== undefined && data.abcClassBPercent !== null && data.abcClassBPercent !== '' ? Number(data.abcClassBPercent) : undefined,
-        abcClassCPercent: data.abcClassCPercent !== undefined && data.abcClassCPercent !== null && data.abcClassCPercent !== '' ? Number(data.abcClassCPercent) : undefined,
-        abcAssessmentWindowMonths: data.abcAssessmentWindowMonths !== undefined && data.abcAssessmentWindowMonths !== null && data.abcAssessmentWindowMonths !== '' ? Number(data.abcAssessmentWindowMonths) : undefined,
+        abcReassessmentEnabled:
+          data.abcReassessmentEnabled === undefined
+            ? undefined
+            : !!data.abcReassessmentEnabled,
+        abcClassAPercent:
+          data.abcClassAPercent !== undefined &&
+          data.abcClassAPercent !== null &&
+          data.abcClassAPercent !== ''
+            ? Number(data.abcClassAPercent)
+            : undefined,
+        abcClassBPercent:
+          data.abcClassBPercent !== undefined &&
+          data.abcClassBPercent !== null &&
+          data.abcClassBPercent !== ''
+            ? Number(data.abcClassBPercent)
+            : undefined,
+        abcClassCPercent:
+          data.abcClassCPercent !== undefined &&
+          data.abcClassCPercent !== null &&
+          data.abcClassCPercent !== ''
+            ? Number(data.abcClassCPercent)
+            : undefined,
+        abcAssessmentWindowMonths:
+          data.abcAssessmentWindowMonths !== undefined &&
+          data.abcAssessmentWindowMonths !== null &&
+          data.abcAssessmentWindowMonths !== ''
+            ? Number(data.abcAssessmentWindowMonths)
+            : undefined,
         // FMS velocity classification (2026-09-08) — same "real DB default,
         // omitted leaves unchanged, blank ignored rather than cleared" shape
         // as the ABC percentages above.
-        fmsClassFPercent: data.fmsClassFPercent !== undefined && data.fmsClassFPercent !== null && data.fmsClassFPercent !== '' ? Number(data.fmsClassFPercent) : undefined,
-        fmsClassMPercent: data.fmsClassMPercent !== undefined && data.fmsClassMPercent !== null && data.fmsClassMPercent !== '' ? Number(data.fmsClassMPercent) : undefined,
-        fmsClassSPercent: data.fmsClassSPercent !== undefined && data.fmsClassSPercent !== null && data.fmsClassSPercent !== '' ? Number(data.fmsClassSPercent) : undefined,
-        rackBaysPerCrossAisle: data.rackBaysPerCrossAisle === undefined ? undefined : data.rackBaysPerCrossAisle === null || data.rackBaysPerCrossAisle === '' ? null : Number(data.rackBaysPerCrossAisle),
-        groundBinsPerCrossAisle: data.groundBinsPerCrossAisle === undefined ? undefined : data.groundBinsPerCrossAisle === null || data.groundBinsPerCrossAisle === '' ? null : Number(data.groundBinsPerCrossAisle),
+        fmsClassFPercent:
+          data.fmsClassFPercent !== undefined &&
+          data.fmsClassFPercent !== null &&
+          data.fmsClassFPercent !== ''
+            ? Number(data.fmsClassFPercent)
+            : undefined,
+        fmsClassMPercent:
+          data.fmsClassMPercent !== undefined &&
+          data.fmsClassMPercent !== null &&
+          data.fmsClassMPercent !== ''
+            ? Number(data.fmsClassMPercent)
+            : undefined,
+        fmsClassSPercent:
+          data.fmsClassSPercent !== undefined &&
+          data.fmsClassSPercent !== null &&
+          data.fmsClassSPercent !== ''
+            ? Number(data.fmsClassSPercent)
+            : undefined,
+        rackBaysPerCrossAisle:
+          data.rackBaysPerCrossAisle === undefined
+            ? undefined
+            : data.rackBaysPerCrossAisle === null ||
+                data.rackBaysPerCrossAisle === ''
+              ? null
+              : Number(data.rackBaysPerCrossAisle),
+        groundBinsPerCrossAisle:
+          data.groundBinsPerCrossAisle === undefined
+            ? undefined
+            : data.groundBinsPerCrossAisle === null ||
+                data.groundBinsPerCrossAisle === ''
+              ? null
+              : Number(data.groundBinsPerCrossAisle),
       },
       select: {
         id: true,
@@ -240,7 +427,7 @@ export class CompaniesService {
   // project yet, same flagged simplification as schema.prisma's comment on
   // Company.erpApiKey) — a COMPANY_ADMIN needs to actually read this value
   // back out to configure their ERP with it, so it isn't hashed/masked.
-  async regenerateErpApiKey(user: any) {
+  async regenerateErpApiKey(user: AuthUser) {
     const companyId = this.requireCompany(user);
     const erpApiKey = randomBytes(24).toString('hex');
     return this.prisma.company.update({

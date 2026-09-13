@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
@@ -7,8 +19,15 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { stripHeaderAsterisks, toNumberOrUndefined } from '../common/xlsx-parse.util';
-import { MASTER_DATA_READ_ROLES, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
+import {
+  stripHeaderAsterisks,
+  toNumberOrUndefined,
+} from '../common/xlsx-parse.util';
+import {
+  type AuthUser,
+  MASTER_DATA_READ_ROLES,
+  MASTER_DATA_WRITE_ROLES,
+} from '../common/tenant.util';
 
 @Controller('warehouses')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -17,52 +36,54 @@ export class WarehousesController {
 
   @Post()
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  create(@Body() body: any, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.warehousesService.create(body, user);
   }
 
   @Get()
   @Roles(...MASTER_DATA_READ_ROLES)
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: AuthUser) {
     return this.warehousesService.findAll(user);
   }
 
   @Get('customer-summary')
   @Roles(...MASTER_DATA_READ_ROLES)
-  getCustomerSummary(@CurrentUser() user: any) {
+  getCustomerSummary(@CurrentUser() user: AuthUser) {
     return this.warehousesService.getCustomerSummary(user);
   }
 
   @Get('mapping-summary')
   @Roles(...MASTER_DATA_READ_ROLES)
-  getMappingSummary(@CurrentUser() user: any) {
+  getMappingSummary(@CurrentUser() user: AuthUser) {
     return this.warehousesService.getMappingSummary(user);
   }
 
   @Get('export')
   @Roles(...MASTER_DATA_READ_ROLES)
-  async export(@Res() res: Response, @CurrentUser() user: any) {
+  async export(@Res() res: Response, @CurrentUser() user: AuthUser) {
     const rows = await this.warehousesService.exportRows(user);
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Warehouse Master');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     res.set({
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': 'attachment; filename="Warehouse_Master_Export.xlsx"',
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition':
+        'attachment; filename="Warehouse_Master_Export.xlsx"',
     });
     res.send(buffer);
   }
 
   @Patch(':id/deactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  deactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.warehousesService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  reactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.warehousesService.reactivate(id, user);
   }
 
@@ -71,8 +92,16 @@ export class WarehousesController {
   // Warehouse Edit form (none exists yet).
   @Patch(':id/aging-granularity')
   @Roles('COMPANY_ADMIN')
-  setAgingGranularity(@Param('id') id: string, @Body() body: { agingGranularity: string | null }, @CurrentUser() user: any) {
-    return this.warehousesService.setAgingGranularity(id, body.agingGranularity ?? null, user);
+  setAgingGranularity(
+    @Param('id') id: string,
+    @Body() body: { agingGranularity: string | null },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.warehousesService.setAgingGranularity(
+      id,
+      body.agingGranularity ?? null,
+      user,
+    );
   }
 
   // Company-Admin-only, same reasoning as aging-granularity above — no
@@ -80,7 +109,18 @@ export class WarehousesController {
   // own "Dock Configuration" mini-editor (2026-09-06, Topic 2).
   @Patch(':id/dock-zones')
   @Roles('COMPANY_ADMIN')
-  setDockZones(@Param('id') id: string, @Body() body: { zones: { purpose: string; dockSide: string; numberOneNearDock?: boolean }[] }, @CurrentUser() user: any) {
+  setDockZones(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      zones: {
+        purpose: string;
+        dockSide: string;
+        numberOneNearDock?: boolean;
+      }[];
+    },
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.warehousesService.setDockZones(id, body.zones ?? [], user);
   }
 
@@ -89,8 +129,16 @@ export class WarehousesController {
   // Settings' per-warehouse picker instead.
   @Patch(':id/pick-face-enabled')
   @Roles('COMPANY_ADMIN')
-  setPickFaceEnabled(@Param('id') id: string, @Body() body: { pickFaceEnabled: boolean }, @CurrentUser() user: any) {
-    return this.warehousesService.setPickFaceEnabled(id, !!body.pickFaceEnabled, user);
+  setPickFaceEnabled(
+    @Param('id') id: string,
+    @Body() body: { pickFaceEnabled: boolean },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.warehousesService.setPickFaceEnabled(
+      id,
+      !!body.pickFaceEnabled,
+      user,
+    );
   }
 
   // 2026-09-06 — the real UI for the long-dead maxSkusClassA/B/C fields
@@ -101,49 +149,87 @@ export class WarehousesController {
   // comment for why it lives in the body, not the URL.
   @Patch(':id/storage-type-caps')
   @Roles('COMPANY_ADMIN')
-  setStorageTypeCaps(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
-    return this.warehousesService.setStorageTypeCaps(id, body.storageTypeRowId, body, user);
+  setStorageTypeCaps(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.warehousesService.setStorageTypeCaps(
+      id,
+      body.storageTypeRowId,
+      body,
+      user,
+    );
   }
 
   // Route order matters — @Delete('all') must be declared before
   // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')
   @Roles('COMPANY_ADMIN')
-  removeAll(@CurrentUser() user: any) {
+  removeAll(@CurrentUser() user: AuthUser) {
     return this.warehousesService.removeAll(user);
   }
 
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
+  remove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.warehousesService.remove(id, user);
   }
 
   @Post('import')
   @Roles(...MASTER_DATA_WRITE_ROLES)
   @UseInterceptors(FileInterceptor('file'))
-  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+  async importFile(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthUser,
+  ) {
     let workbook: XLSX.WorkBook;
     try {
       workbook = XLSX.read(file.buffer, { type: 'buffer' });
     } catch {
-      return { totalWarehouses: 0, successCount: 0, failCount: 0, results: [{ code: '(file)', status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+      return {
+        totalWarehouses: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            code: '(file)',
+            status: 'error',
+            errors: ['File could not be read — is it a valid .xlsx file?'],
+          },
+        ],
+      };
     }
     // Read by sheet NAME, not position — the "How To Use"/"Legend & Rules"
     // tabs sit alongside the data tab in this template, unlike SKU/Customer
     // where the data sheet has always been sheet[0].
     const sheet = workbook.Sheets['Warehouse Import'];
     if (!sheet) {
-      return { totalWarehouses: 0, successCount: 0, failCount: 0, results: [{ code: '(file)', status: 'error', errors: ['No "Warehouse Import" sheet found in this file.'] }] };
+      return {
+        totalWarehouses: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            code: '(file)',
+            status: 'error',
+            errors: ['No "Warehouse Import" sheet found in this file.'],
+          },
+        ],
+      };
     }
     // Template header cells mark required columns with a trailing " *"
     // (e.g. "Location Code *") — strip it before any r['Column Name'] lookup.
-    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+    const rawRows: any[] = stripHeaderAsterisks(
+      XLSX.utils.sheet_to_json(sheet, { defval: '' }),
+    );
 
     const grouped = new Map<string, any>();
 
     for (const r of rawRows) {
-      const code = r['Location Code'] ? String(r['Location Code']).trim().toUpperCase() : '';
+      const code = r['Location Code']
+        ? String(r['Location Code']).trim().toUpperCase()
+        : '';
       if (!code) continue;
 
       if (!grouped.has(code)) {
@@ -160,10 +246,18 @@ export class WarehousesController {
           areaSqFt: toNumberOrUndefined(r['Area sq ft']),
           yardCapacity: toNumberOrUndefined(r['Parking Slots']),
           gstin: r['GSTIN'] ? String(r['GSTIN']).trim() : undefined,
-          workingDays: r['Working Days'] ? String(r['Working Days']).trim() : undefined,
-          workingHours: r['Working Hours'] ? String(r['Working Hours']).trim() : undefined,
-          contactName: r['Contact Name'] ? String(r['Contact Name']).trim() : undefined,
-          contactPhone: r['Contact Phone'] ? String(r['Contact Phone']).trim() : undefined,
+          workingDays: r['Working Days']
+            ? String(r['Working Days']).trim()
+            : undefined,
+          workingHours: r['Working Hours']
+            ? String(r['Working Hours']).trim()
+            : undefined,
+          contactName: r['Contact Name']
+            ? String(r['Contact Name']).trim()
+            : undefined,
+          contactPhone: r['Contact Phone']
+            ? String(r['Contact Phone']).trim()
+            : undefined,
           storageTypes: [] as any[],
           dispatchFlows: [] as any[],
         });
@@ -185,6 +279,9 @@ export class WarehousesController {
       }
     }
 
-    return this.warehousesService.bulkImport(Array.from(grouped.values()), user);
+    return this.warehousesService.bulkImport(
+      Array.from(grouped.values()),
+      user,
+    );
   }
 }

@@ -1,7 +1,17 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  WAREHOUSE_SCOPED_ROLES,
+} from '../common/tenant.util';
 import { EMAIL_REGEX } from '../common/validation.util';
 import { normalizeCode } from '../common/normalize.util';
 
@@ -19,14 +29,30 @@ import { normalizeCode } from '../common/normalize.util';
 // Supervisor variant can create the other (peers never create peers, only
 // COMPANY_ADMIN does); both can only create OPERATOR below them.
 const CREATABLE_ROLES: Record<string, string[]> = {
-  COMPANY_ADMIN: ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'],
-  WAREHOUSE_MANAGER: ['WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'],
+  COMPANY_ADMIN: [
+    'COMPANY_ADMIN',
+    'WAREHOUSE_MANAGER',
+    'WAREHOUSE_SUPERVISOR',
+    'SECURITY_SUPERVISOR',
+    'OPERATOR',
+  ],
+  WAREHOUSE_MANAGER: [
+    'WAREHOUSE_SUPERVISOR',
+    'SECURITY_SUPERVISOR',
+    'OPERATOR',
+  ],
   WAREHOUSE_SUPERVISOR: ['OPERATOR'],
   SECURITY_SUPERVISOR: ['OPERATOR'],
   OPERATOR: [],
 };
 
-const ROLE_VALUES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'];
+const ROLE_VALUES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'SECURITY_SUPERVISOR',
+  'OPERATOR',
+];
 
 // Shop-floor Supervisor/Operator accounts log in with an arbitrary unique ID,
 // not necessarily a real email address — only Admin/Manager accounts are
@@ -54,11 +80,17 @@ export class UsersService {
 
   private validate(data: any, targetRole: string): string[] {
     const errors: string[] = [];
-    if (!data.name || data.name.trim().length < 2) errors.push('Name is required (min 2 characters).');
+    if (!data.name || data.name.trim().length < 2)
+      errors.push('Name is required (min 2 characters).');
     if (!data.email || !data.email.trim()) {
       errors.push('Login ID is required.');
-    } else if (EMAIL_REQUIRED_ROLES.includes(targetRole) && !EMAIL_REGEX.test(data.email.trim())) {
-      errors.push('Company Admin / Warehouse Manager accounts must log in with a valid email address.');
+    } else if (
+      EMAIL_REQUIRED_ROLES.includes(targetRole) &&
+      !EMAIL_REGEX.test(data.email.trim())
+    ) {
+      errors.push(
+        'Company Admin / Warehouse Manager accounts must log in with a valid email address.',
+      );
     }
     if (!ROLE_VALUES.includes(targetRole)) {
       errors.push(`Role must be one of: ${ROLE_VALUES.join(', ')}.`);
@@ -66,7 +98,12 @@ export class UsersService {
     return errors;
   }
 
-  private async resolveWarehouseIds(requestedIds: string[], creator: any, targetRole: string, errors: string[]): Promise<string[]> {
+  private async resolveWarehouseIds(
+    requestedIds: string[],
+    creator: any,
+    targetRole: string,
+    errors: string[],
+  ): Promise<string[]> {
     const ids = Array.from(new Set((requestedIds || []).filter(Boolean)));
     if (targetRole !== 'COMPANY_ADMIN' && ids.length === 0) {
       errors.push('At least one assigned warehouse is required for this role.');
@@ -79,7 +116,9 @@ export class UsersService {
       select: { id: true },
     });
     if (warehouses.length !== ids.length) {
-      errors.push('One or more selected warehouses were not found for this company.');
+      errors.push(
+        'One or more selected warehouses were not found for this company.',
+      );
       return [];
     }
 
@@ -87,7 +126,9 @@ export class UsersService {
       const ownIds = await ownWarehouseIds(this.prisma, creator.userId);
       const outOfScope = ids.filter((id) => !ownIds.includes(id));
       if (outOfScope.length > 0) {
-        errors.push('You can only assign warehouses you yourself have access to.');
+        errors.push(
+          'You can only assign warehouses you yourself have access to.',
+        );
         return [];
       }
     }
@@ -96,24 +137,34 @@ export class UsersService {
 
   async create(data: any, creator: any) {
     if (!creator.companyId) {
-      throw new ForbiddenException('Super admin accounts cannot create users directly — log in as a company admin instead.');
+      throw new ForbiddenException(
+        'Super admin accounts cannot create users directly — log in as a company admin instead.',
+      );
     }
     const targetRole = data.role;
     const creatable = CREATABLE_ROLES[creator.role] || [];
     if (!creatable.includes(targetRole)) {
-      throw new ForbiddenException(`Your role (${creator.role}) cannot create a user with role ${targetRole}.`);
+      throw new ForbiddenException(
+        `Your role (${creator.role}) cannot create a user with role ${targetRole}.`,
+      );
     }
 
     const errors = this.validate(data, targetRole);
     if (!data.password || String(data.password).length < 6) {
       errors.push('Password is required and must be at least 6 characters.');
     }
-    const warehouseIds = await this.resolveWarehouseIds(data.assignedWarehouseIds, creator, targetRole, errors);
+    const warehouseIds = await this.resolveWarehouseIds(
+      data.assignedWarehouseIds,
+      creator,
+      targetRole,
+      errors,
+    );
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const email = data.email.trim();
     const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) throw new BadRequestException(`Login ID "${email}" is already in use.`);
+    if (existing)
+      throw new BadRequestException(`Login ID "${email}" is already in use.`);
 
     const passwordHash = await bcrypt.hash(data.password, 10);
 
@@ -125,22 +176,40 @@ export class UsersService {
         role: targetRole,
         functionTag: data.functionTag || undefined,
         phone: data.phone || undefined,
-        canOperateMhe: data.canOperateMhe === undefined || data.canOperateMhe === null || data.canOperateMhe === '' ? undefined : !!data.canOperateMhe,
-        canHandleGroundBlock: data.canHandleGroundBlock === undefined || data.canHandleGroundBlock === null || data.canHandleGroundBlock === '' ? undefined : !!data.canHandleGroundBlock,
+        canOperateMhe:
+          data.canOperateMhe === undefined ||
+          data.canOperateMhe === null ||
+          data.canOperateMhe === ''
+            ? undefined
+            : !!data.canOperateMhe,
+        canHandleGroundBlock:
+          data.canHandleGroundBlock === undefined ||
+          data.canHandleGroundBlock === null ||
+          data.canHandleGroundBlock === ''
+            ? undefined
+            : !!data.canHandleGroundBlock,
         company: { connect: { id: creator.companyId } },
-        assignedWarehouses: warehouseIds.length ? { connect: warehouseIds.map((id) => ({ id })) } : undefined,
+        assignedWarehouses: warehouseIds.length
+          ? { connect: warehouseIds.map((id) => ({ id })) }
+          : undefined,
       },
       select: SELECT_SAFE,
     });
   }
 
   /** Comma/semicolon-separated Warehouse Codes from an Excel cell → resolved ids, scope-checked the same way a manual create's ids are. */
-  private async resolveWarehouseCodesToIds(codesRaw: string | undefined, creator: any, targetRole: string, errors: string[]): Promise<string[]> {
+  private async resolveWarehouseCodesToIds(
+    codesRaw: string | undefined,
+    creator: any,
+    targetRole: string,
+    errors: string[],
+  ): Promise<string[]> {
     const codes = String(codesRaw || '')
       .split(/[,;]/)
       .map((c) => c.trim().toUpperCase())
       .filter(Boolean);
-    if (codes.length === 0) return this.resolveWarehouseIds([], creator, targetRole, errors);
+    if (codes.length === 0)
+      return this.resolveWarehouseIds([], creator, targetRole, errors);
 
     const warehouses = await this.prisma.warehouse.findMany({
       where: { companyId: creator.companyId, code: { in: codes } },
@@ -149,10 +218,17 @@ export class UsersService {
     const foundCodes = new Set(warehouses.map((w) => w.code));
     const missing = codes.filter((c) => !foundCodes.has(c));
     if (missing.length > 0) {
-      errors.push(`Warehouse code(s) not found for this company: ${missing.join(', ')}`);
+      errors.push(
+        `Warehouse code(s) not found for this company: ${missing.join(', ')}`,
+      );
       return [];
     }
-    return this.resolveWarehouseIds(warehouses.map((w) => w.id), creator, targetRole, errors);
+    return this.resolveWarehouseIds(
+      warehouses.map((w) => w.id),
+      creator,
+      targetRole,
+      errors,
+    );
   }
 
   // Bulk create — for a Manager/Supervisor onboarding a large batch of
@@ -163,7 +239,9 @@ export class UsersService {
   // warehouses only) as one adding a single user by hand.
   async bulkImport(rows: any[], creator: any) {
     if (!creator.companyId) {
-      throw new ForbiddenException('Super admin accounts cannot import users directly — log in as a company admin instead.');
+      throw new ForbiddenException(
+        'Super admin accounts cannot import users directly — log in as a company admin instead.',
+      );
     }
     const creatable = CREATABLE_ROLES[creator.role] || [];
     const results: any[] = [];
@@ -174,7 +252,9 @@ export class UsersService {
       const errors: string[] = [];
 
       if (!creatable.includes(targetRole)) {
-        errors.push(`Your role (${creator.role}) cannot create a user with role "${row.role || '(blank)'}".`);
+        errors.push(
+          `Your role (${creator.role}) cannot create a user with role "${row.role || '(blank)'}".`,
+        );
       }
       errors.push(...this.validate(row, targetRole));
       if (!row.password || String(row.password).length < 6) {
@@ -186,15 +266,30 @@ export class UsersService {
         errors.push(`Duplicate Login ID within this file: ${email}`);
       }
 
-      const warehouseIds = errors.length === 0 ? await this.resolveWarehouseCodesToIds(row.warehouseCodes, creator, targetRole, errors) : [];
+      const warehouseIds =
+        errors.length === 0
+          ? await this.resolveWarehouseCodesToIds(
+              row.warehouseCodes,
+              creator,
+              targetRole,
+              errors,
+            )
+          : [];
 
       if (errors.length === 0 && email) {
-        const existing = await this.prisma.user.findUnique({ where: { email } });
-        if (existing) errors.push(`Login ID already exists in the database: ${email}`);
+        const existing = await this.prisma.user.findUnique({
+          where: { email },
+        });
+        if (existing)
+          errors.push(`Login ID already exists in the database: ${email}`);
       }
 
       if (errors.length > 0) {
-        results.push({ email: row.email || '(blank)', status: 'error', errors });
+        results.push({
+          email: row.email || '(blank)',
+          status: 'error',
+          errors,
+        });
         continue;
       }
 
@@ -209,13 +304,19 @@ export class UsersService {
             functionTag: row.functionTag || undefined,
             phone: row.phone || undefined,
             company: { connect: { id: creator.companyId } },
-            assignedWarehouses: warehouseIds.length ? { connect: warehouseIds.map((wid) => ({ id: wid })) } : undefined,
+            assignedWarehouses: warehouseIds.length
+              ? { connect: warehouseIds.map((wid) => ({ id: wid })) }
+              : undefined,
           },
         });
         results.push({ email, status: 'success' });
         emailsSeenInFile.add(email.toLowerCase());
       } catch (err: any) {
-        results.push({ email: row.email || '(blank)', status: 'error', errors: [err.message || 'Unknown error'] });
+        results.push({
+          email: row.email || '(blank)',
+          status: 'error',
+          errors: [err.message || 'Unknown error'],
+        });
       }
     }
 
@@ -227,13 +328,20 @@ export class UsersService {
     };
   }
 
-  async findAll(user: any) {
+  async findAll(user: AuthUser) {
     const where: any = { ...companyFilter(user) };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       const ownIds = await ownWarehouseIds(this.prisma, user.userId);
-      where.OR = [{ id: user.userId }, { assignedWarehouses: { some: { id: { in: ownIds } } } }];
+      where.OR = [
+        { id: user.userId },
+        { assignedWarehouses: { some: { id: { in: ownIds } } } },
+      ];
     }
-    return this.prisma.user.findMany({ where, select: SELECT_SAFE, orderBy: { createdAt: 'asc' } });
+    return this.prisma.user.findMany({
+      where,
+      select: SELECT_SAFE,
+      orderBy: { createdAt: 'asc' },
+    });
   }
 
   // Same visibility rule as findAll (self, or shares a warehouse for a
@@ -244,17 +352,25 @@ export class UsersService {
   async getLoginHistory(id: string, viewer: any) {
     const target = await this.prisma.user.findUnique({
       where: { id },
-      select: { id: true, companyId: true, assignedWarehouses: { select: { id: true } } },
+      select: {
+        id: true,
+        companyId: true,
+        assignedWarehouses: { select: { id: true } },
+      },
     });
     if (!target) throw new NotFoundException('User not found.');
-    if (viewer.role !== 'SUPER_ADMIN' && target.companyId !== viewer.companyId) {
+    if (
+      viewer.role !== 'SUPER_ADMIN' &&
+      target.companyId !== viewer.companyId
+    ) {
       throw new ForbiddenException('You do not have access to this user.');
     }
     if (WAREHOUSE_SCOPED_ROLES.includes(viewer.role) && id !== viewer.userId) {
       const ownIds = await ownWarehouseIds(this.prisma, viewer.userId);
       const targetIds = target.assignedWarehouses.map((w) => w.id);
       const overlaps = targetIds.some((wid) => ownIds.includes(wid));
-      if (!overlaps) throw new ForbiddenException('You do not have access to this user.');
+      if (!overlaps)
+        throw new ForbiddenException('You do not have access to this user.');
     }
 
     return this.prisma.loginEvent.findMany({
@@ -268,10 +384,19 @@ export class UsersService {
   private async assertEditAccess(id: string, editor: any) {
     const target = await this.prisma.user.findUnique({
       where: { id },
-      select: { id: true, companyId: true, role: true, email: true, assignedWarehouses: { select: { id: true } } },
+      select: {
+        id: true,
+        companyId: true,
+        role: true,
+        email: true,
+        assignedWarehouses: { select: { id: true } },
+      },
     });
     if (!target) throw new NotFoundException('User not found.');
-    if (editor.role !== 'SUPER_ADMIN' && target.companyId !== editor.companyId) {
+    if (
+      editor.role !== 'SUPER_ADMIN' &&
+      target.companyId !== editor.companyId
+    ) {
       throw new ForbiddenException('You do not have access to this user.');
     }
     // Anyone can always reach their own record — the creatable-role/warehouse-
@@ -288,7 +413,8 @@ export class UsersService {
       const ownIds = await ownWarehouseIds(this.prisma, editor.userId);
       const targetIds = target.assignedWarehouses.map((w) => w.id);
       const overlaps = targetIds.some((wid) => ownIds.includes(wid));
-      if (!overlaps) throw new ForbiddenException('You do not have access to this user.');
+      if (!overlaps)
+        throw new ForbiddenException('You do not have access to this user.');
     }
     return target;
   }
@@ -302,7 +428,9 @@ export class UsersService {
     // attempted change, which is what used to happen here) would be worse
     // than just not supporting the rename.
     if (data.email !== undefined && data.email.trim() !== target.email) {
-      throw new BadRequestException('Login ID cannot be changed after account creation.');
+      throw new BadRequestException(
+        'Login ID cannot be changed after account creation.',
+      );
     }
 
     // Nobody — including Admin — can change their own role via self-edit.
@@ -318,21 +446,35 @@ export class UsersService {
     if (!isSelfEdit && data.role !== undefined && data.role !== target.role) {
       const creatable = CREATABLE_ROLES[editor.role] || [];
       if (!creatable.includes(data.role)) {
-        throw new ForbiddenException(`Your role (${editor.role}) cannot assign role ${data.role}.`);
+        throw new ForbiddenException(
+          `Your role (${editor.role}) cannot assign role ${data.role}.`,
+        );
       }
     }
 
     const errors: string[] = [];
-    if (data.name !== undefined && (!data.name || data.name.trim().length < 2)) {
+    if (
+      data.name !== undefined &&
+      (!data.name || data.name.trim().length < 2)
+    ) {
       errors.push('Name must be at least 2 characters.');
     }
-    if (data.password !== undefined && data.password !== '' && String(data.password).length < 6) {
+    if (
+      data.password !== undefined &&
+      data.password !== '' &&
+      String(data.password).length < 6
+    ) {
       errors.push('Password must be at least 6 characters.');
     }
 
     let warehouseIds: string[] | undefined;
     if (data.assignedWarehouseIds !== undefined) {
-      const requested = await this.resolveWarehouseIds(data.assignedWarehouseIds, editor, targetRole, errors);
+      const requested = await this.resolveWarehouseIds(
+        data.assignedWarehouseIds,
+        editor,
+        targetRole,
+        errors,
+      );
       if (errors.length === 0) {
         if (editor.role === 'SUPER_ADMIN' || editor.role === 'COMPANY_ADMIN') {
           warehouseIds = requested;
@@ -343,9 +485,14 @@ export class UsersService {
           // other assignment re-validated against, or silently dropped by,
           // their own scope. Preserve it untouched — only the editor's own
           // portion of the assignment is theirs to change.
-          const editorOwnIds = await ownWarehouseIds(this.prisma, editor.userId);
+          const editorOwnIds = await ownWarehouseIds(
+            this.prisma,
+            editor.userId,
+          );
           const currentTargetIds = target.assignedWarehouses.map((w) => w.id);
-          const preserved = currentTargetIds.filter((wid) => !editorOwnIds.includes(wid));
+          const preserved = currentTargetIds.filter(
+            (wid) => !editorOwnIds.includes(wid),
+          );
           warehouseIds = Array.from(new Set([...preserved, ...requested]));
         }
       }
@@ -355,27 +502,52 @@ export class UsersService {
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name.trim();
     if (!isSelfEdit && data.role !== undefined) updateData.role = data.role;
-    if (data.functionTag !== undefined) updateData.functionTag = data.functionTag || null;
+    if (data.functionTag !== undefined)
+      updateData.functionTag = data.functionTag || null;
     if (data.phone !== undefined) updateData.phone = data.phone || null;
-    if (data.canOperateMhe !== undefined) updateData.canOperateMhe = data.canOperateMhe === null || data.canOperateMhe === '' ? null : !!data.canOperateMhe;
-    if (data.canHandleGroundBlock !== undefined) updateData.canHandleGroundBlock = data.canHandleGroundBlock === null || data.canHandleGroundBlock === '' ? null : !!data.canHandleGroundBlock;
-    if (data.password) updateData.passwordHash = await bcrypt.hash(data.password, 10);
+    if (data.canOperateMhe !== undefined)
+      updateData.canOperateMhe =
+        data.canOperateMhe === null || data.canOperateMhe === ''
+          ? null
+          : !!data.canOperateMhe;
+    if (data.canHandleGroundBlock !== undefined)
+      updateData.canHandleGroundBlock =
+        data.canHandleGroundBlock === null || data.canHandleGroundBlock === ''
+          ? null
+          : !!data.canHandleGroundBlock;
+    if (data.password)
+      updateData.passwordHash = await bcrypt.hash(data.password, 10);
     if (warehouseIds !== undefined) {
-      updateData.assignedWarehouses = { set: warehouseIds.map((wid) => ({ id: wid })) };
+      updateData.assignedWarehouses = {
+        set: warehouseIds.map((wid) => ({ id: wid })),
+      };
     }
 
-    return this.prisma.user.update({ where: { id }, data: updateData, select: SELECT_SAFE });
+    return this.prisma.user.update({
+      where: { id },
+      data: updateData,
+      select: SELECT_SAFE,
+    });
   }
 
   async deactivate(id: string, editor: any) {
-    if (id === editor.userId) throw new BadRequestException('You cannot deactivate your own account.');
+    if (id === editor.userId)
+      throw new BadRequestException('You cannot deactivate your own account.');
     await this.assertEditAccess(id, editor);
-    return this.prisma.user.update({ where: { id }, data: { isActive: false }, select: SELECT_SAFE });
+    return this.prisma.user.update({
+      where: { id },
+      data: { isActive: false },
+      select: SELECT_SAFE,
+    });
   }
 
   async reactivate(id: string, editor: any) {
     await this.assertEditAccess(id, editor);
-    return this.prisma.user.update({ where: { id }, data: { isActive: true }, select: SELECT_SAFE });
+    return this.prisma.user.update({
+      where: { id },
+      data: { isActive: true },
+      select: SELECT_SAFE,
+    });
   }
 
   // One row per User, columns matching the Excel import ("Password" is
@@ -383,18 +555,26 @@ export class UsersService {
   // even a hash would be a real security smell). Same visibility as
   // findAll/getLoginHistory (self, or shares a warehouse for a scoped role,
   // or Admin sees everyone).
-  async exportRows(user: any) {
+  async exportRows(user: AuthUser) {
     const users = await this.findAll(user);
     return users.map((u: any) => ({
       'Login ID': u.email,
-      'Name': u.name,
-      'Role': u.role,
+      Name: u.name,
+      Role: u.role,
       'Function Tag': u.functionTag || '',
-      'Phone': u.phone || '',
-      'MHE Capable': u.canOperateMhe == null ? '' : u.canOperateMhe ? 'TRUE' : 'FALSE',
-      'Ground/Block Capable': u.canHandleGroundBlock == null ? '' : u.canHandleGroundBlock ? 'TRUE' : 'FALSE',
-      'Warehouse Code(s)': u.assignedWarehouses.map((w: any) => w.code).join(', '),
-      'Active': u.isActive ? 'TRUE' : 'FALSE',
+      Phone: u.phone || '',
+      'MHE Capable':
+        u.canOperateMhe == null ? '' : u.canOperateMhe ? 'TRUE' : 'FALSE',
+      'Ground/Block Capable':
+        u.canHandleGroundBlock == null
+          ? ''
+          : u.canHandleGroundBlock
+            ? 'TRUE'
+            : 'FALSE',
+      'Warehouse Code(s)': u.assignedWarehouses
+        .map((w: any) => w.code)
+        .join(', '),
+      Active: u.isActive ? 'TRUE' : 'FALSE',
       'Last Login At': u.lastLoginAt ? u.lastLoginAt.toISOString() : '',
       'Created At': u.createdAt.toISOString(),
     }));

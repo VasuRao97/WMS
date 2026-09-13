@@ -20,5 +20,8 @@ export interface NotificationSendResult {
 }
 
 export interface NotificationChannelAdapter {
-  send(recipient: NotificationRecipient, message: string): Promise<NotificationSendResult>;
+  send(
+    recipient: NotificationRecipient,
+    message: string,
+  ): Promise<NotificationSendResult>;
 }

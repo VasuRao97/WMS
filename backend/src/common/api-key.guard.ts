@@ -1,4 +1,10 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 // A second, parallel auth mechanism to JwtAuthGuard — for a machine caller
@@ -19,7 +25,9 @@ export class ApiKeyGuard implements CanActivate {
     if (!key || typeof key !== 'string') {
       throw new UnauthorizedException('X-Api-Key header is required.');
     }
-    const company = await this.prisma.company.findUnique({ where: { erpApiKey: key } });
+    const company = await this.prisma.company.findUnique({
+      where: { erpApiKey: key },
+    });
     if (!company) {
       throw new UnauthorizedException('Invalid API key.');
     }
@@ -27,7 +35,9 @@ export class ApiKeyGuard implements CanActivate {
       throw new ForbiddenException('This company account is inactive.');
     }
     if (!company.allowErpInboundPush) {
-      throw new ForbiddenException('ERP push is not enabled for this company — turn it on in Company Settings first.');
+      throw new ForbiddenException(
+        'ERP push is not enabled for this company — turn it on in Company Settings first.',
+      );
     }
     request.company = company;
     return true;

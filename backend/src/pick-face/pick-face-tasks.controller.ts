@@ -1,10 +1,19 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { PickFaceTasksService } from './pick-face-tasks.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { PUTAWAY_EXECUTE_ROLES } from '../common/tenant.util';
+import { type AuthUser, PUTAWAY_EXECUTE_ROLES } from '../common/tenant.util';
 
 // Pick Face (SPR only, 2026-09-05 — see [[wms-putaway-design]] in memory for
 // the full design conversation). Same execution role tier as Putaway — this
@@ -20,7 +29,10 @@ export class PickFaceTasksController {
 
   @Get()
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  findAll(@CurrentUser() user: any, @Query('warehouseId') warehouseId?: string) {
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query('warehouseId') warehouseId?: string,
+  ) {
     return this.pickFaceTasksService.findAll(user, warehouseId);
   }
 
@@ -28,7 +40,7 @@ export class PickFaceTasksController {
   // whatever SKU the barcode resolves to.
   @Post('claim')
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  claim(@Body('barcode') barcode: string, @CurrentUser() user: any) {
+  claim(@Body('barcode') barcode: string, @CurrentUser() user: AuthUser) {
     return this.pickFaceTasksService.claimTrip(barcode, user);
   }
 
@@ -36,7 +48,11 @@ export class PickFaceTasksController {
   // can complete it; only a matching location scan is ever accepted.
   @Patch('trips/:tripId/complete')
   @Roles(...PUTAWAY_EXECUTE_ROLES)
-  complete(@Param('tripId') tripId: string, @Body('locationCode') locationCode: string, @CurrentUser() user: any) {
+  complete(
+    @Param('tripId') tripId: string,
+    @Body('locationCode') locationCode: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.pickFaceTasksService.completeTrip(tripId, locationCode, user);
   }
 }

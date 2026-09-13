@@ -6,6 +6,10 @@ import { PrismaService } from '../prisma/prisma.service';
 
 @Module({
   controllers: [AbcClassificationController],
-  providers: [AbcClassificationService, AbcClassificationScheduler, PrismaService],
+  providers: [
+    AbcClassificationService,
+    AbcClassificationScheduler,
+    PrismaService,
+  ],
 })
 export class AbcClassificationModule {}

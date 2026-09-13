@@ -6,7 +6,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { MASTER_DATA_READ_ROLES } from '../common/tenant.util';
+import { type AuthUser, MASTER_DATA_READ_ROLES } from '../common/tenant.util';
 
 @Controller('inventory')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -15,13 +15,19 @@ export class InventoryController {
 
   @Get('line-items')
   @Roles(...MASTER_DATA_READ_ROLES)
-  lineItems(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+  lineItems(
+    @Query('warehouseId') warehouseId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.inventoryService.lineItems(user, warehouseId);
   }
 
   @Get('sku-summary')
   @Roles(...MASTER_DATA_READ_ROLES)
-  skuSummary(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+  skuSummary(
+    @Query('warehouseId') warehouseId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.inventoryService.skuSummary(user, warehouseId);
   }
 
@@ -35,9 +41,14 @@ export class InventoryController {
     @Query('warehouseId') warehouseId: string | undefined,
     @Query('from') from: string | undefined,
     @Query('to') to: string | undefined,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.inventoryService.ledger(user, warehouseId || undefined, from || undefined, to || undefined);
+    return this.inventoryService.ledger(
+      user,
+      warehouseId || undefined,
+      from || undefined,
+      to || undefined,
+    );
   }
 
   // Excel export of the same rows — declared after 'ledger' but Nest routes
@@ -51,16 +62,23 @@ export class InventoryController {
     @Query('from') from: string | undefined,
     @Query('to') to: string | undefined,
     @Res() res: Response,
-    @CurrentUser() user: any,
+    @CurrentUser() user: AuthUser,
   ) {
-    const rows = await this.inventoryService.exportLedgerRows(user, warehouseId || undefined, from || undefined, to || undefined);
+    const rows = await this.inventoryService.exportLedgerRows(
+      user,
+      warehouseId || undefined,
+      from || undefined,
+      to || undefined,
+    );
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Ledger');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     res.set({
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': 'attachment; filename="Inventory_Ledger_Export.xlsx"',
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition':
+        'attachment; filename="Inventory_Ledger_Export.xlsx"',
     });
     res.send(buffer);
   }

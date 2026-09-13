@@ -1,6 +1,16 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, PUTAWAY_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  PUTAWAY_SCOPED_ROLES,
+} from '../common/tenant.util';
 import { buildRackName } from '../common/rack-name.util';
 
 // Pick Face (SPR only) — 2026-09-05, see [[wms-putaway-design]] in memory
@@ -14,15 +24,35 @@ import { buildRackName } from '../common/rack-name.util';
 // that already exists.
 const TASK_INCLUDE = {
   sku: { select: { id: true, code: true, description: true } },
-  fromLocation: { select: { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true } },
-  toLocation: { select: { id: true, code: true, storageType: true, rack: true, level: true, depth: true, flankNumber: true } },
+  fromLocation: {
+    select: {
+      id: true,
+      code: true,
+      storageType: true,
+      rack: true,
+      level: true,
+      depth: true,
+      flankNumber: true,
+    },
+  },
+  toLocation: {
+    select: {
+      id: true,
+      code: true,
+      storageType: true,
+      rack: true,
+      level: true,
+      depth: true,
+      flankNumber: true,
+    },
+  },
 } as const;
 
 @Injectable()
 export class PickFaceTasksService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(user: any, warehouseId?: string) {
+  async findAll(user: AuthUser, warehouseId?: string) {
     const where: any = { warehouse: { ...companyFilter(user) } };
     if (PUTAWAY_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
@@ -36,8 +66,12 @@ export class PickFaceTasksService {
       orderBy: { createdAt: 'asc' },
     });
     return tasks.map((t: any) => {
-      const movedQuantity = t.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
-      const inProgressTrip = t.trips.find((tr: any) => tr.status === 'IN_PROGRESS');
+      const movedQuantity = t.trips
+        .filter((tr: any) => tr.status === 'COMPLETED')
+        .reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
+      const inProgressTrip = t.trips.find(
+        (tr: any) => tr.status === 'IN_PROGRESS',
+      );
       return { ...t, movedQuantity, inProgressTrip };
     });
   }
@@ -49,37 +83,55 @@ export class PickFaceTasksService {
   // claim always covers whatever's left on the task (a REFILL/EVICTION
   // task is already sized to "one reserve location's worth," never
   // artificially split further).
-  async claimTrip(barcode: any, user: any) {
+  async claimTrip(barcode: any, user: AuthUser) {
     const trimmed = barcode != null ? String(barcode).trim() : '';
     if (!trimmed) throw new BadRequestException('A barcode is required.');
 
     const barcodeMatches = await this.prisma.skuBarcode.findMany({
-      where: { barcode: trimmed, sku: { companyId: user.companyId } },
+      where: { barcode: trimmed, sku: { companyId: user.companyId! } },
       select: { skuId: true },
     });
-    if (barcodeMatches.length === 0) throw new BadRequestException('Unrecognized barcode.');
+    if (barcodeMatches.length === 0)
+      throw new BadRequestException('Unrecognized barcode.');
     const skuIds = [...new Set(barcodeMatches.map((b: any) => b.skuId))];
 
-    const scopedWarehouseIds = PUTAWAY_SCOPED_ROLES.includes(user.role) ? await ownWarehouseIds(this.prisma, user.userId) : null;
+    const scopedWarehouseIds = PUTAWAY_SCOPED_ROLES.includes(user.role)
+      ? await ownWarehouseIds(this.prisma, user.userId)
+      : null;
 
     const candidateTasks = await this.prisma.pickFaceTask.findMany({
       where: {
         skuId: { in: skuIds },
         status: 'PENDING',
-        warehouse: { companyId: user.companyId, ...(scopedWarehouseIds ? { id: { in: scopedWarehouseIds } } : {}) },
+        warehouse: {
+          companyId: user.companyId!,
+          ...(scopedWarehouseIds ? { id: { in: scopedWarehouseIds } } : {}),
+        },
       },
       include: { trips: true },
       orderBy: { createdAt: 'asc' },
     });
 
-    const task = candidateTasks.find((t: any) => !t.trips.some((tr: any) => tr.status === 'IN_PROGRESS'));
-    if (!task) throw new BadRequestException('No workable pick face task found for this SKU — it may already be claimed or completed.');
+    const task = candidateTasks.find(
+      (t: any) => !t.trips.some((tr: any) => tr.status === 'IN_PROGRESS'),
+    );
+    if (!task)
+      throw new BadRequestException(
+        'No workable pick face task found for this SKU — it may already be claimed or completed.',
+      );
 
-    const moved = task.trips.filter((tr: any) => tr.status === 'COMPLETED').reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
+    const moved = task.trips
+      .filter((tr: any) => tr.status === 'COMPLETED')
+      .reduce((s: number, tr: any) => s + Number(tr.quantity), 0);
     const remaining = Number(task.quantity) - moved;
 
     return this.prisma.pickFaceTrip.create({
-      data: { taskId: task.id, quantity: remaining, claimedById: user.userId, sourceBarcodeScanned: trimmed },
+      data: {
+        taskId: task.id,
+        quantity: remaining,
+        claimedById: user.userId,
+        sourceBarcodeScanned: trimmed,
+      },
       include: { task: { include: TASK_INCLUDE } },
     });
   }
@@ -88,26 +140,47 @@ export class PickFaceTasksService {
   // task's own toLocationId is ever accepted, exactly like Putaway's
   // completeTrip() — no operator override. Writes the real
   // PICK_FACE_REPLENISH_OUT/IN pair for this trip's quantity.
-  async completeTrip(tripId: string, locationCode: any, user: any) {
-    const trip = await this.prisma.pickFaceTrip.findUnique({ where: { id: tripId }, include: { task: true } });
+  async completeTrip(tripId: string, locationCode: any, user: AuthUser) {
+    const trip = await this.prisma.pickFaceTrip.findUnique({
+      where: { id: tripId },
+      include: { task: true },
+    });
     if (!trip) throw new NotFoundException('Trip not found.');
-    if (trip.status !== 'IN_PROGRESS') throw new BadRequestException('This trip is not awaiting a location scan.');
-    if (trip.claimedById !== user.userId) throw new ForbiddenException('Only the operator who claimed this trip can complete it.');
+    if (trip.status !== 'IN_PROGRESS')
+      throw new BadRequestException(
+        'This trip is not awaiting a location scan.',
+      );
+    if (trip.claimedById !== user.userId)
+      throw new ForbiddenException(
+        'Only the operator who claimed this trip can complete it.',
+      );
 
     const task = trip.task as any;
-    const trimmed = locationCode != null ? String(locationCode).trim().toUpperCase() : '';
-    const scannedLocation = await this.prisma.location.findUnique({ where: { id: task.toLocationId } });
+    const trimmed =
+      locationCode != null ? String(locationCode).trim().toUpperCase() : '';
+    const scannedLocation = await this.prisma.location.findUnique({
+      where: { id: task.toLocationId },
+    });
     const rackName = buildRackName(scannedLocation);
-    const matches = !!scannedLocation && (scannedLocation.code.toUpperCase() === trimmed || (rackName != null && rackName.toUpperCase() === trimmed));
+    const matches =
+      !!scannedLocation &&
+      (scannedLocation.code.toUpperCase() === trimmed ||
+        (rackName != null && rackName.toUpperCase() === trimmed));
     if (!matches) {
-      throw new BadRequestException(`Wrong location — this must be placed at the assigned bin, not "${trimmed}".`);
+      throw new BadRequestException(
+        `Wrong location — this must be placed at the assigned bin, not "${trimmed}".`,
+      );
     }
     const targetLocation = scannedLocation;
 
     return this.prisma.$transaction(async (tx) => {
       const updatedTrip = await tx.pickFaceTrip.update({
         where: { id: tripId },
-        data: { status: 'COMPLETED', scannedLocationId: targetLocation.id, completedAt: new Date() },
+        data: {
+          status: 'COMPLETED',
+          scannedLocationId: targetLocation.id,
+          completedAt: new Date(),
+        },
       });
 
       await tx.stockMovement.create({
@@ -135,10 +208,17 @@ export class PickFaceTasksService {
         },
       });
 
-      const allTrips = await tx.pickFaceTrip.findMany({ where: { taskId: task.id } });
-      const moved = allTrips.filter((t: any) => t.status === 'COMPLETED').reduce((s: number, t: any) => s + Number(t.quantity), 0);
+      const allTrips = await tx.pickFaceTrip.findMany({
+        where: { taskId: task.id },
+      });
+      const moved = allTrips
+        .filter((t: any) => t.status === 'COMPLETED')
+        .reduce((s: number, t: any) => s + Number(t.quantity), 0);
       if (moved >= Number(task.quantity)) {
-        await tx.pickFaceTask.update({ where: { id: task.id }, data: { status: 'COMPLETED' } });
+        await tx.pickFaceTask.update({
+          where: { id: task.id },
+          data: { status: 'COMPLETED' },
+        });
       }
 
       return updatedTrip;

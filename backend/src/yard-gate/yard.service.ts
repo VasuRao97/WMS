@@ -1,6 +1,11 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { assertGateAccessAllowed, companyFilter, gateYardAccessibleWarehouseIds } from '../common/tenant.util';
+import {
+  type AuthUser,
+  assertGateAccessAllowed,
+  companyFilter,
+  gateYardAccessibleWarehouseIds,
+} from '../common/tenant.util';
 
 // Yard Management (2026-08-26, extended 2026-08-27) — the summary/tracker
 // read side of the yard-slot tracking built in GateEntriesService.
@@ -15,7 +20,9 @@ export class YardService {
   // Extracted to tenant.util.ts's gateYardAccessibleWarehouseIds() 2026-08-28
   // so Vehicle/Driver's own new home-warehouse scoping can share it — thin
   // wrapper kept here so every call site in this file is unaffected.
-  private accessibleWarehouseIds(user: any): Promise<string[] | undefined> {
+  private accessibleWarehouseIds(
+    user: AuthUser,
+  ): Promise<string[] | undefined> {
     return gateYardAccessibleWarehouseIds(this.prisma, user);
   }
 
@@ -24,11 +31,14 @@ export class YardService {
   // yardCapacity set at creation — has no yard concept at all; confirmed
   // 2026-08-25 that this should be a clean "not configured" state, not an
   // empty/zero stat box).
-  async summary(user: any) {
+  async summary(user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const warehouseIds = await this.accessibleWarehouseIds(user);
     const warehouses = await this.prisma.warehouse.findMany({
-      where: { ...companyFilter(user), ...(warehouseIds ? { id: { in: warehouseIds } } : {}) },
+      where: {
+        ...companyFilter(user),
+        ...(warehouseIds ? { id: { in: warehouseIds } } : {}),
+      },
       select: {
         id: true,
         code: true,
@@ -40,7 +50,9 @@ export class YardService {
 
     return warehouses.map((w) => {
       const total = w.yardSlots.length;
-      const occupied = w.yardSlots.filter((s) => s.status === 'OCCUPIED').length;
+      const occupied = w.yardSlots.filter(
+        (s) => s.status === 'OCCUPIED',
+      ).length;
       return {
         warehouseId: w.id,
         warehouseCode: w.code,
@@ -63,7 +75,7 @@ export class YardService {
   //    (a docked-but-not-yet-gated-out vehicle is still "in dock" by
   //    definition — this row disappears from the table entirely once Gate
   //    Out closes it).
-  async tracker(user: any, warehouseId?: string) {
+  async tracker(user: AuthUser, warehouseId?: string) {
     await assertGateAccessAllowed(this.prisma, user);
     const warehouseIds = await this.accessibleWarehouseIds(user);
     // Real bug caught 2026-08-27 (client-reported, "supervisor should only
@@ -75,7 +87,10 @@ export class YardService {
     if (warehouseId && warehouseIds && !warehouseIds.includes(warehouseId)) {
       throw new ForbiddenException('You do not have access to this warehouse.');
     }
-    const where: any = { gateOutAt: null, warehouse: { ...companyFilter(user) } };
+    const where: any = {
+      gateOutAt: null,
+      warehouse: { ...companyFilter(user) },
+    };
     if (warehouseId) where.warehouseId = warehouseId;
     else if (warehouseIds) where.warehouseId = { in: warehouseIds };
 
@@ -86,14 +101,32 @@ export class YardService {
         // vehicleType.name/segment added 2026-08-27 (a real "practical
         // recall" ask — staff scanning this table want to know the truck
         // type at a glance, not just its plate number).
-        vehicle: { select: { vehicleNumber: true, detentionCostPerDay: true, vehicleType: { select: { name: true, segment: true, detentionCostPerDay: true } } } },
-        warehouse: { select: { id: true, code: true, name: true, company: { select: { detentionCostPerDay: true, detentionFreeHours: true } } } },
+        vehicle: {
+          select: {
+            vehicleNumber: true,
+            detentionCostPerDay: true,
+            vehicleType: {
+              select: { name: true, segment: true, detentionCostPerDay: true },
+            },
+          },
+        },
+        warehouse: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            company: {
+              select: { detentionCostPerDay: true, detentionFreeHours: true },
+            },
+          },
+        },
       },
       orderBy: { gateInAt: 'asc' },
     });
 
     const now = Date.now();
-    const hoursBetween = (start: Date, end: number) => (end - start.getTime()) / (1000 * 60 * 60);
+    const hoursBetween = (start: Date, end: number) =>
+      (end - start.getTime()) / (1000 * 60 * 60);
 
     return entries.map((e) => {
       // Detention cost (2026-08-27, corrected TWICE same day — "one mistake,
@@ -112,12 +145,16 @@ export class YardService {
       // detentionCostPerDay, defaults to 15000, the client's own
       // placeholder). Null only if a company has explicitly cleared its own
       // default AND set no vehicle/type-level rate either.
-      const rate = e.vehicle.detentionCostPerDay ?? e.vehicle.vehicleType.detentionCostPerDay ?? e.warehouse.company.detentionCostPerDay;
+      const rate =
+        e.vehicle.detentionCostPerDay ??
+        e.vehicle.vehicleType.detentionCostPerDay ??
+        e.warehouse.company.detentionCostPerDay;
       const freeHours = e.warehouse.company.detentionFreeHours ?? 0;
       const totalHours = hoursBetween(e.gateInAt, now);
       const chargeableHours = Math.max(0, totalHours - freeHours);
       const fullDaysElapsed = Math.floor(chargeableHours / 24);
-      const detentionCost = rate != null ? fullDaysElapsed * Number(rate) : null;
+      const detentionCost =
+        rate != null ? fullDaysElapsed * Number(rate) : null;
 
       return {
         gateEntryId: e.id,
@@ -126,10 +163,19 @@ export class YardService {
         // join against the full gate-entries list — the page already did
         // this join before, just fragile (see GateYardPage.tsx history).
         purpose: e.purpose,
-        warehouse: { id: e.warehouse.id, code: e.warehouse.code, name: e.warehouse.name },
+        warehouse: {
+          id: e.warehouse.id,
+          code: e.warehouse.code,
+          name: e.warehouse.name,
+        },
         slotCode: e.yardSlot?.code,
         vehicleNumber: e.vehicle.vehicleNumber,
-        vehicleType: e.vehicle.vehicleType ? { name: e.vehicle.vehicleType.name, segment: e.vehicle.vehicleType.segment } : null,
+        vehicleType: e.vehicle.vehicleType
+          ? {
+              name: e.vehicle.vehicleType.name,
+              segment: e.vehicle.vehicleType.segment,
+            }
+          : null,
         destinationCity: e.destinationCity,
         transporterName: e.transporterName,
         gateInAt: e.gateInAt,
@@ -137,7 +183,10 @@ export class YardService {
         assignedDockNumber: e.assignedDockNumber,
         dockAssignedAt: e.dockAssignedAt,
         status: e.dockedInAt ? 'DOCKED' : 'IN_YARD',
-        hoursInParking: hoursBetween(e.gateInAt, e.dockedInAt ? e.dockedInAt.getTime() : now),
+        hoursInParking: hoursBetween(
+          e.gateInAt,
+          e.dockedInAt ? e.dockedInAt.getTime() : now,
+        ),
         hoursInDock: e.dockedInAt ? hoursBetween(e.dockedInAt, now) : null,
         detentionCost,
       };

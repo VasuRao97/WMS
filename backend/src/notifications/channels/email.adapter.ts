@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { NotificationChannelAdapter, NotificationRecipient, NotificationSendResult } from './notification-channel.interface';
+import {
+  NotificationChannelAdapter,
+  NotificationRecipient,
+  NotificationSendResult,
+} from './notification-channel.interface';
 
 // Stub only — no real email provider is wired up yet (2026-08-27). Logs
 // what WOULD be sent so the rest of the pipeline (audit trail, escalation,
@@ -10,7 +14,10 @@ import { NotificationChannelAdapter, NotificationRecipient, NotificationSendResu
 export class EmailAdapter implements NotificationChannelAdapter {
   private readonly logger = new Logger(EmailAdapter.name);
 
-  async send(recipient: NotificationRecipient, message: string): Promise<NotificationSendResult> {
+  async send(
+    recipient: NotificationRecipient,
+    message: string,
+  ): Promise<NotificationSendResult> {
     this.logger.log(`[STUB] Would email ${recipient.email}: ${message}`);
     return { success: true };
   }

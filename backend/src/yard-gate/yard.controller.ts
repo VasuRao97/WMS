@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { GATE_YARD_READ_ROLES } from '../common/tenant.util';
+import { type AuthUser, GATE_YARD_READ_ROLES } from '../common/tenant.util';
 
 @Controller('yard')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -13,7 +13,7 @@ export class YardController {
 
   @Get('summary')
   @Roles(...GATE_YARD_READ_ROLES)
-  summary(@CurrentUser() user: any) {
+  summary(@CurrentUser() user: AuthUser) {
     return this.yardService.summary(user);
   }
 
@@ -21,7 +21,10 @@ export class YardController {
   // vehicles too, not just ones still waiting in the yard.
   @Get('tracker')
   @Roles(...GATE_YARD_READ_ROLES)
-  tracker(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+  tracker(
+    @Query('warehouseId') warehouseId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.yardService.tracker(user, warehouseId);
   }
 }

@@ -24,6 +24,9 @@ export class PutawayClaimExpiryScheduler {
       where: { status: 'IN_PROGRESS', claimedAt: { lt: cutoff } },
       data: { status: 'ABANDONED' },
     });
-    if (result.count > 0) this.logger.log(`Expired ${result.count} abandoned Putaway claim(s) older than ${CLAIM_TIMEOUT_MINUTES} minutes.`);
+    if (result.count > 0)
+      this.logger.log(
+        `Expired ${result.count} abandoned Putaway claim(s) older than ${CLAIM_TIMEOUT_MINUTES} minutes.`,
+      );
   }
 }

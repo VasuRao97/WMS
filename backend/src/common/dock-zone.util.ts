@@ -22,7 +22,13 @@
 function naturalCompare(a: string, b: string): number {
   const na = Number(a);
   const nb = Number(b);
-  if (a.trim() !== '' && b.trim() !== '' && !Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+  if (
+    a.trim() !== '' &&
+    b.trim() !== '' &&
+    !Number.isNaN(na) &&
+    !Number.isNaN(nb)
+  )
+    return na - nb;
   return a.localeCompare(b);
 }
 
@@ -38,14 +44,21 @@ function naturalCompare(a: string, b: string): number {
 // just guessed (Aisle 1/Row 1 always nearest for EAST/SOUTH, the opposite
 // for WEST/NORTH) with nothing to confirm that against how a real warehouse
 // was actually numbered when it was generated.
-export type DockZoneRow = { purpose: string; dockSide: string; numberOneNearDock: boolean };
+export type DockZoneRow = {
+  purpose: string;
+  dockSide: string;
+  numberOneNearDock: boolean;
+};
 
 // Builds a function mapping an aisle code -> its outbound-proximity rank
 // (lower = closer to whichever end an OUTBOUND/BOTH zone is declared near).
 // Returns null when the warehouse has no OUTBOUND-serving zone configured
 // at all — callers fall back to today's flankNumber-based proxy in that
 // case, so an unconfigured warehouse behaves exactly as it always has.
-export function buildOutboundProximityRanker(distinctAisles: string[], dockZones: DockZoneRow[]): ((aisle: string) => number) | null {
+export function buildOutboundProximityRanker(
+  distinctAisles: string[],
+  dockZones: DockZoneRow[],
+): ((aisle: string) => number) | null {
   // 2026-09-12: DockCompassDirection has 4 values (renamed from LOW/HIGH/
   // ROW_LOW/ROW_HIGH — see schema.prisma's own comment), but THIS function
   // only ever ranks the AISLE axis (EAST/WEST) — a NORTH/SOUTH zone (near
@@ -56,7 +69,11 @@ export function buildOutboundProximityRanker(distinctAisles: string[], dockZones
   // — a warehouse whose only configured zone is North/South correctly
   // falls back to null/"not configured" for aisle-proximity purposes, same
   // as having no zone at all.
-  const outboundZones = dockZones.filter((z) => (z.purpose === 'OUTBOUND' || z.purpose === 'BOTH') && (z.dockSide === 'EAST' || z.dockSide === 'WEST'));
+  const outboundZones = dockZones.filter(
+    (z) =>
+      (z.purpose === 'OUTBOUND' || z.purpose === 'BOTH') &&
+      (z.dockSide === 'EAST' || z.dockSide === 'WEST'),
+  );
   if (outboundZones.length === 0) return null;
   const sorted = Array.from(new Set(distinctAisles)).sort(naturalCompare);
   const n = sorted.length;
@@ -72,7 +89,9 @@ export function buildOutboundProximityRanker(distinctAisles: string[], dockZones
     // flag, not a hardcoded EAST=low/WEST=high guess (2026-09-12) — dockSide
     // still says which WALL (for the compass marker/UI), numberOneNearDock
     // says which numbering end sits against it.
-    const distances = outboundZones.map((z) => (z.numberOneNearDock ? idx : n - 1 - idx));
+    const distances = outboundZones.map((z) =>
+      z.numberOneNearDock ? idx : n - 1 - idx,
+    );
     return Math.min(...distances);
   };
 }
@@ -112,17 +131,35 @@ export function buildOutboundProximityRanker(distinctAisles: string[], dockZones
 // simply doesn't reach as deep as the warehouse's longest one correctly
 // never reaches the truly-farthest rank, rather than falsely maxing out
 // early.
-export function buildRowProximityRanker(dockZones: DockZoneRow[]): ((sortedPositionsInGroup: string[], position: string, globalMaxIndex: number) => number) | null {
-  const rowZones = dockZones.filter((z) => (z.purpose === 'OUTBOUND' || z.purpose === 'BOTH') && (z.dockSide === 'SOUTH' || z.dockSide === 'NORTH'));
+export function buildRowProximityRanker(
+  dockZones: DockZoneRow[],
+):
+  | ((
+      sortedPositionsInGroup: string[],
+      position: string,
+      globalMaxIndex: number,
+    ) => number)
+  | null {
+  const rowZones = dockZones.filter(
+    (z) =>
+      (z.purpose === 'OUTBOUND' || z.purpose === 'BOTH') &&
+      (z.dockSide === 'SOUTH' || z.dockSide === 'NORTH'),
+  );
   if (rowZones.length === 0) return null;
-  return (sortedPositionsInGroup: string[], position: string, globalMaxIndex: number): number => {
+  return (
+    sortedPositionsInGroup: string[],
+    position: string,
+    globalMaxIndex: number,
+  ): number => {
     const idx = sortedPositionsInGroup.indexOf(position);
     if (idx === -1) return Number.MAX_SAFE_INTEGER;
     // Direction now comes from the zone's own confirmed numberOneNearDock
     // flag, not a hardcoded SOUTH=low/NORTH=high guess (2026-09-12) — see
     // the type comment above and schema.prisma's own comment on
     // WarehouseDockZone.numberOneNearDock for the full reasoning.
-    const distances = rowZones.map((z) => (z.numberOneNearDock ? idx : globalMaxIndex - idx));
+    const distances = rowZones.map((z) =>
+      z.numberOneNearDock ? idx : globalMaxIndex - idx,
+    );
     return Math.min(...distances);
   };
 }

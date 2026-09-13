@@ -1,6 +1,15 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  WAREHOUSE_SCOPED_ROLES,
+} from '../common/tenant.util';
 
 // Monthly ABC reassessment from real dispatch velocity (2026-09-06 — see
 // [[wms-abc-velocity-design]] in memory for the full design conversation).
@@ -23,14 +32,18 @@ export class AbcClassificationService {
   // company on demand. Company-scoped: every warehouse of this company
   // gets its own independent classification, per-category within each.
   async reassessCompany(companyId: string) {
-    const company = await this.prisma.company.findUnique({ where: { id: companyId } });
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+    });
     if (!company) return { warehousesProcessed: 0 };
 
     const windowMonths = company.abcAssessmentWindowMonths;
     const windowStart = new Date();
     windowStart.setMonth(windowStart.getMonth() - windowMonths);
 
-    const warehouses = await this.prisma.warehouse.findMany({ where: { companyId } });
+    const warehouses = await this.prisma.warehouse.findMany({
+      where: { companyId },
+    });
     let warehousesProcessed = 0;
 
     for (const warehouse of warehouses) {
@@ -42,7 +55,14 @@ export class AbcClassificationService {
 
   private async reassessWarehouse(
     warehouseId: string,
-    company: { abcClassAPercent: any; abcClassBPercent: any; abcClassCPercent: any; fmsClassFPercent: any; fmsClassMPercent: any; fmsClassSPercent: any },
+    company: {
+      abcClassAPercent: any;
+      abcClassBPercent: any;
+      abcClassCPercent: any;
+      fmsClassFPercent: any;
+      fmsClassMPercent: any;
+      fmsClassSPercent: any;
+    },
     windowStart: Date,
   ) {
     // In-scope SKUs — anything that has EVER had a real movement in this
@@ -50,10 +70,17 @@ export class AbcClassificationService {
     // that's fully depleted right now is still worth classifying for the
     // next time it's received). A SKU with zero presence here at all is
     // simply not this warehouse's concern.
-    const skuIds = await this.prisma.stockMovement.findMany({ where: { warehouseId }, select: { skuId: true }, distinct: ['skuId'] });
+    const skuIds = await this.prisma.stockMovement.findMany({
+      where: { warehouseId },
+      select: { skuId: true },
+      distinct: ['skuId'],
+    });
     if (skuIds.length === 0) return;
 
-    const skus = await this.prisma.sku.findMany({ where: { id: { in: skuIds.map((s) => s.skuId) } }, select: { id: true, categoryId: true } });
+    const skus = await this.prisma.sku.findMany({
+      where: { id: { in: skuIds.map((s) => s.skuId) } },
+      select: { id: true, categoryId: true },
+    });
     const byCategory = new Map<string, string[]>();
     for (const sku of skus) {
       if (!byCategory.has(sku.categoryId)) byCategory.set(sku.categoryId, []);
@@ -66,10 +93,19 @@ export class AbcClassificationService {
     // cares about.
     const dispatchSums = await this.prisma.stockMovement.groupBy({
       by: ['skuId'],
-      where: { warehouseId, movementType: 'DISPATCH', createdAt: { gte: windowStart } },
+      where: {
+        warehouseId,
+        movementType: 'DISPATCH',
+        createdAt: { gte: windowStart },
+      },
       _sum: { quantity: true },
     });
-    const dispatchBySku = new Map(dispatchSums.map((d) => [d.skuId, Math.abs(Number(d._sum.quantity || 0))]));
+    const dispatchBySku = new Map(
+      dispatchSums.map((d) => [
+        d.skuId,
+        Math.abs(Number(d._sum.quantity || 0)),
+      ]),
+    );
 
     // Historical bootstrap seed rows in the same window (2026-09-06 — see
     // HistoricalDispatchSeed's own schema comment for why this exists
@@ -80,7 +116,9 @@ export class AbcClassificationService {
       where: { warehouseId, month: { gte: windowStart } },
       _sum: { quantity: true },
     });
-    const seedBySku = new Map(seedSums.map((s) => [s.skuId, Number(s._sum.quantity || 0)]));
+    const seedBySku = new Map(
+      seedSums.map((s) => [s.skuId, Number(s._sum.quantity || 0)]),
+    );
 
     // FMS (Fast/Medium/Slow-moving) order-count signal (2026-09-08 — see
     // [[wms-abc-velocity-design]] in memory for the full design conversation).
@@ -97,12 +135,17 @@ export class AbcClassificationService {
     // a real order id; contributes nothing today, since nothing writes
     // DISPATCH movements yet (same bootstrap-gap Topic 1 itself started in).
     const dispatchRefRows = await this.prisma.stockMovement.findMany({
-      where: { warehouseId, movementType: 'DISPATCH', createdAt: { gte: windowStart } },
+      where: {
+        warehouseId,
+        movementType: 'DISPATCH',
+        createdAt: { gte: windowStart },
+      },
       select: { skuId: true, referenceId: true },
       distinct: ['skuId', 'referenceId'],
     });
     const orderCountBySku = new Map<string, number>();
-    for (const r of dispatchRefRows) orderCountBySku.set(r.skuId, (orderCountBySku.get(r.skuId) || 0) + 1);
+    for (const r of dispatchRefRows)
+      orderCountBySku.set(r.skuId, (orderCountBySku.get(r.skuId) || 0) + 1);
 
     // Historical order-count bootstrap — same HistoricalDispatchSeed row as
     // the quantity seed above, just its own optional orderCount column (see
@@ -113,7 +156,9 @@ export class AbcClassificationService {
       where: { warehouseId, month: { gte: windowStart } },
       _sum: { orderCount: true },
     });
-    const seedOrderBySku = new Map(seedOrderSums.map((s) => [s.skuId, Number(s._sum.orderCount || 0)]));
+    const seedOrderBySku = new Map(
+      seedOrderSums.map((s) => [s.skuId, Number(s._sum.orderCount || 0)]),
+    );
 
     // "Has this SKU existed in this warehouse for the FULL window" — the
     // earliest of its first real movement (any type — presence, not just
@@ -123,13 +168,28 @@ export class AbcClassificationService {
     // move — confirmed reasoning, not yet re-checked with the client in
     // these exact words, but matches "3 months + no sales" as the trigger,
     // which only makes sense once 3 real months have actually passed.
-    const firstMovements = await this.prisma.stockMovement.groupBy({ by: ['skuId'], where: { warehouseId }, _min: { createdAt: true } });
-    const firstMovementBySku = new Map(firstMovements.map((f) => [f.skuId, f._min.createdAt]));
-    const firstSeeds = await this.prisma.historicalDispatchSeed.groupBy({ by: ['skuId'], where: { warehouseId }, _min: { month: true } });
-    const firstSeedBySku = new Map(firstSeeds.map((f) => [f.skuId, f._min.month]));
+    const firstMovements = await this.prisma.stockMovement.groupBy({
+      by: ['skuId'],
+      where: { warehouseId },
+      _min: { createdAt: true },
+    });
+    const firstMovementBySku = new Map(
+      firstMovements.map((f) => [f.skuId, f._min.createdAt]),
+    );
+    const firstSeeds = await this.prisma.historicalDispatchSeed.groupBy({
+      by: ['skuId'],
+      where: { warehouseId },
+      _min: { month: true },
+    });
+    const firstSeedBySku = new Map(
+      firstSeeds.map((f) => [f.skuId, f._min.month]),
+    );
 
     const hasFullWindowHistory = (skuId: string): boolean => {
-      const dates = [firstMovementBySku.get(skuId), firstSeedBySku.get(skuId)].filter((d): d is Date => !!d);
+      const dates = [
+        firstMovementBySku.get(skuId),
+        firstSeedBySku.get(skuId),
+      ].filter((d): d is Date => !!d);
       if (dates.length === 0) return false;
       const earliest = new Date(Math.min(...dates.map((d) => d.getTime())));
       return earliest <= windowStart;
@@ -144,14 +204,17 @@ export class AbcClassificationService {
       const results = categorySkuIds.map((skuId) => ({
         skuId,
         qty: (dispatchBySku.get(skuId) || 0) + (seedBySku.get(skuId) || 0),
-        orders: (orderCountBySku.get(skuId) || 0) + (seedOrderBySku.get(skuId) || 0),
+        orders:
+          (orderCountBySku.get(skuId) || 0) + (seedOrderBySku.get(skuId) || 0),
       }));
 
       const active = results.filter((r) => r.qty > 0);
       // Zero-qty SKUs only become D once they've genuinely had the full
       // window to prove themselves — a SKU too new to judge is skipped
       // entirely (see hasFullWindowHistory above).
-      const dead = results.filter((r) => r.qty === 0 && hasFullWindowHistory(r.skuId));
+      const dead = results.filter(
+        (r) => r.qty === 0 && hasFullWindowHistory(r.skuId),
+      );
 
       if (active.length > 0) {
         active.sort((a, b) => b.qty - a.qty);
@@ -169,7 +232,8 @@ export class AbcClassificationService {
         const abcClassBySku = new Map<string, string>();
         for (const r of active) {
           const pctBefore = (cumulativeBefore / totalActiveQty) * 100;
-          const cls = pctBefore < aPct ? 'A' : pctBefore < aPct + bPct ? 'B' : 'C';
+          const cls =
+            pctBefore < aPct ? 'A' : pctBefore < aPct + bPct ? 'B' : 'C';
           cumulativeBefore += r.qty;
           abcClassBySku.set(r.skuId, cls);
         }
@@ -189,14 +253,25 @@ export class AbcClassificationService {
         let cumulativeOrdersBefore = 0;
         const fmsClassBySku = new Map<string, string>();
         for (const r of byOrders) {
-          const pctBefore = totalOrders > 0 ? (cumulativeOrdersBefore / totalOrders) * 100 : 100;
-          const cls = pctBefore < fPct ? 'F' : pctBefore < fPct + mPct ? 'M' : 'S';
+          const pctBefore =
+            totalOrders > 0
+              ? (cumulativeOrdersBefore / totalOrders) * 100
+              : 100;
+          const cls =
+            pctBefore < fPct ? 'F' : pctBefore < fPct + mPct ? 'M' : 'S';
           cumulativeOrdersBefore += r.orders;
           fmsClassBySku.set(r.skuId, cls);
         }
 
         for (const r of active) {
-          await this.upsertClass(r.skuId, warehouseId, abcClassBySku.get(r.skuId)!, r.qty, fmsClassBySku.get(r.skuId)!, r.orders);
+          await this.upsertClass(
+            r.skuId,
+            warehouseId,
+            abcClassBySku.get(r.skuId)!,
+            r.qty,
+            fmsClassBySku.get(r.skuId)!,
+            r.orders,
+          );
         }
       }
       for (const r of dead) {
@@ -206,11 +281,31 @@ export class AbcClassificationService {
     }
   }
 
-  private async upsertClass(skuId: string, warehouseId: string, abcClass: string, dispatchedQty: number, fmsClass: string | null, orderCount: number | null) {
+  private async upsertClass(
+    skuId: string,
+    warehouseId: string,
+    abcClass: string,
+    dispatchedQty: number,
+    fmsClass: string | null,
+    orderCount: number | null,
+  ) {
     await this.prisma.skuWarehouseClass.upsert({
       where: { skuId_warehouseId: { skuId, warehouseId } },
-      update: { abcClass, dispatchedQty, fmsClass, orderCount, computedAt: new Date() },
-      create: { skuId, warehouseId, abcClass, dispatchedQty, fmsClass, orderCount },
+      update: {
+        abcClass,
+        dispatchedQty,
+        fmsClass,
+        orderCount,
+        computedAt: new Date(),
+      },
+      create: {
+        skuId,
+        warehouseId,
+        abcClass,
+        dispatchedQty,
+        fmsClass,
+        orderCount,
+      },
     });
   }
 
@@ -218,13 +313,22 @@ export class AbcClassificationService {
   // for the caller's own company. Useful both for real usability (a client
   // shouldn't have to wait for the 1st of the month to see this work) and
   // for verification.
-  async runNow(user: any) {
-    if (user.role === 'SUPER_ADMIN') throw new ForbiddenException('Super admin accounts have no single company to reassess.');
-    const company = await this.prisma.company.findUnique({ where: { id: user.companyId } });
+  async runNow(user: AuthUser) {
+    if (user.role === 'SUPER_ADMIN')
+      throw new ForbiddenException(
+        'Super admin accounts have no single company to reassess.',
+      );
+    // Non-null assertion: the SUPER_ADMIN case (the only role that can carry
+    // a null companyId) already threw above.
+    const company = await this.prisma.company.findUnique({
+      where: { id: user.companyId! },
+    });
     if (!company?.abcReassessmentEnabled) {
-      throw new BadRequestException('ABC reassessment is not enabled for this company — turn it on in Company Settings first.');
+      throw new BadRequestException(
+        'ABC reassessment is not enabled for this company — turn it on in Company Settings first.',
+      );
     }
-    return this.reassessCompany(user.companyId);
+    return this.reassessCompany(user.companyId!);
   }
 
   // Current classification results — for the read-only results page.
@@ -232,10 +336,13 @@ export class AbcClassificationService {
   // warehouses before being trusted, same pattern this codebase already
   // uses everywhere else a scoped role could otherwise pass someone else's
   // warehouse id (YardService.tracker(), Vehicle/DriverService, etc.).
-  async current(user: any, warehouseId?: string) {
+  async current(user: AuthUser, warehouseId?: string) {
     if (warehouseId && WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+      if (!ids.includes(warehouseId))
+        throw new ForbiddenException(
+          'You do not have access to this warehouse.',
+        );
     }
     const where: any = { warehouse: { ...companyFilter(user) } };
     if (warehouseId) where.warehouseId = warehouseId;
@@ -246,8 +353,22 @@ export class AbcClassificationService {
 
     const rows = await this.prisma.skuWarehouseClass.findMany({
       where,
-      include: { sku: { select: { code: true, description: true, abcClass: true, category: { select: { name: true } } } }, warehouse: { select: { code: true, name: true } } },
-      orderBy: [{ warehouse: { code: 'asc' } }, { sku: { category: { name: 'asc' } } }, { dispatchedQty: 'desc' }],
+      include: {
+        sku: {
+          select: {
+            code: true,
+            description: true,
+            abcClass: true,
+            category: { select: { name: true } },
+          },
+        },
+        warehouse: { select: { code: true, name: true } },
+      },
+      orderBy: [
+        { warehouse: { code: 'asc' } },
+        { sku: { category: { name: 'asc' } } },
+        { dispatchedQty: 'desc' },
+      ],
     });
 
     return rows.map((r) => ({
@@ -274,29 +395,45 @@ export class AbcClassificationService {
   // HistoricalDispatchSeed's own schema comment for why). Same per-row
   // success/error results shape as every other bulk import in this
   // codebase (SKU/Warehouse/Customer/Location/Inbound Order).
-  async importHistoricalDispatch(rows: any[], user: any) {
-    const results: { row: number; skuCode: string; warehouseCode: string; status: 'success' | 'error'; errors?: string[] }[] = [];
+  async importHistoricalDispatch(rows: any[], user: AuthUser) {
+    const results: {
+      row: number;
+      skuCode: string;
+      warehouseCode: string;
+      status: 'success' | 'error';
+      errors?: string[];
+    }[] = [];
     let successCount = 0;
 
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       const skuCode = r['SKU Code'] ? String(r['SKU Code']).trim() : '';
-      const warehouseCode = r['Warehouse Code'] ? String(r['Warehouse Code']).trim() : '';
+      const warehouseCode = r['Warehouse Code']
+        ? String(r['Warehouse Code']).trim()
+        : '';
       const errors: string[] = [];
 
       if (!skuCode) errors.push('SKU Code is required.');
       if (!warehouseCode) errors.push('Warehouse Code is required.');
       const qty = Number(r['Quantity']);
-      if (!r['Quantity'] || isNaN(qty) || qty < 0) errors.push('Quantity must be a non-negative number.');
+      if (!r['Quantity'] || isNaN(qty) || qty < 0)
+        errors.push('Quantity must be a non-negative number.');
 
       // Order Count (2026-09-08, FMS bootstrap) — optional, unlike Quantity:
       // a company only bootstrapping ABC history isn't required to also
       // supply this. Blank/absent is fine; a genuinely bad value isn't.
       let orderCount: number | null = null;
       const rawOrderCount = r['Order Count'];
-      if (rawOrderCount !== undefined && rawOrderCount !== null && rawOrderCount !== '') {
+      if (
+        rawOrderCount !== undefined &&
+        rawOrderCount !== null &&
+        rawOrderCount !== ''
+      ) {
         const n = Number(rawOrderCount);
-        if (isNaN(n) || n < 0 || !Number.isInteger(n)) errors.push('Order Count must be a non-negative whole number when given.');
+        if (isNaN(n) || n < 0 || !Number.isInteger(n))
+          errors.push(
+            'Order Count must be a non-negative whole number when given.',
+          );
         else orderCount = n;
       }
 
@@ -307,45 +444,99 @@ export class AbcClassificationService {
       let month: Date | null = null;
       const rawMonth = r['Month'];
       if (!rawMonth) {
-        errors.push('Month is required (e.g. "2026-06" or a date within the month).');
+        errors.push(
+          'Month is required (e.g. "2026-06" or a date within the month).',
+        );
       } else {
         const asDate = rawMonth instanceof Date ? rawMonth : new Date(rawMonth);
-        if (isNaN(asDate.getTime())) errors.push(`"${rawMonth}" isn't a recognizable month/date.`);
+        if (isNaN(asDate.getTime()))
+          errors.push(`"${rawMonth}" isn't a recognizable month/date.`);
         else month = new Date(asDate.getFullYear(), asDate.getMonth(), 1);
       }
 
       if (errors.length > 0) {
-        results.push({ row: i + 2, skuCode, warehouseCode, status: 'error', errors });
+        results.push({
+          row: i + 2,
+          skuCode,
+          warehouseCode,
+          status: 'error',
+          errors,
+        });
         continue;
       }
 
-      const sku = await this.prisma.sku.findFirst({ where: { companyId: user.companyId, code: skuCode } });
+      const sku = await this.prisma.sku.findFirst({
+        where: { companyId: user.companyId!, code: skuCode },
+      });
       if (!sku) {
-        results.push({ row: i + 2, skuCode, warehouseCode, status: 'error', errors: [`SKU Code "${skuCode}" not found.`] });
+        results.push({
+          row: i + 2,
+          skuCode,
+          warehouseCode,
+          status: 'error',
+          errors: [`SKU Code "${skuCode}" not found.`],
+        });
         continue;
       }
-      const warehouse = await this.prisma.warehouse.findFirst({ where: { companyId: user.companyId, code: warehouseCode } });
+      const warehouse = await this.prisma.warehouse.findFirst({
+        where: { companyId: user.companyId!, code: warehouseCode },
+      });
       if (!warehouse) {
-        results.push({ row: i + 2, skuCode, warehouseCode, status: 'error', errors: [`Warehouse Code "${warehouseCode}" not found.`] });
+        results.push({
+          row: i + 2,
+          skuCode,
+          warehouseCode,
+          status: 'error',
+          errors: [`Warehouse Code "${warehouseCode}" not found.`],
+        });
         continue;
       }
       if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
         const ids = await ownWarehouseIds(this.prisma, user.userId);
         if (!ids.includes(warehouse.id)) {
-          results.push({ row: i + 2, skuCode, warehouseCode, status: 'error', errors: [`You do not have access to warehouse "${warehouseCode}".`] });
+          results.push({
+            row: i + 2,
+            skuCode,
+            warehouseCode,
+            status: 'error',
+            errors: [`You do not have access to warehouse "${warehouseCode}".`],
+          });
           continue;
         }
       }
 
       await this.prisma.historicalDispatchSeed.upsert({
-        where: { skuId_warehouseId_month: { skuId: sku.id, warehouseId: warehouse.id, month: month! } },
-        update: { quantity: qty, orderCount, importedById: user.userId, importedAt: new Date() },
-        create: { skuId: sku.id, warehouseId: warehouse.id, month: month!, quantity: qty, orderCount, importedById: user.userId },
+        where: {
+          skuId_warehouseId_month: {
+            skuId: sku.id,
+            warehouseId: warehouse.id,
+            month: month!,
+          },
+        },
+        update: {
+          quantity: qty,
+          orderCount,
+          importedById: user.userId,
+          importedAt: new Date(),
+        },
+        create: {
+          skuId: sku.id,
+          warehouseId: warehouse.id,
+          month: month!,
+          quantity: qty,
+          orderCount,
+          importedById: user.userId,
+        },
       });
       successCount++;
       results.push({ row: i + 2, skuCode, warehouseCode, status: 'success' });
     }
 
-    return { totalRows: rows.length, successCount, failCount: rows.length - successCount, results };
+    return {
+      totalRows: rows.length,
+      successCount,
+      failCount: rows.length - successCount,
+      results,
+    };
   }
 }

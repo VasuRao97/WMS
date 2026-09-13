@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { MASTER_DATA_READ_ROLES } from '../common/tenant.util';
+import { type AuthUser, MASTER_DATA_READ_ROLES } from '../common/tenant.util';
 
 @Controller('insights')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -13,7 +13,10 @@ export class InsightsController {
 
   @Get('storage-utilization')
   @Roles(...MASTER_DATA_READ_ROLES)
-  storageUtilization(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+  storageUtilization(
+    @Query('warehouseId') warehouseId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.insightsService.storageUtilization(user, warehouseId);
   }
 }

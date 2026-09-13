@@ -1,13 +1,35 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, INBOUND_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  INBOUND_SCOPED_ROLES,
+} from '../common/tenant.util';
 import { PutawayTasksService } from '../putaway/putaway-tasks.service';
 import { PalletsService } from '../pallets/pallets.service';
 
 const RECEIPT_INCLUDE = {
   warehouse: { select: { id: true, code: true, name: true, companyId: true } },
   createdBy: { select: { id: true, name: true } },
-  lines: { include: { sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } }, stagingLocation: { select: { id: true, code: true } } } },
+  lines: {
+    include: {
+      sku: {
+        select: {
+          id: true,
+          code: true,
+          description: true,
+          category: { select: { id: true, name: true } },
+        },
+      },
+      stagingLocation: { select: { id: true, code: true } },
+    },
+  },
   stagingLocation: { select: { id: true, code: true } },
   // The order's own expected vehicle (2026-08-27, the 1:1-mapping
   // follow-up) — distinct from gateEntry.vehicle below, which is whichever
@@ -15,15 +37,37 @@ const RECEIPT_INCLUDE = {
   // same vehicle once matched, but this is the order's own declared intent,
   // visible even before any vehicle has arrived).
   vehicle: { select: { id: true, vehicleNumber: true } },
-  gateEntry: { select: { id: true, vehicle: { select: { vehicleNumber: true } }, dockedInAt: true, gateOutAt: true } },
+  gateEntry: {
+    select: {
+      id: true,
+      vehicle: { select: { vehicleNumber: true } },
+      dockedInAt: true,
+      gateOutAt: true,
+    },
+  },
 };
 
 const SCAN_INCLUDE = {
-  sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } },
+  sku: {
+    select: {
+      id: true,
+      code: true,
+      description: true,
+      category: { select: { id: true, name: true } },
+    },
+  },
   receiptLine: true,
   scannedBy: { select: { id: true, name: true } },
   reviewedBy: { select: { id: true, name: true } },
-  receipt: { select: { id: true, warehouseId: true, stagingLocationId: true, requiresPalletConsolidation: true, warehouse: { select: { companyId: true } } } },
+  receipt: {
+    select: {
+      id: true,
+      warehouseId: true,
+      stagingLocationId: true,
+      requiresPalletConsolidation: true,
+      warehouse: { select: { companyId: true } },
+    },
+  },
 };
 
 // Inbound receiving — the manual "order maker" (2026-08-27, see CLAUDE.md's
@@ -52,8 +96,14 @@ export class InboundReceiptsService {
     private pallets: PalletsService,
   ) {}
 
-  private async assertWarehouseAccess(warehouseId: string, user: any, errors: string[]) {
-    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+  private async assertWarehouseAccess(
+    warehouseId: string,
+    user: AuthUser,
+    errors: string[],
+  ) {
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { id: warehouseId },
+    });
     if (!warehouse) {
       errors.push('Warehouse not found.');
       return;
@@ -64,20 +114,29 @@ export class InboundReceiptsService {
     }
     if (INBOUND_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouseId)) errors.push('You can only create orders for your own assigned warehouse(s).');
+      if (!ids.includes(warehouseId))
+        errors.push(
+          'You can only create orders for your own assigned warehouse(s).',
+        );
     }
   }
 
   // Same shape as LocationsService's resolveWarehouseCodeToId — used only
   // by the Excel import path (the manual order maker already gets a real
   // warehouseId from a dropdown, not a typed code).
-  private async resolveWarehouseCodeToId(code: any, user: any, errors: string[]): Promise<string | undefined> {
+  private async resolveWarehouseCodeToId(
+    code: any,
+    user: AuthUser,
+    errors: string[],
+  ): Promise<string | undefined> {
     const codeStr = code ? String(code).trim().toUpperCase() : '';
     if (!codeStr) {
       errors.push('Warehouse Code is required.');
       return undefined;
     }
-    const warehouse = await this.prisma.warehouse.findUnique({ where: { companyId_code: { companyId: user.companyId, code: codeStr } } });
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { companyId_code: { companyId: user.companyId!, code: codeStr } },
+    });
     if (!warehouse) {
       errors.push(`Warehouse Code "${codeStr}" not found.`);
       return undefined;
@@ -85,7 +144,9 @@ export class InboundReceiptsService {
     if (INBOUND_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
       if (!ids.includes(warehouse.id)) {
-        errors.push(`You can only create orders for your own assigned warehouse(s) — no access to "${codeStr}".`);
+        errors.push(
+          `You can only create orders for your own assigned warehouse(s) — no access to "${codeStr}".`,
+        );
         return undefined;
       }
     }
@@ -98,12 +159,20 @@ export class InboundReceiptsService {
   // vehicle is actually at the dock. See InboundReceipt.stagingLocationId's
   // schema comment. A line MAY still carry its own override if genuinely
   // needed, but the order maker itself never requires one.
-  private async validateLines(warehouseId: string, input: any, errors: string[]) {
+  private async validateLines(
+    warehouseId: string,
+    input: any,
+    errors: string[],
+  ) {
     if (!Array.isArray(input) || input.length === 0) {
       errors.push('At least one SKU line is required.');
       return [];
     }
-    const result: { skuId: string; expectedQty: number; stagingLocationId?: string }[] = [];
+    const result: {
+      skuId: string;
+      expectedQty: number;
+      stagingLocationId?: string;
+    }[] = [];
     for (const [i, row] of input.entries()) {
       const skuId = row?.skuId;
       const expectedQty = Number(row?.expectedQty);
@@ -113,7 +182,9 @@ export class InboundReceiptsService {
         continue;
       }
       if (!Number.isFinite(expectedQty) || expectedQty <= 0) {
-        errors.push(`Line ${i + 1}: Expected Quantity must be a positive number.`);
+        errors.push(
+          `Line ${i + 1}: Expected Quantity must be a positive number.`,
+        );
         continue;
       }
       const sku = await this.prisma.sku.findUnique({ where: { id: skuId } });
@@ -122,9 +193,15 @@ export class InboundReceiptsService {
         continue;
       }
       if (stagingLocationId) {
-        const location = await this.prisma.location.findUnique({ where: { id: stagingLocationId } });
-        if (!location) errors.push(`Line ${i + 1}: Staging Location not found.`);
-        else if (location.warehouseId !== warehouseId) errors.push(`Line ${i + 1}: Staging Location does not belong to the selected warehouse.`);
+        const location = await this.prisma.location.findUnique({
+          where: { id: stagingLocationId },
+        });
+        if (!location)
+          errors.push(`Line ${i + 1}: Staging Location not found.`);
+        else if (location.warehouseId !== warehouseId)
+          errors.push(
+            `Line ${i + 1}: Staging Location does not belong to the selected warehouse.`,
+          );
         else result.push({ skuId, expectedQty, stagingLocationId });
         continue;
       }
@@ -145,7 +222,12 @@ export class InboundReceiptsService {
   // company-wide, not per-warehouse: a vehicle can only physically be in
   // one place at a time, so a second open order for it at a DIFFERENT
   // warehouse is exactly as invalid as one at the same warehouse.
-  private async resolveVehicleForReceipt(vehicleId: any, user: any, errors: string[], requireVehicle = true): Promise<string | undefined> {
+  private async resolveVehicleForReceipt(
+    vehicleId: any,
+    user: AuthUser,
+    errors: string[],
+    requireVehicle = true,
+  ): Promise<string | undefined> {
     if (!vehicleId) {
       // requireVehicle: false (2026-08-27, ERP push follow-up) — an
       // ERP-pushed order legitimately has no vehicle yet, by design: "ERP
@@ -155,7 +237,9 @@ export class InboundReceiptsService {
       if (requireVehicle) errors.push('Vehicle is required.');
       return undefined;
     }
-    const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where: { id: vehicleId },
+    });
     if (!vehicle) {
       errors.push('Vehicle not found.');
       return undefined;
@@ -164,9 +248,13 @@ export class InboundReceiptsService {
       errors.push('You do not have access to this vehicle.');
       return undefined;
     }
-    const openOrder = await this.prisma.inboundReceipt.findFirst({ where: { vehicleId: vehicle.id, gateEntry: null } });
+    const openOrder = await this.prisma.inboundReceipt.findFirst({
+      where: { vehicleId: vehicle.id, gateEntry: null },
+    });
     if (openOrder) {
-      errors.push(`Vehicle "${vehicle.vehicleNumber}" already has an unmatched order ("${openOrder.referenceNo}") — match or resolve it before creating another.`);
+      errors.push(
+        `Vehicle "${vehicle.vehicleNumber}" already has an unmatched order ("${openOrder.referenceNo}") — match or resolve it before creating another.`,
+      );
       return undefined;
     }
     return vehicle.id;
@@ -175,13 +263,26 @@ export class InboundReceiptsService {
   // Same shape as resolveWarehouseCodeToId/resolveSkuCodeToId — used only
   // by the Excel import path (the manual order maker gets a real vehicleId
   // from a dropdown, not a typed Vehicle Number).
-  private async resolveVehicleNumberToId(vehicleNumber: any, user: any, errors: string[]): Promise<string | undefined> {
-    const numStr = vehicleNumber ? String(vehicleNumber).trim().toUpperCase() : '';
+  private async resolveVehicleNumberToId(
+    vehicleNumber: any,
+    user: AuthUser,
+    errors: string[],
+  ): Promise<string | undefined> {
+    const numStr = vehicleNumber
+      ? String(vehicleNumber).trim().toUpperCase()
+      : '';
     if (!numStr) {
       errors.push('Vehicle Number is required.');
       return undefined;
     }
-    const vehicle = await this.prisma.vehicle.findUnique({ where: { companyId_vehicleNumber: { companyId: user.companyId, vehicleNumber: numStr } } });
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where: {
+        companyId_vehicleNumber: {
+          companyId: user.companyId!,
+          vehicleNumber: numStr,
+        },
+      },
+    });
     if (!vehicle) {
       errors.push(`Vehicle Number "${numStr}" not found — register it first.`);
       return undefined;
@@ -194,7 +295,12 @@ export class InboundReceiptsService {
   // SkusService.validateSkuData, so the two paths can't drift apart. Returns
   // errors instead of throwing so a batch import can report per-row results
   // rather than failing the whole file on the first bad order.
-  private async prepareReceipt(data: any, user: any, errors: string[], requireVehicle = true) {
+  private async prepareReceipt(
+    data: any,
+    user: AuthUser,
+    errors: string[],
+    requireVehicle = true,
+  ) {
     const warehouseId = data.warehouseId;
     if (!warehouseId) errors.push('Warehouse is required.');
     else await this.assertWarehouseAccess(warehouseId, user, errors);
@@ -202,19 +308,42 @@ export class InboundReceiptsService {
     const referenceNo = data.referenceNo ? String(data.referenceNo).trim() : '';
     if (!referenceNo) errors.push('PO/Reference number is required.');
     else if (warehouseId) {
-      const existing = await this.prisma.inboundReceipt.findFirst({ where: { warehouseId, referenceNo } });
-      if (existing) errors.push(`An order with reference "${referenceNo}" already exists for this warehouse.`);
+      const existing = await this.prisma.inboundReceipt.findFirst({
+        where: { warehouseId, referenceNo },
+      });
+      if (existing)
+        errors.push(
+          `An order with reference "${referenceNo}" already exists for this warehouse.`,
+        );
     }
 
-    const vehicleId = await this.resolveVehicleForReceipt(data.vehicleId, user, errors, requireVehicle);
+    const vehicleId = await this.resolveVehicleForReceipt(
+      data.vehicleId,
+      user,
+      errors,
+      requireVehicle,
+    );
 
-    const lines = warehouseId ? await this.validateLines(warehouseId, data.lines, errors) : [];
+    const lines = warehouseId
+      ? await this.validateLines(warehouseId, data.lines, errors)
+      : [];
 
-    return { warehouseId, referenceNo, vehicleId, supplierName: data.supplierName ? String(data.supplierName).trim() : undefined, lines };
+    return {
+      warehouseId,
+      referenceNo,
+      vehicleId,
+      supplierName: data.supplierName
+        ? String(data.supplierName).trim()
+        : undefined,
+      lines,
+    };
   }
 
-  async create(data: any, user: any) {
-    if (!user.companyId) throw new ForbiddenException('Super admin accounts cannot create orders directly — log in as a company admin instead.');
+  async create(data: any, user: AuthUser) {
+    if (!user.companyId)
+      throw new ForbiddenException(
+        'Super admin accounts cannot create orders directly — log in as a company admin instead.',
+      );
     const errors: string[] = [];
     const prepared = await this.prepareReceipt(data, user, errors);
     if (errors.length > 0) throw new BadRequestException(errors);
@@ -226,19 +355,31 @@ export class InboundReceiptsService {
         supplierName: prepared.supplierName,
         vehicle: { connect: { id: prepared.vehicleId! } },
         createdBy: { connect: { id: user.userId } },
-        lines: { create: prepared.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty, stagingLocationId: l.stagingLocationId })) },
+        lines: {
+          create: prepared.lines.map((l) => ({
+            skuId: l.skuId,
+            expectedQty: l.expectedQty,
+            stagingLocationId: l.stagingLocationId,
+          })),
+        },
       },
       include: RECEIPT_INCLUDE,
     });
   }
 
-  private async resolveSkuCodeToId(code: any, user: any, errors: string[]): Promise<string | undefined> {
+  private async resolveSkuCodeToId(
+    code: any,
+    user: AuthUser,
+    errors: string[],
+  ): Promise<string | undefined> {
     const codeStr = code ? String(code).trim().toUpperCase() : '';
     if (!codeStr) {
       errors.push('SKU Code is required.');
       return undefined;
     }
-    const sku = await this.prisma.sku.findUnique({ where: { companyId_code: { companyId: user.companyId, code: codeStr } } });
+    const sku = await this.prisma.sku.findUnique({
+      where: { companyId_code: { companyId: user.companyId!, code: codeStr } },
+    });
     if (!sku) {
       errors.push(`SKU Code "${codeStr}" not found.`);
       return undefined;
@@ -255,36 +396,69 @@ export class InboundReceiptsService {
   // SKU lines. Deliberately mirrors the manual order maker's own fields
   // exactly — no staging location column, same reasoning as create(): it
   // isn't knowable until the vehicle is actually at the dock (Match Order).
-  async bulkImport(rows: any[], user: any) {
-    if (!user.companyId) throw new ForbiddenException('Super admin accounts cannot import orders directly — log in as a company admin instead.');
+  async bulkImport(rows: any[], user: AuthUser) {
+    if (!user.companyId)
+      throw new ForbiddenException(
+        'Super admin accounts cannot import orders directly — log in as a company admin instead.',
+      );
     const results: any[] = [];
     let successCount = 0;
 
     for (const row of rows) {
       const errors: string[] = [];
-      const warehouseId = await this.resolveWarehouseCodeToId(row.warehouseCode, user, errors);
-      const vehicleId = await this.resolveVehicleNumberToId(row.vehicleNumber, user, errors);
+      const warehouseId = await this.resolveWarehouseCodeToId(
+        row.warehouseCode,
+        user,
+        errors,
+      );
+      const vehicleId = await this.resolveVehicleNumberToId(
+        row.vehicleNumber,
+        user,
+        errors,
+      );
 
       const skuLines: { skuId: string; expectedQty: number }[] = [];
       if (warehouseId) {
         for (const [i, line] of (row.lines || []).entries()) {
-          const skuId = await this.resolveSkuCodeToId(line.skuCode, user, errors);
+          const skuId = await this.resolveSkuCodeToId(
+            line.skuCode,
+            user,
+            errors,
+          );
           const expectedQty = Number(line.expectedQty);
           if (!Number.isFinite(expectedQty) || expectedQty <= 0) {
-            errors.push(`Line ${i + 1} (${line.skuCode || '?'}): Expected Quantity must be a positive number.`);
+            errors.push(
+              `Line ${i + 1} (${line.skuCode || '?'}): Expected Quantity must be a positive number.`,
+            );
             continue;
           }
           if (skuId) skuLines.push({ skuId, expectedQty });
         }
       }
-      if (skuLines.length === 0 && errors.length === 0) errors.push('At least one SKU line is required.');
+      if (skuLines.length === 0 && errors.length === 0)
+        errors.push('At least one SKU line is required.');
 
       const prepared = warehouseId
-        ? await this.prepareReceipt({ warehouseId, referenceNo: row.referenceNo, supplierName: row.supplierName, vehicleId, lines: skuLines }, user, errors)
+        ? await this.prepareReceipt(
+            {
+              warehouseId,
+              referenceNo: row.referenceNo,
+              supplierName: row.supplierName,
+              vehicleId,
+              lines: skuLines,
+            },
+            user,
+            errors,
+          )
         : null;
 
       if (errors.length > 0) {
-        results.push({ referenceNo: row.referenceNo || '(blank)', warehouseCode: row.warehouseCode, status: 'error', errors });
+        results.push({
+          referenceNo: row.referenceNo || '(blank)',
+          warehouseCode: row.warehouseCode,
+          status: 'error',
+          errors,
+        });
         continue;
       }
 
@@ -295,14 +469,28 @@ export class InboundReceiptsService {
           supplierName: prepared!.supplierName,
           vehicle: { connect: { id: prepared!.vehicleId! } },
           createdBy: { connect: { id: user.userId } },
-          lines: { create: prepared!.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty })) },
+          lines: {
+            create: prepared!.lines.map((l) => ({
+              skuId: l.skuId,
+              expectedQty: l.expectedQty,
+            })),
+          },
         },
       });
       successCount++;
-      results.push({ referenceNo: row.referenceNo, warehouseCode: row.warehouseCode, status: 'success' });
+      results.push({
+        referenceNo: row.referenceNo,
+        warehouseCode: row.warehouseCode,
+        status: 'success',
+      });
     }
 
-    return { totalOrders: rows.length, successCount, failCount: rows.length - successCount, results };
+    return {
+      totalOrders: rows.length,
+      successCount,
+      failCount: rows.length - successCount,
+      results,
+    };
   }
 
   // ERP push (2026-08-27) — see this class's own comment above. One order
@@ -317,26 +505,58 @@ export class InboundReceiptsService {
   // BadRequestException with the same error array shape as create() — a
   // machine caller gets one clear pass/fail per call, not a results array.
   async erpPush(data: any, companyId: string) {
-    const pseudoUser = { companyId, role: 'COMPANY_ADMIN', userId: undefined };
+    // `userId`/`email` are placeholders, never actually read downstream —
+    // confirmed by this method's own comment above (COMPANY_ADMIN never
+    // falls into an INBOUND_SCOPED_ROLES branch that would need userId, and
+    // nothing in this flow reads email at all). Cast rather than widening
+    // AuthUser's real fields to optional, which would weaken every genuine
+    // logged-in caller's typing for this one synthetic-caller edge case.
+    const pseudoUser = {
+      companyId,
+      role: 'COMPANY_ADMIN',
+      userId: '',
+      email: '',
+    } as AuthUser;
     const errors: string[] = [];
-    const warehouseId = await this.resolveWarehouseCodeToId(data.warehouseCode, pseudoUser, errors);
+    const warehouseId = await this.resolveWarehouseCodeToId(
+      data.warehouseCode,
+      pseudoUser,
+      errors,
+    );
 
     const skuLines: { skuId: string; expectedQty: number }[] = [];
     if (warehouseId) {
       for (const [i, line] of (data.lines || []).entries()) {
-        const skuId = await this.resolveSkuCodeToId(line.skuCode, pseudoUser, errors);
+        const skuId = await this.resolveSkuCodeToId(
+          line.skuCode,
+          pseudoUser,
+          errors,
+        );
         const expectedQty = Number(line.expectedQty);
         if (!Number.isFinite(expectedQty) || expectedQty <= 0) {
-          errors.push(`Line ${i + 1} (${line.skuCode || '?'}): Expected Quantity must be a positive number.`);
+          errors.push(
+            `Line ${i + 1} (${line.skuCode || '?'}): Expected Quantity must be a positive number.`,
+          );
           continue;
         }
         if (skuId) skuLines.push({ skuId, expectedQty });
       }
     }
-    if (skuLines.length === 0 && errors.length === 0) errors.push('At least one SKU line is required.');
+    if (skuLines.length === 0 && errors.length === 0)
+      errors.push('At least one SKU line is required.');
 
     const prepared = warehouseId
-      ? await this.prepareReceipt({ warehouseId, referenceNo: data.referenceNo, supplierName: data.supplierName, lines: skuLines }, pseudoUser, errors, false)
+      ? await this.prepareReceipt(
+          {
+            warehouseId,
+            referenceNo: data.referenceNo,
+            supplierName: data.supplierName,
+            lines: skuLines,
+          },
+          pseudoUser,
+          errors,
+          false,
+        )
       : null;
     if (errors.length > 0) throw new BadRequestException(errors);
 
@@ -346,7 +566,12 @@ export class InboundReceiptsService {
         referenceNo: prepared!.referenceNo,
         supplierName: prepared!.supplierName,
         createdViaErpPush: true,
-        lines: { create: prepared!.lines.map((l) => ({ skuId: l.skuId, expectedQty: l.expectedQty })) },
+        lines: {
+          create: prepared!.lines.map((l) => ({
+            skuId: l.skuId,
+            expectedQty: l.expectedQty,
+          })),
+        },
       },
       include: RECEIPT_INCLUDE,
     });
@@ -359,18 +584,34 @@ export class InboundReceiptsService {
   // resolveVehicleForReceipt() check as creation (exists, company-owned,
   // no other open order) — the 1:1 mapping is enforced identically
   // whenever a vehicle actually gets attached, not just at creation time.
-  async assignVehicle(id: string, vehicleId: any, user: any) {
-    const receipt = await this.prisma.inboundReceipt.findUnique({ where: { id }, include: { warehouse: { select: { companyId: true } } } });
+  async assignVehicle(id: string, vehicleId: any, user: AuthUser) {
+    const receipt = await this.prisma.inboundReceipt.findUnique({
+      where: { id },
+      include: { warehouse: { select: { companyId: true } } },
+    });
     if (!receipt) throw new NotFoundException('Order not found.');
-    if (user.role !== 'SUPER_ADMIN' && receipt.warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this order.');
+    if (
+      user.role !== 'SUPER_ADMIN' &&
+      receipt.warehouse.companyId !== user.companyId
+    )
+      throw new ForbiddenException('You do not have access to this order.');
     if (INBOUND_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(receipt.warehouseId)) throw new ForbiddenException('You do not have access to this order.');
+      if (!ids.includes(receipt.warehouseId))
+        throw new ForbiddenException('You do not have access to this order.');
     }
-    if (receipt.vehicleId) throw new BadRequestException('This order already has a vehicle assigned.');
+    if (receipt.vehicleId)
+      throw new BadRequestException(
+        'This order already has a vehicle assigned.',
+      );
 
     const errors: string[] = [];
-    const resolvedVehicleId = await this.resolveVehicleForReceipt(vehicleId, user, errors, true);
+    const resolvedVehicleId = await this.resolveVehicleForReceipt(
+      vehicleId,
+      user,
+      errors,
+      true,
+    );
     if (errors.length > 0) throw new BadRequestException(errors);
 
     return this.prisma.inboundReceipt.update({
@@ -380,12 +621,18 @@ export class InboundReceiptsService {
     });
   }
 
-  async findAll(user: any) {
+  async findAll(user: AuthUser) {
     const where: any = { warehouse: { ...companyFilter(user) } };
     if (INBOUND_SCOPED_ROLES.includes(user.role)) {
-      where.warehouseId = { in: await ownWarehouseIds(this.prisma, user.userId) };
+      where.warehouseId = {
+        in: await ownWarehouseIds(this.prisma, user.userId),
+      };
     }
-    return this.prisma.inboundReceipt.findMany({ where, include: RECEIPT_INCLUDE, orderBy: { createdAt: 'desc' } });
+    return this.prisma.inboundReceipt.findMany({
+      where,
+      include: RECEIPT_INCLUDE,
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   // Delete All (2026-08-29) — deliberately NOT the "block if it has real
@@ -404,62 +651,114 @@ export class InboundReceiptsService {
   // transaction log) — just unlinked (inboundReceiptId set null), same
   // "child config gets cleaned up, not blocked on" shape as
   // WarehousesService.removeAll()'s yardSlots/dockDoors handling.
-  async removeAll(user: any) {
-    const receipts = await this.prisma.inboundReceipt.findMany({ where: { warehouse: { ...companyFilter(user) } }, select: { id: true } });
+  async removeAll(user: AuthUser) {
+    const receipts = await this.prisma.inboundReceipt.findMany({
+      where: { warehouse: { ...companyFilter(user) } },
+      select: { id: true },
+    });
     const receiptIds = receipts.map((r) => r.id);
-    if (receiptIds.length === 0) return { deletedCount: 0, blockedCount: 0, blockedCodes: [] };
+    if (receiptIds.length === 0)
+      return { deletedCount: 0, blockedCount: 0, blockedCodes: [] };
 
-    const lines = await this.prisma.inboundReceiptLine.findMany({ where: { receiptId: { in: receiptIds } }, select: { id: true } });
+    const lines = await this.prisma.inboundReceiptLine.findMany({
+      where: { receiptId: { in: receiptIds } },
+      select: { id: true },
+    });
     const lineIds = lines.map((l) => l.id);
-    const scans = await this.prisma.inboundReceiptScan.findMany({ where: { receiptId: { in: receiptIds } }, select: { id: true } });
+    const scans = await this.prisma.inboundReceiptScan.findMany({
+      where: { receiptId: { in: receiptIds } },
+      select: { id: true },
+    });
     const scanIds = scans.map((s) => s.id);
-    const tasks = await this.prisma.putawayTask.findMany({ where: { receiptLineId: { in: lineIds } }, select: { id: true } });
+    const tasks = await this.prisma.putawayTask.findMany({
+      where: { receiptLineId: { in: lineIds } },
+      select: { id: true },
+    });
     const taskIds = tasks.map((t) => t.id);
-    const trips = await this.prisma.putawayTrip.findMany({ where: { taskId: { in: taskIds } }, select: { id: true } });
+    const trips = await this.prisma.putawayTrip.findMany({
+      where: { taskId: { in: taskIds } },
+      select: { id: true },
+    });
     const tripIds = trips.map((t) => t.id);
 
     await this.prisma.$transaction([
       this.prisma.stockMovement.deleteMany({
         where: {
           OR: [
-            { referenceType: 'InboundReceiptScan', referenceId: { in: scanIds } },
+            {
+              referenceType: 'InboundReceiptScan',
+              referenceId: { in: scanIds },
+            },
             { referenceType: 'PutawayTrip', referenceId: { in: tripIds } },
           ],
         },
       }),
-      this.prisma.putawayReassignment.deleteMany({ where: { taskId: { in: taskIds } } }),
-      this.prisma.putawayTrip.deleteMany({ where: { taskId: { in: taskIds } } }),
+      this.prisma.putawayReassignment.deleteMany({
+        where: { taskId: { in: taskIds } },
+      }),
+      this.prisma.putawayTrip.deleteMany({
+        where: { taskId: { in: taskIds } },
+      }),
       this.prisma.putawayTask.deleteMany({ where: { id: { in: taskIds } } }),
-      this.prisma.inboundReceiptScan.deleteMany({ where: { receiptId: { in: receiptIds } } }),
-      this.prisma.inboundReceiptLine.deleteMany({ where: { receiptId: { in: receiptIds } } }),
-      this.prisma.vehicleGateEntry.updateMany({ where: { inboundReceiptId: { in: receiptIds } }, data: { inboundReceiptId: null } }),
-      this.prisma.inboundReceipt.deleteMany({ where: { id: { in: receiptIds } } }),
+      this.prisma.inboundReceiptScan.deleteMany({
+        where: { receiptId: { in: receiptIds } },
+      }),
+      this.prisma.inboundReceiptLine.deleteMany({
+        where: { receiptId: { in: receiptIds } },
+      }),
+      this.prisma.vehicleGateEntry.updateMany({
+        where: { inboundReceiptId: { in: receiptIds } },
+        data: { inboundReceiptId: null },
+      }),
+      this.prisma.inboundReceipt.deleteMany({
+        where: { id: { in: receiptIds } },
+      }),
     ]);
 
-    return { deletedCount: receiptIds.length, blockedCount: 0, blockedCodes: [] };
+    return {
+      deletedCount: receiptIds.length,
+      blockedCount: 0,
+      blockedCodes: [],
+    };
   }
 
-  async findOne(id: string, user: any) {
+  async findOne(id: string, user: AuthUser) {
     const receipt = await this.prisma.inboundReceipt.findUnique({
       where: { id },
-      include: { ...RECEIPT_INCLUDE, scans: { include: SCAN_INCLUDE, orderBy: { scannedAt: 'desc' } } },
+      include: {
+        ...RECEIPT_INCLUDE,
+        scans: { include: SCAN_INCLUDE, orderBy: { scannedAt: 'desc' } },
+      },
     });
     if (!receipt) throw new NotFoundException('Order not found.');
-    if (user.role !== 'SUPER_ADMIN' && receipt.warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this order.');
+    if (
+      user.role !== 'SUPER_ADMIN' &&
+      receipt.warehouse.companyId !== user.companyId
+    )
+      throw new ForbiddenException('You do not have access to this order.');
     if (INBOUND_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(receipt.warehouseId)) throw new ForbiddenException('You do not have access to this order.');
+      if (!ids.includes(receipt.warehouseId))
+        throw new ForbiddenException('You do not have access to this order.');
     }
     return receipt;
   }
 
-  private async assertScanAccess(scanId: string, user: any) {
-    const scan = await this.prisma.inboundReceiptScan.findUnique({ where: { id: scanId }, include: SCAN_INCLUDE });
+  private async assertScanAccess(scanId: string, user: AuthUser) {
+    const scan = await this.prisma.inboundReceiptScan.findUnique({
+      where: { id: scanId },
+      include: SCAN_INCLUDE,
+    });
     if (!scan) throw new NotFoundException('Scan not found.');
-    if (user.role !== 'SUPER_ADMIN' && scan.receipt.warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this scan.');
+    if (
+      user.role !== 'SUPER_ADMIN' &&
+      scan.receipt.warehouse.companyId !== user.companyId
+    )
+      throw new ForbiddenException('You do not have access to this scan.');
     if (INBOUND_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(scan.receipt.warehouseId)) throw new ForbiddenException('You do not have access to this scan.');
+      if (!ids.includes(scan.receipt.warehouseId))
+        throw new ForbiddenException('You do not have access to this scan.');
     }
     return scan;
   }
@@ -469,20 +768,43 @@ export class InboundReceiptsService {
   private async recomputeReceiptStatus(tx: any, receiptId: string) {
     const before = await tx.inboundReceipt.findUnique({
       where: { id: receiptId },
-      select: { status: true, requiresPalletConsolidation: true, warehouse: { select: { companyId: true } } },
+      select: {
+        status: true,
+        requiresPalletConsolidation: true,
+        warehouse: { select: { companyId: true } },
+      },
     });
-    const lines = await tx.inboundReceiptLine.findMany({ where: { receiptId } });
-    const allReceived = lines.length > 0 && lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
+    const lines = await tx.inboundReceiptLine.findMany({
+      where: { receiptId },
+    });
+    const allReceived =
+      lines.length > 0 &&
+      lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
     const anyReceived = lines.some((l: any) => Number(l.receivedQty) > 0);
-    const status = allReceived ? 'RECEIVED' : anyReceived ? 'PARTIALLY_RECEIVED' : 'PENDING';
-    await tx.inboundReceipt.update({ where: { id: receiptId }, data: { status } });
+    const status = allReceived
+      ? 'RECEIVED'
+      : anyReceived
+        ? 'PARTIALLY_RECEIVED'
+        : 'PENDING';
+    await tx.inboundReceipt.update({
+      where: { id: receiptId },
+      data: { status },
+    });
 
     // BATCH putaway trigger mode — see GateEntriesService.recomputeReceiptStatus's
     // identical comment; duplicated here for the same reason this whole
     // method is duplicated (each module queries Prisma directly). Also a
     // no-op for a palletized receipt (2026-09-01) — see that same comment.
-    if (before && !before.requiresPalletConsolidation && before.status !== 'RECEIVED' && status === 'RECEIVED') {
-      const company = await tx.company.findUnique({ where: { id: before.warehouse.companyId }, select: { putawayTriggerMode: true } });
+    if (
+      before &&
+      !before.requiresPalletConsolidation &&
+      before.status !== 'RECEIVED' &&
+      status === 'RECEIVED'
+    ) {
+      const company = await tx.company.findUnique({
+        where: { id: before.warehouse.companyId },
+        select: { putawayTriggerMode: true },
+      });
       if (company?.putawayTriggerMode === 'BATCH') {
         await this.putawayTasks.createBatchTasksForReceipt(tx, receiptId);
       }
@@ -513,21 +835,43 @@ export class InboundReceiptsService {
   // The client's own call, "hard block, we will make a policy about this
   // in next session" — a fuller policy (e.g. requiring a reason code, or a
   // softer warn-not-block mode) is still open for a future pass.
-  async approveScan(scanId: string, data: any, user: any) {
+  async approveScan(scanId: string, data: any, user: AuthUser) {
     const scan = await this.assertScanAccess(scanId, user);
-    if (scan.status !== 'BLOCKED') throw new BadRequestException('Only a blocked scan can be approved.');
+    if (scan.status !== 'BLOCKED')
+      throw new BadRequestException('Only a blocked scan can be approved.');
 
     const receiptLineId = data?.receiptLineId || scan.receiptLineId;
-    const quantity = data?.quantity !== undefined && data.quantity !== null && data.quantity !== '' ? Number(data.quantity) : scan.quantity != null ? Number(scan.quantity) : undefined;
-    if (!receiptLineId || quantity === undefined || !Number.isFinite(quantity) || quantity <= 0) {
-      throw new BadRequestException('An expected line and a positive quantity are required to approve this scan.');
+    const quantity =
+      data?.quantity !== undefined &&
+      data.quantity !== null &&
+      data.quantity !== ''
+        ? Number(data.quantity)
+        : scan.quantity != null
+          ? Number(scan.quantity)
+          : undefined;
+    if (
+      !receiptLineId ||
+      quantity === undefined ||
+      !Number.isFinite(quantity) ||
+      quantity <= 0
+    ) {
+      throw new BadRequestException(
+        'An expected line and a positive quantity are required to approve this scan.',
+      );
     }
-    const line = await this.prisma.inboundReceiptLine.findUnique({ where: { id: receiptLineId }, include: { sku: { select: { code: true } } } });
-    if (!line || line.receiptId !== scan.receiptId) throw new BadRequestException('That line does not belong to this order.');
+    const line = await this.prisma.inboundReceiptLine.findUnique({
+      where: { id: receiptLineId },
+      include: { sku: { select: { code: true } } },
+    });
+    if (!line || line.receiptId !== scan.receiptId)
+      throw new BadRequestException('That line does not belong to this order.');
     const skuId = line.skuId;
 
     const registeredBarcodes = await this.prisma.skuBarcode.findMany({
-      where: { barcode: scan.barcodeScanned, sku: { companyId: scan.receipt.warehouse.companyId } },
+      where: {
+        barcode: scan.barcodeScanned,
+        sku: { companyId: scan.receipt.warehouse.companyId },
+      },
       include: { sku: { select: { code: true } } },
     });
     // Hard block, 2026-08-28 — reverses the original "a barcode with zero
@@ -542,17 +886,24 @@ export class InboundReceiptsService {
     // register the barcode against the right SKU first if it's genuinely a
     // valid product, then re-scan it.
     if (registeredBarcodes.length === 0) {
-      throw new BadRequestException(`Barcode "${scan.barcodeScanned}" is not registered to any SKU — it cannot be approved. Register this barcode against the correct SKU first, then re-scan it; this blocked scan can only be Rejected.`);
+      throw new BadRequestException(
+        `Barcode "${scan.barcodeScanned}" is not registered to any SKU — it cannot be approved. Register this barcode against the correct SKU first, then re-scan it; this blocked scan can only be Rejected.`,
+      );
     }
     if (!registeredBarcodes.some((bc) => bc.skuId === skuId)) {
       const knownFor = registeredBarcodes.map((bc) => bc.sku.code).join(', ');
-      throw new BadRequestException(`Barcode "${scan.barcodeScanned}" is already registered to ${knownFor}, not ${line.sku.code} — cannot approve this scan against a different SKU.`);
+      throw new BadRequestException(
+        `Barcode "${scan.barcodeScanned}" is already registered to ${knownFor}, not ${line.sku.code} — cannot approve this scan against a different SKU.`,
+      );
     }
     // Line override first, falling back to the receipt's own staging spot
     // (set at Match Order) — see schema.prisma's comment on
     // InboundReceipt.stagingLocationId.
     const locationId = line.stagingLocationId ?? scan.receipt.stagingLocationId;
-    if (!locationId) throw new BadRequestException('This order has no staging location set — match it to a dock/staging spot before approving scans.');
+    if (!locationId)
+      throw new BadRequestException(
+        'This order has no staging location set — match it to a dock/staging spot before approving scans.',
+      );
 
     // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]) — a
     // Supervisor approving a blocked scan on a palletized receipt still
@@ -560,21 +911,41 @@ export class InboundReceiptsService {
     // auto-accepted scan (GateEntriesService.scan()'s identical check).
     const palletId = data?.palletId;
     if (scan.receipt.requiresPalletConsolidation && !palletId) {
-      throw new BadRequestException('This order requires pallet consolidation — select a pallet to load these cases onto before approving.');
+      throw new BadRequestException(
+        'This order requires pallet consolidation — select a pallet to load these cases onto before approving.',
+      );
     }
 
-    const receivedDate = await this.putawayTasks.resolveReceivedDate(this.prisma, scan.receiptId);
+    const receivedDate = await this.putawayTasks.resolveReceivedDate(
+      this.prisma,
+      scan.receiptId,
+    );
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.inboundReceiptScan.update({
         where: { id: scanId },
-        data: { status: 'APPROVED', skuId, receiptLineId, quantity, reviewedById: user.userId, reviewedAt: new Date() },
+        data: {
+          status: 'APPROVED',
+          skuId,
+          receiptLineId,
+          quantity,
+          reviewedById: user.userId,
+          reviewedAt: new Date(),
+        },
         include: SCAN_INCLUDE,
       });
-      await tx.inboundReceiptLine.update({ where: { id: receiptLineId }, data: { receivedQty: { increment: quantity } } });
+      await tx.inboundReceiptLine.update({
+        where: { id: receiptLineId },
+        data: { receivedQty: { increment: quantity } },
+      });
 
       const palletLoadId = scan.receipt.requiresPalletConsolidation
-        ? await this.pallets.resolveLoadForScan(tx, { warehouseId: scan.receipt.warehouseId, skuId, palletId, receiptLineId })
+        ? await this.pallets.resolveLoadForScan(tx, {
+            warehouseId: scan.receipt.warehouseId,
+            skuId,
+            palletId,
+            receiptLineId,
+          })
         : undefined;
 
       await tx.stockMovement.create({
@@ -614,12 +985,17 @@ export class InboundReceiptsService {
 
   // Discards a blocked scan as a genuine mistake (mis-scan, duplicate) — no
   // stock impact, stays in the log for audit rather than being deleted.
-  async rejectScan(scanId: string, user: any) {
+  async rejectScan(scanId: string, user: AuthUser) {
     const scan = await this.assertScanAccess(scanId, user);
-    if (scan.status !== 'BLOCKED') throw new BadRequestException('Only a blocked scan can be rejected.');
+    if (scan.status !== 'BLOCKED')
+      throw new BadRequestException('Only a blocked scan can be rejected.');
     return this.prisma.inboundReceiptScan.update({
       where: { id: scanId },
-      data: { status: 'REJECTED', reviewedById: user.userId, reviewedAt: new Date() },
+      data: {
+        status: 'REJECTED',
+        reviewedById: user.userId,
+        reviewedAt: new Date(),
+      },
       include: SCAN_INCLUDE,
     });
   }

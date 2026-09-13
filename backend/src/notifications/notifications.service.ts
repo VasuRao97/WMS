@@ -1,9 +1,14 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailAdapter } from './channels/email.adapter';
 import { SmsAdapter } from './channels/sms.adapter';
 import { WhatsappAdapter } from './channels/whatsapp.adapter';
 import { NotificationChannelAdapter } from './channels/notification-channel.interface';
+import { type AuthUser } from '../common/tenant.util';
 
 // The send + audit-trail layer (2026-08-27) — every adapter is currently a
 // stub (see channels/), so "sending" today just means logging what would go
@@ -49,7 +54,10 @@ export class NotificationsService {
     channel: string;
     message: string;
   }) {
-    const recipient = await this.prisma.user.findUnique({ where: { id: params.recipientUserId }, select: { email: true, phone: true } });
+    const recipient = await this.prisma.user.findUnique({
+      where: { id: params.recipientUserId },
+      select: { email: true, phone: true },
+    });
     const log = await this.prisma.notificationLog.create({
       data: {
         companyId: params.companyId,
@@ -64,7 +72,10 @@ export class NotificationsService {
       },
     });
 
-    const result = await this.adapterFor(params.channel).send({ email: recipient?.email || '', phone: recipient?.phone }, params.message);
+    const result = await this.adapterFor(params.channel).send(
+      { email: recipient?.email || '', phone: recipient?.phone },
+      params.message,
+    );
 
     return this.prisma.notificationLog.update({
       where: { id: log.id },
@@ -81,19 +92,27 @@ export class NotificationsService {
   // "acknowledge on someone's behalf" surface, same minimal-permission
   // shape as everywhere else in this codebase. Idempotent: acknowledging an
   // already-acknowledged one just returns it unchanged rather than erroring.
-  async acknowledge(id: string, user: any) {
+  async acknowledge(id: string, user: AuthUser) {
     const log = await this.prisma.notificationLog.findUnique({ where: { id } });
     if (!log) throw new NotFoundException('Notification not found.');
     if (log.recipientUserId !== user.userId) {
-      throw new ForbiddenException('You can only acknowledge your own notifications.');
+      throw new ForbiddenException(
+        'You can only acknowledge your own notifications.',
+      );
     }
     if (log.acknowledgedAt) return log;
-    return this.prisma.notificationLog.update({ where: { id }, data: { acknowledgedAt: new Date() } });
+    return this.prisma.notificationLog.update({
+      where: { id },
+      data: { acknowledgedAt: new Date() },
+    });
   }
 
-  async listMine(user: any, unacknowledgedOnly?: boolean) {
+  async listMine(user: AuthUser, unacknowledgedOnly?: boolean) {
     return this.prisma.notificationLog.findMany({
-      where: { recipientUserId: user.userId, ...(unacknowledgedOnly ? { acknowledgedAt: null } : {}) },
+      where: {
+        recipientUserId: user.userId,
+        ...(unacknowledgedOnly ? { acknowledgedAt: null } : {}),
+      },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });

@@ -10,6 +10,8 @@ export class VehicleTypesService {
   constructor(private prisma: PrismaService) {}
 
   findAll() {
-    return this.prisma.vehicleType.findMany({ orderBy: [{ segment: 'asc' }, { maxTonnage: 'asc' }] });
+    return this.prisma.vehicleType.findMany({
+      orderBy: [{ segment: 'asc' }, { maxTonnage: 'asc' }],
+    });
   }
 }

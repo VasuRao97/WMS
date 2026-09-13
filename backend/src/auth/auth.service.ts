@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,18 +21,34 @@ export class AuthService {
     email: string;
     password: string;
   }) {
-    if (!data.companyName || !data.companyCode || !data.adminName || !data.email || !data.password) {
-      throw new BadRequestException('companyName, companyCode, adminName, email, and password are all required.');
+    if (
+      !data.companyName ||
+      !data.companyCode ||
+      !data.adminName ||
+      !data.email ||
+      !data.password
+    ) {
+      throw new BadRequestException(
+        'companyName, companyCode, adminName, email, and password are all required.',
+      );
     }
 
-    const existingCompany = await this.prisma.company.findUnique({ where: { code: data.companyCode } });
+    const existingCompany = await this.prisma.company.findUnique({
+      where: { code: data.companyCode },
+    });
     if (existingCompany) {
-      throw new BadRequestException(`Company code "${data.companyCode}" is already taken.`);
+      throw new BadRequestException(
+        `Company code "${data.companyCode}" is already taken.`,
+      );
     }
 
-    const existingUser = await this.prisma.user.findUnique({ where: { email: data.email } });
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: data.email },
+    });
     if (existingUser) {
-      throw new BadRequestException(`Email "${data.email}" is already registered.`);
+      throw new BadRequestException(
+        `Email "${data.email}" is already registered.`,
+      );
     }
 
     const passwordHash = await bcrypt.hash(data.password, 10);
@@ -51,7 +71,12 @@ export class AuthService {
 
     const adminUser = company.users[0];
     await this.recordLogin(adminUser.id);
-    return this.buildAuthResponse(adminUser.id, adminUser.email, adminUser.role, company.id);
+    return this.buildAuthResponse(
+      adminUser.id,
+      adminUser.email,
+      adminUser.role,
+      company.id,
+    );
   }
 
   async login(email: string, password: string) {
@@ -66,7 +91,12 @@ export class AuthService {
     }
 
     await this.recordLogin(user.id);
-    return this.buildAuthResponse(user.id, user.email, user.role, user.companyId);
+    return this.buildAuthResponse(
+      user.id,
+      user.email,
+      user.role,
+      user.companyId,
+    );
   }
 
   // Append-only login ledger (LoginEvent, mirrors StockMovement's "never
@@ -79,11 +109,19 @@ export class AuthService {
   private async recordLogin(userId: string) {
     await this.prisma.$transaction([
       this.prisma.loginEvent.create({ data: { userId } }),
-      this.prisma.user.update({ where: { id: userId }, data: { lastLoginAt: new Date() } }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { lastLoginAt: new Date() },
+      }),
     ]);
   }
 
-  private buildAuthResponse(userId: string, email: string, role: string, companyId: string | null) {
+  private buildAuthResponse(
+    userId: string,
+    email: string,
+    role: string,
+    companyId: string | null,
+  ) {
     const payload = { sub: userId, email, role, companyId };
     const token = this.jwtService.sign(payload);
     return { accessToken: token, user: { id: userId, email, role, companyId } };

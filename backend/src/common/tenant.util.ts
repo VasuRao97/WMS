@@ -1,11 +1,36 @@
 import { ForbiddenException } from '@nestjs/common';
+import { Role } from '@prisma/client';
+
+// The authenticated request-scoped user shape every controller/service in
+// this app receives via `@CurrentUser()` (current-user.decorator.ts, sourced
+// from JwtStrategy.validate()'s own returned object) — the JWT payload's
+// four fields, NOT the full Prisma `User` row (no `name`/`phone`/etc. here).
+// Centralized here since `tenant.util.ts` is already the one file every
+// module imports role/scoping helpers from (see CLAUDE.md's "no DTO layer"
+// note — this replaces the ~330 individual `user: any` parameters that used
+// to carry this shape untyped, without introducing a request-body DTO layer,
+// which stays deliberately out of scope).
+export interface AuthUser {
+  userId: string;
+  email: string;
+  role: Role;
+  companyId: string | null;
+}
 
 // Tenant-scoping filter shared by every service's findAll/removeAll-style
 // queries: SUPER_ADMIN sees every company's records, everyone else is scoped
 // to their own companyId. See CLAUDE.md's multi-tenancy section — this is the
 // documented convention, don't retype the ternary inline per call site.
-export function companyFilter(user: any) {
-  return user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId };
+// Return type is deliberately `{ companyId?: string }`, not
+// `AuthUser['companyId']` (`string | null`) — every real, non-SUPER_ADMIN
+// user always has a real companyId (SUPER_ADMIN, the only role that can
+// carry `null`, is fully handled by the branch above and never reaches
+// here), and Prisma's generated `WhereInput` types for a required
+// `companyId` FK column only ever accept `string | StringFilter |
+// undefined`, never a literal `null`. Spreading `{ companyId: null }`
+// wouldn't compile at any of this function's ~25 call sites otherwise.
+export function companyFilter(user: AuthUser): { companyId?: string } {
+  return user.role === 'SUPER_ADMIN' ? {} : { companyId: user.companyId! };
 }
 
 // Role/access conventions for master data (Warehouse, Customer, SKU, User) —
@@ -16,7 +41,11 @@ export function companyFilter(user: any) {
 //   - SKU stays unscoped (shared catalog, every readable role sees it all);
 //     Warehouse/Customer/User are scoped to assignedWarehouses for MANAGER/
 //     SUPERVISOR (privacy: a TN01 person shouldn't see TN02's data).
-export const MASTER_DATA_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
+export const MASTER_DATA_READ_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+];
 export const MASTER_DATA_WRITE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
 // SECURITY_SUPERVISOR (2026-08-27) is included here even though it's
 // excluded from MASTER_DATA_READ_ROLES — this constant is also read by
@@ -25,7 +54,11 @@ export const MASTER_DATA_WRITE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
 // OPERATOR accounts under them). Harmless for Warehouse/Customer/Location's
 // own services, which never reach this scoping check for that role anyway
 // since their controllers block it at MASTER_DATA_READ_ROLES first.
-export const WAREHOUSE_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR'];
+export const WAREHOUSE_SCOPED_ROLES = [
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'SECURITY_SUPERVISOR',
+];
 
 // Yard & Gate is operational, not master data — OPERATOR needs full access
 // here (gate/security staff are exactly who logs a vehicle in/out day to
@@ -41,9 +74,26 @@ export const WAREHOUSE_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISO
 // MASTER_DATA_READ_ROLES above: same "zero master-data visibility, surface
 // is a task screen" reasoning as OPERATOR, just for gate/yard duty instead
 // of a future handheld screen.
-export const GATE_YARD_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'];
-export const GATE_YARD_OPERATE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'];
-export const GATE_YARD_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'SECURITY_SUPERVISOR', 'OPERATOR'];
+export const GATE_YARD_READ_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'SECURITY_SUPERVISOR',
+  'OPERATOR',
+];
+export const GATE_YARD_OPERATE_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'SECURITY_SUPERVISOR',
+  'OPERATOR',
+];
+export const GATE_YARD_SCOPED_ROLES = [
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'SECURITY_SUPERVISOR',
+  'OPERATOR',
+];
 
 // MHE (Material Handling Equipment) master (2026-08-28, Putaway kickoff —
 // built before any Putaway task logic). Same tier as Inbound's own floor
@@ -52,8 +102,17 @@ export const GATE_YARD_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISO
 // included since they're who'll eventually execute Putaway tasks with this
 // gear. Create/edit/delete stays MASTER_DATA_WRITE_ROLES/'COMPANY_ADMIN',
 // same tier as DockDoor (a physical asset config, occasional-edit).
-export const EQUIPMENT_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
-export const EQUIPMENT_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const EQUIPMENT_READ_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
+export const EQUIPMENT_SCOPED_ROLES = [
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
 
 // Roles that keep Gate/Yard access even when a company turns ON
 // Company.restrictGateAccessToSecuritySupervisor — Manager/Admin oversight
@@ -61,7 +120,12 @@ export const EQUIPMENT_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISO
 // tier loses access. Call assertGateAccessAllowed() at the top of any
 // Gate Entry / Yard / Vehicle / Driver service method (all four now live
 // only on the Gate page, so all four respect the same toggle).
-const GATE_YARD_ALWAYS_ALLOWED_ROLES = ['SUPER_ADMIN', 'COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'SECURITY_SUPERVISOR'];
+const GATE_YARD_ALWAYS_ALLOWED_ROLES = [
+  'SUPER_ADMIN',
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'SECURITY_SUPERVISOR',
+];
 
 // Inbound receiving (2026-08-27) — see CLAUDE.md's "Inbound receiving"
 // section for the full design.
@@ -75,11 +139,29 @@ const GATE_YARD_ALWAYS_ALLOWED_ROLES = ['SUPER_ADMIN', 'COMPANY_ADMIN', 'WAREHOU
 //     up only, deliberately excluding OPERATOR — the client's own
 //     instruction: the scanning operator can never self-approve their own
 //     blocked scan.
-export const INBOUND_READ_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const INBOUND_READ_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
 export const INBOUND_ORDER_WRITE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER'];
-export const INBOUND_SCAN_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
-export const INBOUND_APPROVE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
-export const INBOUND_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const INBOUND_SCAN_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
+export const INBOUND_APPROVE_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+];
+export const INBOUND_SCOPED_ROLES = [
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
 
 // Putaway (2026-08-28) — same tier as Inbound's own floor roles, since it's
 // the direct continuation of receiving work (staging -> bin). Deliberately
@@ -90,8 +172,17 @@ export const INBOUND_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'
 // with @Roles('WAREHOUSE_MANAGER') / @Roles('COMPANY_ADMIN') at the
 // controller rather than a broader constant that would blur that
 // distinction.
-export const PUTAWAY_EXECUTE_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
-export const PUTAWAY_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR', 'OPERATOR'];
+export const PUTAWAY_EXECUTE_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
+export const PUTAWAY_SCOPED_ROLES = [
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
 // Location-override discrepancy review (2026-09-06) — Supervisor-and-up,
 // same tier as INBOUND_APPROVE_ROLES (approving a blocked scan) — an
 // Operator can complete an overridden trip and see the plain flag on their
@@ -102,14 +193,26 @@ export const PUTAWAY_SCOPED_ROLES = ['WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'
 // from INBOUND_APPROVE_ROLES on purpose even though the values are
 // identical today — same "distinct destinations that could diverge later"
 // reasoning as CAN_VIEW_INSIGHTS/CAN_VIEW_ANALYTICS.
-export const PUTAWAY_DISCREPANCY_REVIEW_ROLES = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
+export const PUTAWAY_DISCREPANCY_REVIEW_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+];
 
-export async function assertGateAccessAllowed(prisma: { company: { findUnique: Function } }, user: any): Promise<void> {
+export async function assertGateAccessAllowed(
+  prisma: { company: { findUnique: Function } },
+  user: AuthUser,
+): Promise<void> {
   if (GATE_YARD_ALWAYS_ALLOWED_ROLES.includes(user.role)) return;
   if (!user.companyId) return; // SUPER_ADMIN already handled above; nothing else should reach this with no companyId
-  const company: any = await prisma.company.findUnique({ where: { id: user.companyId }, select: { restrictGateAccessToSecuritySupervisor: true } });
+  const company: any = await prisma.company.findUnique({
+    where: { id: user.companyId },
+    select: { restrictGateAccessToSecuritySupervisor: true },
+  });
   if (company?.restrictGateAccessToSecuritySupervisor) {
-    throw new ForbiddenException('This company restricts Gate/Yard access to Security Supervisors and above.');
+    throw new ForbiddenException(
+      'This company restricts Gate/Yard access to Security Supervisors and above.',
+    );
   }
 }
 
@@ -118,7 +221,10 @@ export async function assertGateAccessAllowed(prisma: { company: { findUnique: F
  * (the JWT payload doesn't carry them, and they can change without a re-login).
  * Only meaningful for WAREHOUSE_SCOPED_ROLES — don't call this for ADMIN/SUPER_ADMIN.
  */
-export async function ownWarehouseIds(prisma: { user: { findUnique: Function } }, userId: string): Promise<string[]> {
+export async function ownWarehouseIds(
+  prisma: { user: { findUnique: Function } },
+  userId: string,
+): Promise<string[]> {
   const self: any = await prisma.user.findUnique({
     where: { id: userId },
     select: { assignedWarehouses: { select: { id: true } } },
@@ -136,7 +242,11 @@ export async function ownWarehouseIds(prisma: { user: { findUnique: Function } }
  * different 3PLs under one company) can share the exact same logic rather
  * than a third hand-rolled copy.
  */
-export async function gateYardAccessibleWarehouseIds(prisma: { user: { findUnique: Function } }, user: any): Promise<string[] | undefined> {
-  if (GATE_YARD_SCOPED_ROLES.includes(user.role)) return ownWarehouseIds(prisma, user.userId);
+export async function gateYardAccessibleWarehouseIds(
+  prisma: { user: { findUnique: Function } },
+  user: AuthUser,
+): Promise<string[] | undefined> {
+  if (GATE_YARD_SCOPED_ROLES.includes(user.role))
+    return ownWarehouseIds(prisma, user.userId);
   return undefined;
 }

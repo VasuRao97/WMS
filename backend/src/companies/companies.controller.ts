@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { MASTER_DATA_READ_ROLES } from '../common/tenant.util';
+import { type AuthUser, MASTER_DATA_READ_ROLES } from '../common/tenant.util';
 
 // Company Admin only — per the client's own framing ("for the company
 // admin, the number should be in the company setting page"). No warehouse
@@ -18,13 +18,13 @@ export class CompaniesController {
 
   @Get('settings')
   @Roles('COMPANY_ADMIN')
-  getSettings(@CurrentUser() user: any) {
+  getSettings(@CurrentUser() user: AuthUser) {
     return this.companiesService.getSettings(user);
   }
 
   @Patch('settings')
   @Roles('COMPANY_ADMIN')
-  updateSettings(@Body() body: any, @CurrentUser() user: any) {
+  updateSettings(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.companiesService.updateSettings(body, user);
   }
 
@@ -34,13 +34,13 @@ export class CompaniesController {
   // just the tier that can edit it. See CompaniesService.getLayoutSettings.
   @Get('layout-settings')
   @Roles(...MASTER_DATA_READ_ROLES)
-  getLayoutSettings(@CurrentUser() user: any) {
+  getLayoutSettings(@CurrentUser() user: AuthUser) {
     return this.companiesService.getLayoutSettings(user);
   }
 
   @Patch('settings/erp-api-key/regenerate')
   @Roles('COMPANY_ADMIN')
-  regenerateErpApiKey(@CurrentUser() user: any) {
+  regenerateErpApiKey(@CurrentUser() user: AuthUser) {
     return this.companiesService.regenerateErpApiKey(user);
   }
 }

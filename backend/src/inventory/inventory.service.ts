@@ -1,6 +1,16 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  WAREHOUSE_SCOPED_ROLES,
+} from '../common/tenant.util';
 import { displayCode } from '../common/rack-name.util';
 
 // Human-readable Excel labels for the ledger export below — Excel-only
@@ -35,9 +45,11 @@ const MOVEMENT_TYPE_LABELS: Record<string, string> = {
 export class InventoryService {
   constructor(private prisma: PrismaService) {}
 
-  private async assertWarehouseAccess(warehouseId: string, user: any) {
+  private async assertWarehouseAccess(warehouseId: string, user: AuthUser) {
     if (!warehouseId) throw new BadRequestException('warehouseId is required.');
-    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { id: warehouseId },
+    });
     if (!warehouse) throw new NotFoundException('Warehouse not found.');
     if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) {
       throw new ForbiddenException('You do not have access to this warehouse.');
@@ -48,7 +60,10 @@ export class InventoryService {
     // avoided proactively here.
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+      if (!ids.includes(warehouseId))
+        throw new ForbiddenException(
+          'You do not have access to this warehouse.',
+        );
     }
   }
 
@@ -69,7 +84,13 @@ export class InventoryService {
       },
       orderBy: { createdAt: 'asc' },
     });
-    if (movements.length === 0) return { locationById: new Map(), skuById: new Map(), classBySkuId: new Map(), balances: [] };
+    if (movements.length === 0)
+      return {
+        locationById: new Map(),
+        skuById: new Map(),
+        classBySkuId: new Map(),
+        balances: [],
+      };
 
     // balance + last-touched + a representative receivedDate + a
     // representative pallet code, per (location, sku) — accumulated in one
@@ -79,14 +100,28 @@ export class InventoryService {
     // theory receive from more than one pallet/date over its life (a
     // same-SKU top-up), and the latest one is the more useful "how old is
     // what's here now" signal than the very first.
-    type Row = { locationId: string; skuId: string; qty: number; lastTouchedAt: Date; receivedDate: Date | null; palletCode: string | null };
+    type Row = {
+      locationId: string;
+      skuId: string;
+      qty: number;
+      lastTouchedAt: Date;
+      receivedDate: Date | null;
+      palletCode: string | null;
+    };
     const byKey = new Map<string, Row>();
     for (const m of movements) {
       const key = `${m.locationId}|${m.skuId}`;
       const qty = Number(m.quantity);
       let row = byKey.get(key);
       if (!row) {
-        row = { locationId: m.locationId, skuId: m.skuId, qty: 0, lastTouchedAt: m.createdAt, receivedDate: null, palletCode: null };
+        row = {
+          locationId: m.locationId,
+          skuId: m.skuId,
+          qty: 0,
+          lastTouchedAt: m.createdAt,
+          receivedDate: null,
+          palletCode: null,
+        };
         byKey.set(key, row);
       }
       row.qty += qty;
@@ -103,11 +138,25 @@ export class InventoryService {
     const [locations, skus, warehouseClasses] = await Promise.all([
       this.prisma.location.findMany({
         where: { id: { in: locationIds } },
-        select: { id: true, code: true, storageType: true, flankNumber: true, rack: true, level: true, depth: true },
+        select: {
+          id: true,
+          code: true,
+          storageType: true,
+          flankNumber: true,
+          rack: true,
+          level: true,
+          depth: true,
+        },
       }),
       this.prisma.sku.findMany({
         where: { id: { in: skuIds } },
-        select: { id: true, code: true, description: true, abcClass: true, category: { select: { name: true } } },
+        select: {
+          id: true,
+          code: true,
+          description: true,
+          abcClass: true,
+          category: { select: { name: true } },
+        },
       }),
       // Per-warehouse COMPUTED class (Topic 1's real trailing-dispatch-derived
       // result) takes priority over the manually-set/imported Sku.abcClass —
@@ -126,7 +175,14 @@ export class InventoryService {
     return { locationById, skuById, classBySkuId, balances: positiveRows };
   }
 
-  private classesFor(sku: { abcClass: string | null }, classBySkuId: Map<string, { abcClass: string | null; fmsClass: string | null }>, skuId: string) {
+  private classesFor(
+    sku: { abcClass: string | null },
+    classBySkuId: Map<
+      string,
+      { abcClass: string | null; fmsClass: string | null }
+    >,
+    skuId: string,
+  ) {
     const computed = classBySkuId.get(skuId);
     const abcClass = (computed?.abcClass || sku.abcClass || 'C').toUpperCase();
     const fmsClass = computed?.fmsClass?.toUpperCase() || null;
@@ -136,9 +192,10 @@ export class InventoryService {
   // Line-item view — one row per (bin, SKU) currently holding real stock.
   // "SL" (serial number) is left to the frontend to number rows as
   // displayed, same as every other list page in this app.
-  async lineItems(user: any, warehouseId: string) {
+  async lineItems(user: AuthUser, warehouseId: string) {
     await this.assertWarehouseAccess(warehouseId, user);
-    const { locationById, skuById, classBySkuId, balances } = await this.loadRawRows(warehouseId);
+    const { locationById, skuById, classBySkuId, balances } =
+      await this.loadRawRows(warehouseId);
 
     const now = Date.now();
     const rows = balances
@@ -146,8 +203,14 @@ export class InventoryService {
         const location = locationById.get(r.locationId);
         const sku = skuById.get(r.skuId);
         if (!location || !sku) return null; // defensive — shouldn't happen, both were just fetched by these exact ids
-        const { abcClass, fmsClass } = this.classesFor(sku, classBySkuId!, r.skuId);
-        const agingDays = r.receivedDate ? Math.floor((now - r.receivedDate.getTime()) / 86400000) : null;
+        const { abcClass, fmsClass } = this.classesFor(
+          sku,
+          classBySkuId,
+          r.skuId,
+        );
+        const agingDays = r.receivedDate
+          ? Math.floor((now - r.receivedDate.getTime()) / 86400000)
+          : null;
         return {
           skuCode: sku.code,
           description: sku.description,
@@ -155,7 +218,7 @@ export class InventoryService {
           agingDays,
           storageType: location.storageType,
           palletCode: r.palletCode,
-          binCode: displayCode(location as any),
+          binCode: displayCode(location),
           category: sku.category?.name || null,
           lastTouchedAt: r.lastTouchedAt,
           abcClass,
@@ -167,7 +230,11 @@ export class InventoryService {
     // Deterministic default order — SKU code, then bin — same "stable
     // processing order" convention several other reports in this codebase
     // already use (e.g. Pick Face's own sortedLocations).
-    rows.sort((a, b) => a.skuCode.localeCompare(b.skuCode) || a.binCode.localeCompare(b.binCode));
+    rows.sort(
+      (a, b) =>
+        a.skuCode.localeCompare(b.skuCode) ||
+        a.binCode.localeCompare(b.binCode),
+    );
     return rows;
   }
 
@@ -177,22 +244,38 @@ export class InventoryService {
   // signal at a rollup level (worst case, not an average that could hide a
   // genuinely stale lot sitting behind newer ones) — flagged as a judgment
   // call, not explicitly confirmed in these exact words.
-  async skuSummary(user: any, warehouseId: string) {
+  async skuSummary(user: AuthUser, warehouseId: string) {
     await this.assertWarehouseAccess(warehouseId, user);
-    const { skuById, classBySkuId, balances } = await this.loadRawRows(warehouseId);
+    const { skuById, classBySkuId, balances } =
+      await this.loadRawRows(warehouseId);
 
-    type Agg = { qty: number; oldestReceivedDate: Date | null; lastTouchedAt: Date; binCount: number };
+    type Agg = {
+      qty: number;
+      oldestReceivedDate: Date | null;
+      lastTouchedAt: Date;
+      binCount: number;
+    };
     const bySku = new Map<string, Agg>();
     for (const r of balances) {
       let agg = bySku.get(r.skuId);
       if (!agg) {
-        agg = { qty: 0, oldestReceivedDate: null, lastTouchedAt: r.lastTouchedAt, binCount: 0 };
+        agg = {
+          qty: 0,
+          oldestReceivedDate: null,
+          lastTouchedAt: r.lastTouchedAt,
+          binCount: 0,
+        };
         bySku.set(r.skuId, agg);
       }
       agg.qty += r.qty;
       agg.binCount += 1;
-      if (r.receivedDate && (!agg.oldestReceivedDate || r.receivedDate < agg.oldestReceivedDate)) agg.oldestReceivedDate = r.receivedDate;
-      if (r.lastTouchedAt > agg.lastTouchedAt) agg.lastTouchedAt = r.lastTouchedAt;
+      if (
+        r.receivedDate &&
+        (!agg.oldestReceivedDate || r.receivedDate < agg.oldestReceivedDate)
+      )
+        agg.oldestReceivedDate = r.receivedDate;
+      if (r.lastTouchedAt > agg.lastTouchedAt)
+        agg.lastTouchedAt = r.lastTouchedAt;
     }
 
     const now = Date.now();
@@ -200,8 +283,14 @@ export class InventoryService {
       .map(([skuId, agg]) => {
         const sku = skuById.get(skuId);
         if (!sku) return null;
-        const { abcClass, fmsClass } = this.classesFor(sku, classBySkuId!, skuId);
-        const agingDays = agg.oldestReceivedDate ? Math.floor((now - agg.oldestReceivedDate.getTime()) / 86400000) : null;
+        const { abcClass, fmsClass } = this.classesFor(
+          sku,
+          classBySkuId,
+          skuId,
+        );
+        const agingDays = agg.oldestReceivedDate
+          ? Math.floor((now - agg.oldestReceivedDate.getTime()) / 86400000)
+          : null;
         return {
           skuCode: sku.code,
           description: sku.description,
@@ -233,13 +322,20 @@ export class InventoryService {
   // AnalyticsService.operatorProductivity's own optional warehouseId. A
   // WAREHOUSE_SCOPED_ROLES caller (Manager/Supervisor) must always narrow to
   // one of their own warehouses, same as everywhere else in this codebase.
-  private async ledgerWhere(user: any, warehouseId?: string, from?: string, to?: string) {
+  private async ledgerWhere(
+    user: AuthUser,
+    warehouseId?: string,
+    from?: string,
+    to?: string,
+  ) {
     if (warehouseId) {
       await this.assertWarehouseAccess(warehouseId, user);
     } else if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       throw new BadRequestException('Select a warehouse.');
     }
-    const where: any = warehouseId ? { warehouseId } : { warehouse: companyFilter(user) };
+    const where: any = warehouseId
+      ? { warehouseId }
+      : { warehouse: companyFilter(user) };
     // Date range filters on createdAt — the actual transaction timestamp,
     // not receivedDate (which is carried forward from the original receipt
     // and doesn't move with the ledger). "to" is inclusive of the whole day,
@@ -268,7 +364,12 @@ export class InventoryService {
   // Shared by the JSON (Ledger tab) and Excel (export) paths below — one
   // query, formatted two different ways, same "derive once" convention
   // loadRawRows() above already follows.
-  private async loadLedgerRows(user: any, warehouseId?: string, from?: string, to?: string) {
+  private async loadLedgerRows(
+    user: AuthUser,
+    warehouseId?: string,
+    from?: string,
+    to?: string,
+  ) {
     const where = await this.ledgerWhere(user, warehouseId, from, to);
     const movements = await this.prisma.stockMovement.findMany({
       where,
@@ -281,7 +382,16 @@ export class InventoryService {
         notes: true,
         receivedDate: true,
         warehouse: { select: { code: true } },
-        location: { select: { code: true, storageType: true, flankNumber: true, rack: true, level: true, depth: true } },
+        location: {
+          select: {
+            code: true,
+            storageType: true,
+            flankNumber: true,
+            rack: true,
+            level: true,
+            depth: true,
+          },
+        },
         sku: { select: { code: true, description: true } },
         createdBy: { select: { name: true } },
         palletLoad: { select: { pallet: { select: { code: true } } } },
@@ -298,11 +408,11 @@ export class InventoryService {
       if (!(m.movementType in InventoryService.PAIRED_PARTNER_TYPE)) continue;
       const key = `${m.referenceType}|${m.referenceId}`;
       if (!binByReference.has(key)) binByReference.set(key, new Map());
-      binByReference.get(key)!.set(m.movementType, displayCode(m.location as any));
+      binByReference.get(key)!.set(m.movementType, displayCode(m.location));
     }
 
     return movements.map((m) => {
-      const ownBinCode = displayCode(m.location as any);
+      const ownBinCode = displayCode(m.location);
       const partnerType = InventoryService.PAIRED_PARTNER_TYPE[m.movementType];
       let fromLocation: string | null = null;
       let toLocation: string | null = null;
@@ -311,7 +421,10 @@ export class InventoryService {
         // bin IS the "from"; its partner IN leg's bin is the "to," and vice
         // versa), confirmed directly rather than collapsing the pair into
         // one row (keeps the "raw StockMovement row" grain unchanged).
-        const partnerBinCode = binByReference.get(`${m.referenceType}|${m.referenceId}`)?.get(partnerType) ?? null;
+        const partnerBinCode =
+          binByReference
+            .get(`${m.referenceType}|${m.referenceId}`)
+            ?.get(partnerType) ?? null;
         const isOutLeg = m.movementType.endsWith('_OUT');
         fromLocation = isOutLeg ? ownBinCode : partnerBinCode;
         toLocation = isOutLeg ? partnerBinCode : ownBinCode;
@@ -350,7 +463,12 @@ export class InventoryService {
   // JSON for the frontend's Ledger tab — raw movementType/etc left
   // unformatted, same convention as lineItems/skuSummary above (the
   // frontend applies its own display-side label maps).
-  async ledger(user: any, warehouseId?: string, from?: string, to?: string) {
+  async ledger(
+    user: AuthUser,
+    warehouseId?: string,
+    from?: string,
+    to?: string,
+  ) {
     return this.loadLedgerRows(user, warehouseId, from, to);
   }
 
@@ -358,15 +476,20 @@ export class InventoryService {
   // labels baked in server-side, same convention as
   // GateEntriesService.exportRows (the file leaves the app, so it can't
   // depend on the frontend's own label map).
-  async exportLedgerRows(user: any, warehouseId?: string, from?: string, to?: string) {
+  async exportLedgerRows(
+    user: AuthUser,
+    warehouseId?: string,
+    from?: string,
+    to?: string,
+  ) {
     const rows = await this.loadLedgerRows(user, warehouseId, from, to);
     return rows.map((r) => ({
       'Date/Time': r.createdAt.toISOString(),
-      'Warehouse': r.warehouseCode,
+      Warehouse: r.warehouseCode,
       'SKU Code': r.skuCode,
       'Material Desc': r.skuDescription,
       'Movement Type': MOVEMENT_TYPE_LABELS[r.movementType] || r.movementType,
-      'Quantity': r.quantity,
+      Quantity: r.quantity,
       'From Location': r.fromLocation || '',
       'To Location': r.toLocation || '',
       'Pallet No': r.palletCode || '',
@@ -374,7 +497,7 @@ export class InventoryService {
       'Reference ID': r.referenceId,
       'Received Date': r.receivedDate ? r.receivedDate.toISOString() : '',
       'Created By': r.createdByName,
-      'Notes': r.notes || '',
+      Notes: r.notes || '',
     }));
   }
 }

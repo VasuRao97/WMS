@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DriverChannelAdapter, DriverSendResult } from './driver-channel-adapter.interface';
+import {
+  DriverChannelAdapter,
+  DriverSendResult,
+} from './driver-channel-adapter.interface';
 
 // Stub only — no real SMS provider wired up yet (2026-08-27), same "logs
 // what would be sent" pattern as notifications/channels/EmailAdapter. Also

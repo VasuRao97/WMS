@@ -9,5 +9,8 @@
 // (the ampersand survived, flanked by its own two underscores) instead of
 // "DAMAGE_SCRAP", failing validation against the enum's real value.
 export function normalizeCode(value: any): string {
-  return String(value).trim().toUpperCase().replace(/[\s/&-]+/g, '_');
+  return String(value)
+    .trim()
+    .toUpperCase()
+    .replace(/[\s/&-]+/g, '_');
 }

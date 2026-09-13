@@ -5,7 +5,9 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 @Controller('product-categories')
 @UseGuards(JwtAuthGuard)
 export class ProductCategoriesController {
-  constructor(private readonly productCategoriesService: ProductCategoriesService) {}
+  constructor(
+    private readonly productCategoriesService: ProductCategoriesService,
+  ) {}
 
   @Get()
   findAll() {

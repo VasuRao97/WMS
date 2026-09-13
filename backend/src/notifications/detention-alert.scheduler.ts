@@ -30,22 +30,37 @@ export class DetentionAlertScheduler {
   async checkDetention() {
     const companies = await this.prisma.company.findMany({
       where: { detentionAlertHours: { not: null } },
-      select: { id: true, detentionAlertHours: true, detentionEscalationHours: true },
+      select: {
+        id: true,
+        detentionAlertHours: true,
+        detentionEscalationHours: true,
+      },
     });
 
     for (const company of companies) {
       try {
         await this.checkCompany(company);
       } catch (err) {
-        this.logger.error(`Detention check failed for company ${company.id}: ${err instanceof Error ? err.message : err}`);
+        this.logger.error(
+          `Detention check failed for company ${company.id}: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
   }
 
-  private async checkCompany(company: { id: string; detentionAlertHours: number | null; detentionEscalationHours: number | null }) {
+  private async checkCompany(company: {
+    id: string;
+    detentionAlertHours: number | null;
+    detentionEscalationHours: number | null;
+  }) {
     const openEntries = await this.prisma.vehicleGateEntry.findMany({
       where: { gateOutAt: null, warehouse: { companyId: company.id } },
-      select: { id: true, warehouseId: true, gateInAt: true, vehicle: { select: { vehicleNumber: true } } },
+      select: {
+        id: true,
+        warehouseId: true,
+        gateInAt: true,
+        vehicle: { select: { vehicleNumber: true } },
+      },
     });
 
     const now = Date.now();
@@ -56,7 +71,11 @@ export class DetentionAlertScheduler {
       if (hoursOpen < alertHours) continue;
 
       const existingAlerts = await this.prisma.notificationLog.findMany({
-        where: { referenceType: 'VehicleGateEntry', referenceId: entry.id, eventType: 'DETENTION_ALERT' },
+        where: {
+          referenceType: 'VehicleGateEntry',
+          referenceId: entry.id,
+          eventType: 'DETENTION_ALERT',
+        },
       });
 
       if (existingAlerts.length === 0) {
@@ -65,7 +84,9 @@ export class DetentionAlertScheduler {
       }
 
       if (company.detentionEscalationHours == null) continue;
-      const alreadyHandled = existingAlerts.some((a) => a.acknowledgedAt || a.escalatedAt);
+      const alreadyHandled = existingAlerts.some(
+        (a) => a.acknowledgedAt || a.escalatedAt,
+      );
       if (alreadyHandled) continue;
 
       const oldest = existingAlerts.reduce((min, a) => {
@@ -74,14 +95,30 @@ export class DetentionAlertScheduler {
       }, existingAlerts[0].sentAt ?? existingAlerts[0].createdAt);
       const hoursSinceAlert = (now - oldest.getTime()) / (1000 * 60 * 60);
       if (hoursSinceAlert >= company.detentionEscalationHours) {
-        await this.escalate(company.id, entry, existingAlerts.map((a) => a.id));
+        await this.escalate(
+          company.id,
+          entry,
+          existingAlerts.map((a) => a.id),
+        );
       }
     }
   }
 
-  private async fireAlert(companyId: string, entry: { id: string; warehouseId: string; vehicle: { vehicleNumber: string } }) {
+  private async fireAlert(
+    companyId: string,
+    entry: {
+      id: string;
+      warehouseId: string;
+      vehicle: { vehicleNumber: string };
+    },
+  ) {
     const managers = await this.prisma.user.findMany({
-      where: { companyId, role: 'WAREHOUSE_MANAGER', isActive: true, assignedWarehouses: { some: { id: entry.warehouseId } } },
+      where: {
+        companyId,
+        role: 'WAREHOUSE_MANAGER',
+        isActive: true,
+        assignedWarehouses: { some: { id: entry.warehouseId } },
+      },
       select: { id: true },
     });
     if (managers.length === 0) return; // known gap — see class comment
@@ -104,7 +141,15 @@ export class DetentionAlertScheduler {
     }
   }
 
-  private async escalate(companyId: string, entry: { id: string; warehouseId: string; vehicle: { vehicleNumber: string } }, existingAlertIds: string[]) {
+  private async escalate(
+    companyId: string,
+    entry: {
+      id: string;
+      warehouseId: string;
+      vehicle: { vehicleNumber: string };
+    },
+    existingAlertIds: string[],
+  ) {
     const admins = await this.prisma.user.findMany({
       where: { companyId, role: 'COMPANY_ADMIN', isActive: true },
       select: { id: true },

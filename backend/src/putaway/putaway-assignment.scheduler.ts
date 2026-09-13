@@ -30,26 +30,43 @@ export class PutawayAssignmentScheduler {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async checkAssignments() {
-    const companies = await this.prisma.company.findMany({ select: { id: true, putawayAssignmentGraceMinutes: true } });
+    const companies = await this.prisma.company.findMany({
+      select: { id: true, putawayAssignmentGraceMinutes: true },
+    });
     for (const company of companies) {
       try {
         await this.checkCompany(company);
       } catch (err) {
-        this.logger.error(`Putaway assignment check failed for company ${company.id}: ${err instanceof Error ? err.message : err}`);
+        this.logger.error(
+          `Putaway assignment check failed for company ${company.id}: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
   }
 
-  private async checkCompany(company: { id: string; putawayAssignmentGraceMinutes: number }) {
-    const warehouses = await this.prisma.warehouse.findMany({ where: { companyId: company.id }, select: { id: true } });
+  private async checkCompany(company: {
+    id: string;
+    putawayAssignmentGraceMinutes: number;
+  }) {
+    const warehouses = await this.prisma.warehouse.findMany({
+      where: { companyId: company.id },
+      select: { id: true },
+    });
     for (const warehouse of warehouses) {
       await this.checkWarehouse(company, warehouse.id);
     }
   }
 
-  private async checkWarehouse(company: { id: string; putawayAssignmentGraceMinutes: number }, warehouseId: string) {
+  private async checkWarehouse(
+    company: { id: string; putawayAssignmentGraceMinutes: number },
+    warehouseId: string,
+  ) {
     const pendingExists = await this.prisma.putawayTask.findFirst({
-      where: { status: 'PENDING', openForAccumulation: false, receiptLine: { receipt: { warehouseId } } },
+      where: {
+        status: 'PENDING',
+        openForAccumulation: false,
+        receiptLine: { receipt: { warehouseId } },
+      },
       select: { id: true },
     });
     if (!pendingExists) return;
@@ -61,7 +78,12 @@ export class PutawayAssignmentScheduler {
     if (minutesFree < company.putawayAssignmentGraceMinutes) return;
 
     const existingAlert = await this.prisma.notificationLog.findFirst({
-      where: { eventType: 'PUTAWAY_OPERATOR_MISSED_TURN', referenceType: 'User', referenceId: top.id, createdAt: { gte: top.effectiveRankTime } },
+      where: {
+        eventType: 'PUTAWAY_OPERATOR_MISSED_TURN',
+        referenceType: 'User',
+        referenceId: top.id,
+        createdAt: { gte: top.effectiveRankTime },
+      },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -70,15 +92,27 @@ export class PutawayAssignmentScheduler {
       return;
     }
     if (existingAlert.escalatedAt) return; // already escalated for this exact miss window — don't repeat
-    const minutesSinceAlert = (Date.now() - (existingAlert.sentAt ?? existingAlert.createdAt).getTime()) / 60000;
+    const minutesSinceAlert =
+      (Date.now() -
+        (existingAlert.sentAt ?? existingAlert.createdAt).getTime()) /
+      60000;
     if (minutesSinceAlert >= company.putawayAssignmentGraceMinutes) {
       await this.escalate(company.id, warehouseId, top, existingAlert.id);
     }
   }
 
-  private async fireAlert(companyId: string, warehouseId: string, top: { id: string; name: string }) {
+  private async fireAlert(
+    companyId: string,
+    warehouseId: string,
+    top: { id: string; name: string },
+  ) {
     const supervisors = await this.prisma.user.findMany({
-      where: { companyId, role: 'WAREHOUSE_SUPERVISOR', isActive: true, assignedWarehouses: { some: { id: warehouseId } } },
+      where: {
+        companyId,
+        role: 'WAREHOUSE_SUPERVISOR',
+        isActive: true,
+        assignedWarehouses: { some: { id: warehouseId } },
+      },
       select: { id: true },
     });
     if (supervisors.length === 0) return; // known gap, same shape as DetentionAlertScheduler's — nobody to alert
@@ -101,9 +135,19 @@ export class PutawayAssignmentScheduler {
     }
   }
 
-  private async escalate(companyId: string, warehouseId: string, top: { id: string; name: string }, existingAlertId: string) {
+  private async escalate(
+    companyId: string,
+    warehouseId: string,
+    top: { id: string; name: string },
+    existingAlertId: string,
+  ) {
     const managers = await this.prisma.user.findMany({
-      where: { companyId, role: 'WAREHOUSE_MANAGER', isActive: true, assignedWarehouses: { some: { id: warehouseId } } },
+      where: {
+        companyId,
+        role: 'WAREHOUSE_MANAGER',
+        isActive: true,
+        assignedWarehouses: { some: { id: warehouseId } },
+      },
       select: { id: true },
     });
     if (managers.length === 0) return;
@@ -125,6 +169,9 @@ export class PutawayAssignmentScheduler {
       }
     }
 
-    await this.prisma.notificationLog.update({ where: { id: existingAlertId }, data: { escalatedAt: new Date(), escalatedToId: managers[0].id } });
+    await this.prisma.notificationLog.update({
+      where: { id: existingAlertId },
+      data: { escalatedAt: new Date(), escalatedToId: managers[0].id },
+    });
   }
 }

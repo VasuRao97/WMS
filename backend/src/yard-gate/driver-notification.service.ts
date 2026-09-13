@@ -18,7 +18,11 @@ export class DriverNotificationService {
     private voiceCallAdapter: DriverVoiceCallAdapter,
   ) {}
 
-  private buildMessage(stage: 'INITIAL' | 'FINAL_WARNING', dockNumber: string, vehicleNumber: string): string {
+  private buildMessage(
+    stage: 'INITIAL' | 'FINAL_WARNING',
+    dockNumber: string,
+    vehicleNumber: string,
+  ): string {
     if (stage === 'INITIAL') {
       return `Dock ${dockNumber} is assigned to your vehicle ${vehicleNumber}. Please keep ready for loading in the next 15 minutes, or the slot will be given to the next driver.`;
     }
@@ -35,13 +39,19 @@ export class DriverNotificationService {
     driverPhone: string | null;
     stage: 'INITIAL' | 'FINAL_WARNING';
   }) {
-    const message = this.buildMessage(params.stage, params.dockNumber, params.vehicleNumber);
+    const message = this.buildMessage(
+      params.stage,
+      params.dockNumber,
+      params.vehicleNumber,
+    );
 
     if (!params.driverPhone) {
       // No phone on file for this driver — still log it as a FAILED attempt
       // per channel, same "record the gap, don't just silently skip it"
       // instinct as the SMS/WhatsApp adapters' own no-phone handling.
-      this.logger.warn(`Cannot notify driver for gate entry ${params.gateEntryId} — no phone number on file.`);
+      this.logger.warn(
+        `Cannot notify driver for gate entry ${params.gateEntryId} — no phone number on file.`,
+      );
       for (const channel of ['SMS', 'VOICE_CALL'] as const) {
         await this.prisma.driverDockNotification.create({
           data: {

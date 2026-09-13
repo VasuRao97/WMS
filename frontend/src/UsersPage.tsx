@@ -54,7 +54,17 @@ function authHeaders() {
   return { Authorization: `Bearer ${token}` };
 }
 
-function currentUser(): any {
+// Shape of the `user` object /auth/login and /auth/register store into
+// localStorage (see backend/src/auth/auth.service.ts's
+// `{ id, email, role, companyId }`) — not the full User row.
+interface CurrentUser {
+  id: string;
+  email: string;
+  role: string;
+  companyId: string | null;
+}
+
+function currentUser(): CurrentUser | null {
   return localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null;
 }
 
@@ -75,7 +85,7 @@ const emptyForm = {
 
 function UsersPage() {
   const me = currentUser();
-  const creatableRoles = CREATABLE_ROLES[me?.role] || [];
+  const creatableRoles = CREATABLE_ROLES[me?.role ?? ''] || [];
 
   const [users, setUsers] = useState<UserRow[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseRef[]>([]);

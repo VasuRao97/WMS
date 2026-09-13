@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
 import { DriversService } from './drivers.service';
@@ -6,7 +17,11 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { GATE_YARD_OPERATE_ROLES, GATE_YARD_READ_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  GATE_YARD_OPERATE_ROLES,
+  GATE_YARD_READ_ROLES,
+} from '../common/tenant.util';
 
 @Controller('drivers')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -15,26 +30,30 @@ export class DriversController {
 
   @Post()
   @Roles(...GATE_YARD_OPERATE_ROLES)
-  create(@Body() body: any, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.driversService.create(body, user);
   }
 
   @Get()
   @Roles(...GATE_YARD_READ_ROLES)
-  findAll(@CurrentUser() user: any, @Query('warehouseId') warehouseId?: string) {
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query('warehouseId') warehouseId?: string,
+  ) {
     return this.driversService.findAll(user, warehouseId);
   }
 
   @Get('export')
   @Roles(...GATE_YARD_READ_ROLES)
-  async export(@Res() res: Response, @CurrentUser() user: any) {
+  async export(@Res() res: Response, @CurrentUser() user: AuthUser) {
     const rows = await this.driversService.exportRows(user);
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Driver Master');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     res.set({
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': 'attachment; filename="Driver_Master_Export.xlsx"',
     });
     res.send(buffer);
@@ -42,31 +61,35 @@ export class DriversController {
 
   @Patch(':id')
   @Roles(...GATE_YARD_OPERATE_ROLES)
-  update(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+  update(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.driversService.update(id, body, user);
   }
 
   @Patch(':id/deactivate')
   @Roles(...GATE_YARD_OPERATE_ROLES)
-  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  deactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.driversService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
   @Roles(...GATE_YARD_OPERATE_ROLES)
-  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  reactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.driversService.reactivate(id, user);
   }
 
   @Delete('all')
   @Roles('COMPANY_ADMIN')
-  removeAll(@CurrentUser() user: any) {
+  removeAll(@CurrentUser() user: AuthUser) {
     return this.driversService.removeAll(user);
   }
 
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
+  remove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.driversService.remove(id, user);
   }
 }

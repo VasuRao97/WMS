@@ -40,7 +40,12 @@ export class DockAssignmentScheduler {
         dockAssignedAt: true,
         vehicle: { select: { vehicleNumber: true } },
         driver: { select: { phone: true } },
-        driverDockNotifications: { where: { stage: 'FINAL_WARNING' }, select: { createdAt: true }, orderBy: { createdAt: 'desc' }, take: 1 },
+        driverDockNotifications: {
+          where: { stage: 'FINAL_WARNING' },
+          select: { createdAt: true },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
       },
     });
 
@@ -49,7 +54,8 @@ export class DockAssignmentScheduler {
       // previous assignment cycle (the dock was reassigned since) — doesn't
       // count as "already warned" for this one.
       const lastFinalWarning = entry.driverDockNotifications[0]?.createdAt;
-      if (lastFinalWarning && lastFinalWarning >= entry.dockAssignedAt!) continue;
+      if (lastFinalWarning && lastFinalWarning >= entry.dockAssignedAt!)
+        continue;
 
       try {
         await this.driverNotifications.sendDockAssignment({
@@ -60,7 +66,9 @@ export class DockAssignmentScheduler {
           stage: 'FINAL_WARNING',
         });
       } catch (err) {
-        this.logger.error(`Final warning failed for gate entry ${entry.id}: ${err instanceof Error ? err.message : err}`);
+        this.logger.error(
+          `Final warning failed for gate entry ${entry.id}: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
   }

@@ -17,8 +17,26 @@
 // cleanup, not a data migration.
 export const RACK_STORAGE_TYPES = ['SPR', 'DRIVE_IN'];
 
-export function buildRackName(loc: { storageType: string; flankNumber: number | null; rack: string | null; level: string | null; depth: number | null } | null | undefined): string | null {
-  if (!loc || !RACK_STORAGE_TYPES.includes(loc.storageType) || loc.flankNumber == null || !loc.rack || !loc.level) return null;
+export function buildRackName(
+  loc:
+    | {
+        storageType: string;
+        flankNumber: number | null;
+        rack: string | null;
+        level: string | null;
+        depth: number | null;
+      }
+    | null
+    | undefined,
+): string | null {
+  if (
+    !loc ||
+    !RACK_STORAGE_TYPES.includes(loc.storageType) ||
+    loc.flankNumber == null ||
+    !loc.rack ||
+    !loc.level
+  )
+    return null;
   const parts = [`R${loc.flankNumber}`, loc.rack, `L${loc.level}`];
   if (loc.depth != null) parts.push(`D${loc.depth}`);
   return parts.join('-');
@@ -26,7 +44,14 @@ export function buildRackName(loc: { storageType: string; flankNumber: number | 
 
 // The label content used for barcodes/scanning display — Rack Name when
 // buildable, else the raw code (Ground/Stillage, or a legacy row).
-export function displayCode(loc: { code: string; storageType: string; flankNumber: number | null; rack: string | null; level: string | null; depth: number | null }): string {
+export function displayCode(loc: {
+  code: string;
+  storageType: string;
+  flankNumber: number | null;
+  rack: string | null;
+  level: string | null;
+  depth: number | null;
+}): string {
   return buildRackName(loc) ?? loc.code;
 }
 
@@ -51,8 +76,19 @@ export function displayCode(loc: { code: string; storageType: string; flankNumbe
 // addressable (a Reach/Stacker truck accesses any level from the aisle
 // without disturbing the others), so they keep Level in the key exactly
 // as before this date.
-export function laneKeyOf(loc: { id: string; storageType: string; aisle: string | null; rack: string | null; level: string | null; flankNumber: number | null }): string {
-  if (!RACK_STORAGE_TYPES.includes(loc.storageType) || !loc.aisle || !loc.rack) return `single|${loc.id}`;
-  if (loc.storageType === 'DRIVE_IN') return `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}`;
-  return loc.level ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}|${loc.level}` : `single|${loc.id}`;
+export function laneKeyOf(loc: {
+  id: string;
+  storageType: string;
+  aisle: string | null;
+  rack: string | null;
+  level: string | null;
+  flankNumber: number | null;
+}): string {
+  if (!RACK_STORAGE_TYPES.includes(loc.storageType) || !loc.aisle || !loc.rack)
+    return `single|${loc.id}`;
+  if (loc.storageType === 'DRIVE_IN')
+    return `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}`;
+  return loc.level
+    ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.rack}|${loc.level}`
+    : `single|${loc.id}`;
 }

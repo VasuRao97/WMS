@@ -1,8 +1,16 @@
-import { Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { type AuthUser } from '../common/tenant.util';
 
 // No @Roles() on either handler — every authenticated user can see/
 // acknowledge only their OWN notifications (enforced in the service via
@@ -14,12 +22,18 @@ export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 
   @Get()
-  findMine(@CurrentUser() user: any, @Query('unacknowledgedOnly') unacknowledgedOnly?: string) {
-    return this.notificationsService.listMine(user, unacknowledgedOnly === 'true');
+  findMine(
+    @CurrentUser() user: AuthUser,
+    @Query('unacknowledgedOnly') unacknowledgedOnly?: string,
+  ) {
+    return this.notificationsService.listMine(
+      user,
+      unacknowledgedOnly === 'true',
+    );
   }
 
   @Patch(':id/acknowledge')
-  acknowledge(@Param('id') id: string, @CurrentUser() user: any) {
+  acknowledge(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.notificationsService.acknowledge(id, user);
   }
 }

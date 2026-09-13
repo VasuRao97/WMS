@@ -1,7 +1,17 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { MovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  WAREHOUSE_SCOPED_ROLES,
+} from '../common/tenant.util';
 
 // Analytics — the real, final module in the build order, deliberately
 // separate from the earlier one-off Insights page (2026-08-29 — "not the
@@ -24,15 +34,20 @@ import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../commo
 export class AnalyticsService {
   constructor(private prisma: PrismaService) {}
 
-  private async assertWarehouseAccess(warehouseId: string, user: any) {
-    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+  private async assertWarehouseAccess(warehouseId: string, user: AuthUser) {
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { id: warehouseId },
+    });
     if (!warehouse) throw new NotFoundException('Warehouse not found.');
     if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId) {
       throw new ForbiddenException('You do not have access to this warehouse.');
     }
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+      if (!ids.includes(warehouseId))
+        throw new ForbiddenException(
+          'You do not have access to this warehouse.',
+        );
     }
   }
 
@@ -41,14 +56,17 @@ export class AnalyticsService {
   // optional (company-wide when omitted, for COMPANY_ADMIN/SUPER_ADMIN
   // only — a warehouse-scoped role must always narrow to one of their
   // own, enforced below same as every other scoped read in this codebase).
-  async operatorProductivity(user: any, warehouseId?: string) {
+  async operatorProductivity(user: AuthUser, warehouseId?: string) {
     if (warehouseId) {
       await this.assertWarehouseAccess(warehouseId, user);
     } else if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       throw new BadRequestException('Select a warehouse.');
     }
 
-    const warehouseFilter = { ...companyFilter(user), ...(warehouseId ? { id: warehouseId } : {}) };
+    const warehouseFilter = {
+      ...companyFilter(user),
+      ...(warehouseId ? { id: warehouseId } : {}),
+    };
 
     // ------------------------------------------------------------
     // Marrying — every RECEIPT StockMovement tagged with a palletLoadId
@@ -57,18 +75,36 @@ export class AnalyticsService {
     // their own window, never blended (the client's own explicit ask).
     // ------------------------------------------------------------
     const receiptScans = await this.prisma.stockMovement.findMany({
-      where: { palletLoadId: { not: null }, movementType: 'RECEIPT', warehouse: warehouseFilter },
+      where: {
+        palletLoadId: { not: null },
+        movementType: 'RECEIPT',
+        warehouse: warehouseFilter,
+      },
       select: {
         palletLoadId: true,
         createdById: true,
         createdAt: true,
         createdBy: { select: { id: true, name: true } },
-        palletLoad: { select: { pallet: { select: { code: true } }, sku: { select: { code: true } } } },
+        palletLoad: {
+          select: {
+            pallet: { select: { code: true } },
+            sku: { select: { code: true } },
+          },
+        },
       },
       orderBy: { createdAt: 'asc' },
     });
 
-    type Bucket = { operatorId: string; operatorName: string; palletLoadId: string; palletCode: string; skuCode: string; start: Date; end: Date; scanCount: number };
+    type Bucket = {
+      operatorId: string;
+      operatorName: string;
+      palletLoadId: string;
+      palletCode: string;
+      skuCode: string;
+      start: Date;
+      end: Date;
+      scanCount: number;
+    };
     const marryingBuckets = new Map<string, Bucket>();
     for (const m of receiptScans) {
       const key = `${m.palletLoadId}|${m.createdById}`;
@@ -97,7 +133,8 @@ export class AnalyticsService {
       scanCount: b.scanCount,
       startedAt: b.start,
       endedAt: b.end,
-      durationMinutes: Math.round(((b.end.getTime() - b.start.getTime()) / 60000) * 10) / 10,
+      durationMinutes:
+        Math.round(((b.end.getTime() - b.start.getTime()) / 60000) * 10) / 10,
     }));
 
     // ------------------------------------------------------------
@@ -109,18 +146,39 @@ export class AnalyticsService {
     const trips = await this.prisma.putawayTrip.findMany({
       where: {
         status: 'COMPLETED',
-        task: { palletLoadId: { not: null }, receiptLine: { receipt: { warehouse: warehouseFilter } } },
+        task: {
+          palletLoadId: { not: null },
+          receiptLine: { receipt: { warehouse: warehouseFilter } },
+        },
       },
       select: {
         claimedAt: true,
         completedAt: true,
         claimedById: true,
         claimedBy: { select: { id: true, name: true } },
-        task: { select: { palletLoad: { select: { id: true, pallet: { select: { code: true } }, sku: { select: { code: true } } } } } },
+        task: {
+          select: {
+            palletLoad: {
+              select: {
+                id: true,
+                pallet: { select: { code: true } },
+                sku: { select: { code: true } },
+              },
+            },
+          },
+        },
       },
     });
 
-    type PutawayBucket = { operatorId: string; operatorName: string; palletLoadId: string; palletCode: string; skuCode: string; totalMinutes: number; tripCount: number };
+    type PutawayBucket = {
+      operatorId: string;
+      operatorName: string;
+      palletLoadId: string;
+      palletCode: string;
+      skuCode: string;
+      totalMinutes: number;
+      tripCount: number;
+    };
     const putawayBuckets = new Map<string, PutawayBucket>();
     for (const t of trips) {
       if (!t.completedAt || !t.task.palletLoad) continue;
@@ -164,13 +222,25 @@ export class AnalyticsService {
     const abandonedTrips = await this.prisma.putawayTrip.findMany({
       where: {
         status: 'ABANDONED',
-        task: { palletLoadId: { not: null }, receiptLine: { receipt: { warehouse: warehouseFilter } } },
+        task: {
+          palletLoadId: { not: null },
+          receiptLine: { receipt: { warehouse: warehouseFilter } },
+        },
       },
       select: {
         claimedAt: true,
         claimedById: true,
         claimedBy: { select: { id: true, name: true } },
-        task: { select: { palletLoad: { select: { pallet: { select: { code: true } }, sku: { select: { code: true } } } } } },
+        task: {
+          select: {
+            palletLoad: {
+              select: {
+                pallet: { select: { code: true } },
+                sku: { select: { code: true } },
+              },
+            },
+          },
+        },
       },
       orderBy: { claimedAt: 'desc' },
     });
@@ -217,8 +287,15 @@ export class AnalyticsService {
     });
 
     type PickFaceBucket = {
-      operatorId: string; operatorName: string; taskId: string; reason: string; skuCode: string;
-      fromCode: string; toCode: string; totalMinutes: number; tripCount: number;
+      operatorId: string;
+      operatorName: string;
+      taskId: string;
+      reason: string;
+      skuCode: string;
+      fromCode: string;
+      toCode: string;
+      totalMinutes: number;
+      tripCount: number;
     };
     const pickFaceBuckets = new Map<string, PickFaceBucket>();
     for (const t of pickFaceTrips) {
@@ -266,7 +343,10 @@ export class AnalyticsService {
   // ever got put away (once as RECEIPT into staging, again as PUTAWAY_IN
   // into storage). A real correctness point, flagged rather than silently
   // assumed — see [[wms-inventory-design]] in memory.
-  private static readonly GENUINE_INWARD_TYPES: MovementType[] = ['RECEIPT', 'RETURN_IN'];
+  private static readonly GENUINE_INWARD_TYPES: MovementType[] = [
+    'RECEIPT',
+    'RETURN_IN',
+  ];
 
   // Daily inward volume — units AND distinct pallets, per day, over a date
   // range (default: the last 30 days ending today). 2026-09-13 follow-on
@@ -284,7 +364,12 @@ export class AnalyticsService {
   // warehouseId is optional — company-wide when omitted, COMPANY_ADMIN/
   // SUPER_ADMIN only, same convention as operatorProductivity above and the
   // Inventory ledger export.
-  async dailyInward(user: any, warehouseId?: string, from?: string, to?: string) {
+  async dailyInward(
+    user: AuthUser,
+    warehouseId?: string,
+    from?: string,
+    to?: string,
+  ) {
     if (warehouseId) {
       await this.assertWarehouseAccess(warehouseId, user);
     } else if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
@@ -297,9 +382,13 @@ export class AnalyticsService {
     // chart over years of flat history). Still overridable via explicit
     // from/to, same date-input UX as the Ledger tab.
     const toDate = to ? new Date(`${to}T23:59:59.999Z`) : new Date();
-    const fromDate = from ? new Date(`${from}T00:00:00.000Z`) : new Date(toDate.getTime() - 29 * 86400000);
+    const fromDate = from
+      ? new Date(`${from}T00:00:00.000Z`)
+      : new Date(toDate.getTime() - 29 * 86400000);
 
-    const warehouseFilter = warehouseId ? { id: warehouseId } : companyFilter(user);
+    const warehouseFilter = warehouseId
+      ? { id: warehouseId }
+      : companyFilter(user);
     const movements = await this.prisma.stockMovement.findMany({
       where: {
         movementType: { in: AnalyticsService.GENUINE_INWARD_TYPES },
@@ -313,7 +402,11 @@ export class AnalyticsService {
     // is a real, meaningful zero, not a gap to skip (a bar chart that
     // silently omits down days misrepresents the trend).
     const byDay = new Map<string, { units: number; pallets: Set<string> }>();
-    for (const d = new Date(fromDate); d <= toDate; d.setUTCDate(d.getUTCDate() + 1)) {
+    for (
+      const d = new Date(fromDate);
+      d <= toDate;
+      d.setUTCDate(d.getUTCDate() + 1)
+    ) {
       byDay.set(d.toISOString().slice(0, 10), { units: 0, pallets: new Set() });
     }
     for (const m of movements) {

@@ -20,13 +20,20 @@ export class AbcClassificationScheduler {
 
   @Cron('0 0 1 * *')
   async runMonthlyReassessment() {
-    const companies = await this.prisma.company.findMany({ where: { abcReassessmentEnabled: true }, select: { id: true, name: true } });
+    const companies = await this.prisma.company.findMany({
+      where: { abcReassessmentEnabled: true },
+      select: { id: true, name: true },
+    });
     for (const company of companies) {
       try {
         const result = await this.abcClassification.reassessCompany(company.id);
-        this.logger.log(`ABC reassessment complete for ${company.name}: ${result.warehousesProcessed} warehouse(s) processed.`);
+        this.logger.log(
+          `ABC reassessment complete for ${company.name}: ${result.warehousesProcessed} warehouse(s) processed.`,
+        );
       } catch (e: any) {
-        this.logger.error(`ABC reassessment failed for ${company.name}: ${e.message}`);
+        this.logger.error(
+          `ABC reassessment failed for ${company.name}: ${e.message}`,
+        );
       }
     }
   }

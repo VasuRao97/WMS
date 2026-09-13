@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as XLSX from 'xlsx';
 import { InboundReceiptsService } from './inbound-receipts.service';
@@ -7,17 +18,24 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { stripHeaderAsterisks } from '../common/xlsx-parse.util';
-import { INBOUND_READ_ROLES, INBOUND_ORDER_WRITE_ROLES, INBOUND_APPROVE_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  INBOUND_READ_ROLES,
+  INBOUND_ORDER_WRITE_ROLES,
+  INBOUND_APPROVE_ROLES,
+} from '../common/tenant.util';
 
 @Controller('inbound-receipts')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class InboundReceiptsController {
-  constructor(private readonly inboundReceiptsService: InboundReceiptsService) {}
+  constructor(
+    private readonly inboundReceiptsService: InboundReceiptsService,
+  ) {}
 
   // The "order maker" — see InboundReceiptsService's class comment.
   @Post()
   @Roles(...INBOUND_ORDER_WRITE_ROLES)
-  create(@Body() body: any, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.inboundReceiptsService.create(body, user);
   }
 
@@ -28,7 +46,11 @@ export class InboundReceiptsController {
   // API-key-guarded controller).
   @Patch(':id/assign-vehicle')
   @Roles(...INBOUND_ORDER_WRITE_ROLES)
-  assignVehicle(@Param('id') id: string, @Body('vehicleId') vehicleId: string, @CurrentUser() user: any) {
+  assignVehicle(
+    @Param('id') id: string,
+    @Body('vehicleId') vehicleId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.inboundReceiptsService.assignVehicle(id, vehicleId, user);
   }
 
@@ -41,26 +63,57 @@ export class InboundReceiptsController {
   @Post('import')
   @Roles(...INBOUND_ORDER_WRITE_ROLES)
   @UseInterceptors(FileInterceptor('file'))
-  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+  async importFile(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthUser,
+  ) {
     let workbook: XLSX.WorkBook;
     try {
       workbook = XLSX.read(file.buffer, { type: 'buffer' });
     } catch {
-      return { totalOrders: 0, successCount: 0, failCount: 0, results: [{ referenceNo: '(file)', status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+      return {
+        totalOrders: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            referenceNo: '(file)',
+            status: 'error',
+            errors: ['File could not be read — is it a valid .xlsx file?'],
+          },
+        ],
+      };
     }
     // Read by sheet NAME, not position — same convention as Warehouse/
     // Location's importers (the template ships "How To Use"/"Legend &
     // Rules" tabs alongside the data tab).
     const sheet = workbook.Sheets['Inbound Order Import'];
     if (!sheet) {
-      return { totalOrders: 0, successCount: 0, failCount: 0, results: [{ referenceNo: '(file)', status: 'error', errors: ['No "Inbound Order Import" sheet found in this file.'] }] };
+      return {
+        totalOrders: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            referenceNo: '(file)',
+            status: 'error',
+            errors: ['No "Inbound Order Import" sheet found in this file.'],
+          },
+        ],
+      };
     }
-    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+    const rawRows: any[] = stripHeaderAsterisks(
+      XLSX.utils.sheet_to_json(sheet, { defval: '' }),
+    );
 
     const grouped = new Map<string, any>();
     for (const r of rawRows) {
-      const warehouseCode = r['Warehouse Code'] ? String(r['Warehouse Code']).trim().toUpperCase() : '';
-      const referenceNo = r['Reference No'] ? String(r['Reference No']).trim() : '';
+      const warehouseCode = r['Warehouse Code']
+        ? String(r['Warehouse Code']).trim().toUpperCase()
+        : '';
+      const referenceNo = r['Reference No']
+        ? String(r['Reference No']).trim()
+        : '';
       if (!warehouseCode && !referenceNo) continue;
       const key = `${warehouseCode}::${referenceNo}`;
 
@@ -68,26 +121,36 @@ export class InboundReceiptsController {
         grouped.set(key, {
           warehouseCode,
           referenceNo,
-          supplierName: r['Supplier Name'] ? String(r['Supplier Name']).trim() : undefined,
+          supplierName: r['Supplier Name']
+            ? String(r['Supplier Name']).trim()
+            : undefined,
           // 1:1 vehicle<->order mapping (2026-08-27 follow-up) — same
           // "only the first row's value is used" convention as Supplier
           // Name, since every row in a group is the same order.
-          vehicleNumber: r['Vehicle Number'] ? String(r['Vehicle Number']).trim() : undefined,
+          vehicleNumber: r['Vehicle Number']
+            ? String(r['Vehicle Number']).trim()
+            : undefined,
           lines: [] as any[],
         });
       }
       const order = grouped.get(key);
       if (r['SKU Code']) {
-        order.lines.push({ skuCode: String(r['SKU Code']).trim(), expectedQty: r['Expected Qty'] });
+        order.lines.push({
+          skuCode: String(r['SKU Code']).trim(),
+          expectedQty: r['Expected Qty'],
+        });
       }
     }
 
-    return this.inboundReceiptsService.bulkImport(Array.from(grouped.values()), user);
+    return this.inboundReceiptsService.bulkImport(
+      Array.from(grouped.values()),
+      user,
+    );
   }
 
   @Get()
   @Roles(...INBOUND_READ_ROLES)
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: AuthUser) {
     return this.inboundReceiptsService.findAll(user);
   }
 
@@ -99,13 +162,13 @@ export class InboundReceiptsController {
   // genuinely deletes ledger data, unlike every other Delete All.
   @Delete('all')
   @Roles('COMPANY_ADMIN')
-  removeAll(@CurrentUser() user: any) {
+  removeAll(@CurrentUser() user: AuthUser) {
     return this.inboundReceiptsService.removeAll(user);
   }
 
   @Get(':id')
   @Roles(...INBOUND_READ_ROLES)
-  findOne(@Param('id') id: string, @CurrentUser() user: any) {
+  findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.inboundReceiptsService.findOne(id, user);
   }
 
@@ -116,13 +179,17 @@ export class InboundReceiptsController {
   // note) in case another GET ever gets added under this same prefix.
   @Patch('scans/:scanId/approve')
   @Roles(...INBOUND_APPROVE_ROLES)
-  approveScan(@Param('scanId') scanId: string, @Body() body: any, @CurrentUser() user: any) {
+  approveScan(
+    @Param('scanId') scanId: string,
+    @Body() body: any,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.inboundReceiptsService.approveScan(scanId, body, user);
   }
 
   @Patch('scans/:scanId/reject')
   @Roles(...INBOUND_APPROVE_ROLES)
-  rejectScan(@Param('scanId') scanId: string, @CurrentUser() user: any) {
+  rejectScan(@Param('scanId') scanId: string, @CurrentUser() user: AuthUser) {
     return this.inboundReceiptsService.rejectScan(scanId, user);
   }
 }

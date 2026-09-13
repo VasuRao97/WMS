@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PutawayTasksService } from '../putaway/putaway-tasks.service';
 import { RACK_STORAGE_TYPES, buildRackName } from '../common/rack-name.util';
+import { type AuthUser } from '../common/tenant.util';
 
 // Putaway simulation (2026-09-06 — see [[wms-putaway-design]] in memory) —
 // "can we have a simulation for me to check our visuals? which uses our
@@ -66,20 +67,43 @@ const MAX_UNIT_COUNT = 200;
 // becomes how many COLUMNS each bin has (relabeled "Width" in the UI), and
 // `depth` keeps its exact same meaning — positions per column, same LIFO
 // depth concept Rack already uses it for.
-export type SandboxLayoutConfig = { storageType: string; levels: number; depth: number; racks: number; depthTiers: number };
+export type SandboxLayoutConfig = {
+  storageType: string;
+  levels: number;
+  depth: number;
+  racks: number;
+  depthTiers: number;
+};
 
 const SIM_STORAGE_TYPES = [...RACK_STORAGE_TYPES, 'GROUND_FLOOR'];
 
-function normalizeLayoutConfig(raw: Partial<SandboxLayoutConfig> | undefined): SandboxLayoutConfig {
-  const storageType = raw?.storageType && SIM_STORAGE_TYPES.includes(raw.storageType) ? raw.storageType : DEFAULT_STORAGE_TYPE;
-  const levels = Math.max(1, Math.min(MAX_LEVELS, Math.floor(Number(raw?.levels)) || DEFAULT_LEVELS));
-  const depth = Math.max(1, Math.min(MAX_DEPTH, Math.floor(Number(raw?.depth)) || DEFAULT_DEPTH));
-  const racks = Math.max(1, Math.min(MAX_RACKS, Math.floor(Number(raw?.racks)) || DEFAULT_RACKS));
+function normalizeLayoutConfig(
+  raw: Partial<SandboxLayoutConfig> | undefined,
+): SandboxLayoutConfig {
+  const storageType =
+    raw?.storageType && SIM_STORAGE_TYPES.includes(raw.storageType)
+      ? raw.storageType
+      : DEFAULT_STORAGE_TYPE;
+  const levels = Math.max(
+    1,
+    Math.min(MAX_LEVELS, Math.floor(Number(raw?.levels)) || DEFAULT_LEVELS),
+  );
+  const depth = Math.max(
+    1,
+    Math.min(MAX_DEPTH, Math.floor(Number(raw?.depth)) || DEFAULT_DEPTH),
+  );
+  const racks = Math.max(
+    1,
+    Math.min(MAX_RACKS, Math.floor(Number(raw?.racks)) || DEFAULT_RACKS),
+  );
   // Only meaningful for GROUND_FLOOR — always normalized to a real number
   // regardless of storageType so callers never need a null-check, but a
   // Rack/ASRS/Drive-in config just never reads it (buildRackLayout doesn't
   // accept it at all).
-  const depthTiers = Math.max(1, Math.min(MAX_DEPTH_TIERS, Math.floor(Number(raw?.depthTiers)) || 1));
+  const depthTiers = Math.max(
+    1,
+    Math.min(MAX_DEPTH_TIERS, Math.floor(Number(raw?.depthTiers)) || 1),
+  );
   return { storageType, levels, depth, racks, depthTiers };
 }
 
@@ -136,12 +160,22 @@ export class SimulationService {
   // instead of just quietly finding what the winner had already made.
   // `upsert`/`skipDuplicates` make "already exists" a normal, silent
   // outcome instead of an error to catch.
-  async ensureSandbox(user: any, desiredConfig?: Partial<SandboxLayoutConfig>) {
-    const companyId = user.companyId;
+  async ensureSandbox(
+    user: AuthUser,
+    desiredConfig?: Partial<SandboxLayoutConfig>,
+  ) {
+    // Non-null assertion: the sandbox is per-company; SUPER_ADMIN has no
+    // single company and isn't a real caller of this simulation feature.
+    const companyId = user.companyId!;
     const warehouse = await this.prisma.warehouse.upsert({
       where: { companyId_code: { companyId, code: SANDBOX_CODE } },
       update: {},
-      create: { companyId, code: SANDBOX_CODE, name: 'Simulation Sandbox', nodeType: 'FACTORY' },
+      create: {
+        companyId,
+        code: SANDBOX_CODE,
+        name: 'Simulation Sandbox',
+        nodeType: 'FACTORY',
+      },
     });
 
     const category = await this.prisma.productCategory.upsert({
@@ -152,13 +186,35 @@ export class SimulationService {
 
     const existingLocations = await this.prisma.location.findMany({
       where: { warehouseId: warehouse.id },
-      select: { storageType: true, level: true, depth: true, flankNumber: true, rack: true, block: true, depthTier: true },
+      select: {
+        storageType: true,
+        level: true,
+        depth: true,
+        flankNumber: true,
+        rack: true,
+        block: true,
+        depthTier: true,
+      },
     });
 
     if (existingLocations.length === 0) {
-      await this.buildLayout(warehouse.id, category.id, normalizeLayoutConfig(desiredConfig));
-    } else if (desiredConfig && !this.layoutMatches(existingLocations, normalizeLayoutConfig(desiredConfig))) {
-      await this.rebuildLayout(warehouse.id, category.id, normalizeLayoutConfig(desiredConfig));
+      await this.buildLayout(
+        warehouse.id,
+        category.id,
+        normalizeLayoutConfig(desiredConfig),
+      );
+    } else if (
+      desiredConfig &&
+      !this.layoutMatches(
+        existingLocations,
+        normalizeLayoutConfig(desiredConfig),
+      )
+    ) {
+      await this.rebuildLayout(
+        warehouse.id,
+        category.id,
+        normalizeLayoutConfig(desiredConfig),
+      );
     }
 
     return warehouse;
@@ -174,11 +230,20 @@ export class SimulationService {
   // auto-rebuild-on-mismatch path every other config change already goes
   // through, no separate migration.
   private layoutMatches(
-    locations: { storageType: string; level: string | null; depth: number | null; flankNumber: number | null; rack: string | null; block: string | null; depthTier: number | null }[],
+    locations: {
+      storageType: string;
+      level: string | null;
+      depth: number | null;
+      flankNumber: number | null;
+      rack: string | null;
+      block: string | null;
+      depthTier: number | null;
+    }[],
     config: SandboxLayoutConfig,
   ): boolean {
     if (locations.length === 0) return false;
-    if (locations.some((l) => l.storageType !== config.storageType)) return false;
+    if (locations.some((l) => l.storageType !== config.storageType))
+      return false;
     const flankCount = new Set(locations.map((l) => l.flankNumber)).size;
     if (flankCount !== DEFAULT_AISLES * 2) return false;
     // Deliberately separate branches, not one shared shape-check — Ground's
@@ -186,21 +251,47 @@ export class SimulationService {
     // (racks/levels/depth) the same way, even though both REUSE the exact
     // same three config fields underneath (see SandboxLayoutConfig's
     // comment).
-    if (config.storageType === 'GROUND_FLOOR') return this.groundLayoutMatches(locations, config);
+    if (config.storageType === 'GROUND_FLOOR')
+      return this.groundLayoutMatches(locations, config);
     return this.rackLayoutMatches(locations, config);
   }
 
-  private rackLayoutMatches(locations: { level: string | null; depth: number | null; rack: string | null }[], config: SandboxLayoutConfig): boolean {
+  private rackLayoutMatches(
+    locations: {
+      level: string | null;
+      depth: number | null;
+      rack: string | null;
+    }[],
+    config: SandboxLayoutConfig,
+  ): boolean {
     const maxLevel = Math.max(...locations.map((l) => Number(l.level) || 1));
     const maxDepth = Math.max(...locations.map((l) => l.depth ?? 1));
-    const maxRack = Math.max(...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1));
-    return maxLevel === config.levels && maxDepth === config.depth && maxRack === config.racks;
+    const maxRack = Math.max(
+      ...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1),
+    );
+    return (
+      maxLevel === config.levels &&
+      maxDepth === config.depth &&
+      maxRack === config.racks
+    );
   }
 
-  private groundLayoutMatches(locations: { depth: number | null; rack: string | null; block: string | null; depthTier: number | null }[], config: SandboxLayoutConfig): boolean {
-    const maxColumn = Math.max(...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1));
+  private groundLayoutMatches(
+    locations: {
+      depth: number | null;
+      rack: string | null;
+      block: string | null;
+      depthTier: number | null;
+    }[],
+    config: SandboxLayoutConfig,
+  ): boolean {
+    const maxColumn = Math.max(
+      ...locations.map((l) => parseInt(l.rack ?? '1', 10) || 1),
+    );
     const maxDepth = Math.max(...locations.map((l) => l.depth ?? 1));
-    const maxBin = Math.max(...locations.map((l) => parseInt(l.block ?? '1', 10) || 1));
+    const maxBin = Math.max(
+      ...locations.map((l) => parseInt(l.block ?? '1', 10) || 1),
+    );
     const maxDepthTier = Math.max(...locations.map((l) => l.depthTier ?? 1));
     // config.racks ("Length" in the UI) = bins per flank, config.levels
     // (relabeled "Width" in the UI for Ground) = columns per bin — see
@@ -210,7 +301,12 @@ export class SimulationService {
     // correctly rebuilds itself the next time Run is clicked — same
     // auto-rebuild-on-mismatch path every other config dimension already
     // uses.
-    return maxBin === config.racks && maxColumn === config.levels && maxDepth === config.depth && maxDepthTier === config.depthTiers;
+    return (
+      maxBin === config.racks &&
+      maxColumn === config.levels &&
+      maxDepth === config.depth &&
+      maxDepthTier === config.depthTiers
+    );
   }
 
   // Builds the sandbox's Rack layout fresh — Aisles fixed at DEFAULT_AISLES,
@@ -237,14 +333,24 @@ export class SimulationService {
   // as the real generator. `buildCode()`'s own suffix convention is
   // mirrored too: the secondary flank's code gets a `B` appended right
   // after the rack segment, so codes stay unique despite reusing numbers.
-  private async buildLayout(warehouseId: string, categoryId: string, config: SandboxLayoutConfig) {
-    const existingStorageType = await this.prisma.warehouseStorageType.findFirst({
-      where: { warehouseId, storageType: config.storageType, categoryId },
-    });
+  private async buildLayout(
+    warehouseId: string,
+    categoryId: string,
+    config: SandboxLayoutConfig,
+  ) {
+    const existingStorageType =
+      await this.prisma.warehouseStorageType.findFirst({
+        where: { warehouseId, storageType: config.storageType, categoryId },
+      });
     if (!existingStorageType) {
       try {
         await this.prisma.warehouseStorageType.create({
-          data: { warehouseId, storageType: config.storageType, categoryId, palletPositions: 1000 },
+          data: {
+            warehouseId,
+            storageType: config.storageType,
+            categoryId,
+            palletPositions: 1000,
+          },
         });
       } catch {
         // A concurrent call already created the same row between our check
@@ -265,7 +371,11 @@ export class SimulationService {
     }
   }
 
-  private async buildRackLayout(warehouseId: string, categoryId: string, config: SandboxLayoutConfig) {
+  private async buildRackLayout(
+    warehouseId: string,
+    categoryId: string,
+    config: SandboxLayoutConfig,
+  ) {
     const rows: any[] = [];
     let nextFlankNumber = 0;
     for (let aisle = 1; aisle <= DEFAULT_AISLES; aisle++) {
@@ -312,7 +422,11 @@ export class SimulationService {
   // meaning as Rack — positions per column, front-to-back LIFO. Both
   // flanks per aisle, same mirrored convention buildRackLayout() already
   // uses (and the real generator itself uses for Ground bins).
-  private async buildGroundLayout(warehouseId: string, categoryId: string, config: SandboxLayoutConfig) {
+  private async buildGroundLayout(
+    warehouseId: string,
+    categoryId: string,
+    config: SandboxLayoutConfig,
+  ) {
     const binsPerFlank = config.racks;
     const columnsPerBin = config.levels;
     const rows: any[] = [];
@@ -372,10 +486,16 @@ export class SimulationService {
   // FK, same reason resetSandbox already clears them); the WarehouseStorageType
   // row is also cleared and rebuilt fresh for the NEW storage type rather
   // than left stale (the sandbox only ever needs exactly one at a time).
-  private async rebuildLayout(warehouseId: string, categoryId: string, config: SandboxLayoutConfig) {
+  private async rebuildLayout(
+    warehouseId: string,
+    categoryId: string,
+    config: SandboxLayoutConfig,
+  ) {
     await this.prisma.stockMovement.deleteMany({ where: { warehouseId } });
     await this.prisma.location.deleteMany({ where: { warehouseId } });
-    await this.prisma.warehouseStorageType.deleteMany({ where: { warehouseId } });
+    await this.prisma.warehouseStorageType.deleteMany({
+      where: { warehouseId },
+    });
     await this.buildLayout(warehouseId, categoryId, config);
   }
 
@@ -383,13 +503,25 @@ export class SimulationService {
   // the Location layout itself is left untouched (a user's own structural
   // customization via the normal Locations page shouldn't be wiped just to
   // rerun a scenario).
-  async resetSandbox(user: any) {
+  async resetSandbox(user: AuthUser) {
     const warehouse = await this.ensureSandbox(user);
-    await this.prisma.stockMovement.deleteMany({ where: { warehouseId: warehouse.id } });
-    const skus = await this.prisma.sku.findMany({ where: { companyId: user.companyId, code: { startsWith: SIM_SKU_PREFIX } }, select: { id: true } });
+    await this.prisma.stockMovement.deleteMany({
+      where: { warehouseId: warehouse.id },
+    });
+    const skus = await this.prisma.sku.findMany({
+      where: {
+        companyId: user.companyId!,
+        code: { startsWith: SIM_SKU_PREFIX },
+      },
+      select: { id: true },
+    });
     const skuIds = skus.map((s) => s.id);
-    await this.prisma.skuBarcode.deleteMany({ where: { skuId: { in: skuIds } } });
-    await this.prisma.skuStorageUnit.deleteMany({ where: { skuId: { in: skuIds } } });
+    await this.prisma.skuBarcode.deleteMany({
+      where: { skuId: { in: skuIds } },
+    });
+    await this.prisma.skuStorageUnit.deleteMany({
+      where: { skuId: { in: skuIds } },
+    });
     await this.prisma.sku.deleteMany({ where: { id: { in: skuIds } } });
     return { warehouseId: warehouse.id };
   }
@@ -400,9 +532,16 @@ export class SimulationService {
   // from one run to the next while you compare results). An even spread of
   // A/B/C classes, all under the one Simulation category so every one of
   // them is eligible for the sandbox's own WarehouseStorageType row.
-  private async ensureSkuPool(user: any, categoryId: string, warehouseId: string) {
+  private async ensureSkuPool(
+    user: AuthUser,
+    categoryId: string,
+    warehouseId: string,
+  ) {
     const existing = await this.prisma.sku.findMany({
-      where: { companyId: user.companyId, code: { startsWith: SIM_SKU_PREFIX } },
+      where: {
+        companyId: user.companyId!,
+        code: { startsWith: SIM_SKU_PREFIX },
+      },
       select: { id: true, code: true, abcClass: true },
     });
     const classes = ['A', 'B', 'C'] as const;
@@ -420,16 +559,18 @@ export class SimulationService {
       // graceful no-op. upsert() (keyed on Sku's own companyId+code unique
       // constraint) makes "already exists" the normal outcome either way.
       const sku = await this.prisma.sku.upsert({
-        where: { companyId_code: { companyId: user.companyId, code } },
+        where: { companyId_code: { companyId: user.companyId!, code } },
         create: {
-          companyId: user.companyId,
+          companyId: user.companyId!,
           code,
           description: `Simulated SKU ${cls}${n}`,
           categoryId,
           abcClass: cls,
           baseUom: 'PIECE',
           hsnCode: '0000',
-          storageUnits: { create: [{ unitType: 'EACH', qtyInBaseUom: 1, isPreferred: true }] },
+          storageUnits: {
+            create: [{ unitType: 'EACH', qtyInBaseUom: 1, isPreferred: true }],
+          },
         },
         update: {},
       });
@@ -477,13 +618,29 @@ export class SimulationService {
       await this.prisma.skuWarehouseClass.upsert({
         where: { skuId_warehouseId: { skuId: sku.id, warehouseId } },
         update: {},
-        create: { skuId: sku.id, warehouseId, abcClass: sku.abcClass || 'C', dispatchedQty: 0, fmsClass: fmsCls, orderCount: 0 },
+        create: {
+          skuId: sku.id,
+          warehouseId,
+          abcClass: sku.abcClass || 'C',
+          dispatchedQty: 0,
+          fmsClass: fmsCls,
+          orderCount: 0,
+        },
       });
     }
 
     return this.prisma.sku.findMany({
-      where: { companyId: user.companyId, code: { startsWith: SIM_SKU_PREFIX } },
-      include: { category: { select: { name: true } }, warehouseClasses: { where: { warehouseId }, select: { fmsClass: true } } },
+      where: {
+        companyId: user.companyId!,
+        code: { startsWith: SIM_SKU_PREFIX },
+      },
+      include: {
+        category: { select: { name: true } },
+        warehouseClasses: {
+          where: { warehouseId },
+          select: { fmsClass: true },
+        },
+      },
     });
   }
 
@@ -507,13 +664,18 @@ export class SimulationService {
   // one SKU in a row), and a better exercise of the same-SKU-top-up/
   // lane-fullness logic than fully independent random picks would be.
   async runPutawaySimulation(
-    user: any,
+    user: AuthUser,
     unitCountRaw: number,
     layoutConfig?: Partial<SandboxLayoutConfig>,
   ): Promise<{ warehouseId: string; steps: SimStep[] }> {
-    const unitCount = Math.max(1, Math.min(MAX_UNIT_COUNT, Math.floor(Number(unitCountRaw) || 0) || 1));
+    const unitCount = Math.max(
+      1,
+      Math.min(MAX_UNIT_COUNT, Math.floor(Number(unitCountRaw) || 0) || 1),
+    );
     const warehouse = await this.ensureSandbox(user, layoutConfig);
-    const category = await this.prisma.productCategory.findFirst({ where: { name: SIM_CATEGORY_NAME } });
+    const category = await this.prisma.productCategory.findFirst({
+      where: { name: SIM_CATEGORY_NAME },
+    });
     const pool = await this.ensureSkuPool(user, category!.id, warehouse.id);
 
     const steps: SimStep[] = [];
@@ -538,7 +700,9 @@ export class SimulationService {
       let locationCode: string | null = null;
       let rackName: string | null = null;
       if (locationId) {
-        const location = await this.prisma.location.findUnique({ where: { id: locationId } });
+        const location = await this.prisma.location.findUnique({
+          where: { id: locationId },
+        });
         locationCode = location!.code;
         // Same formula the real Putaway task queue/Plan View use (see
         // common/rack-name.util.ts) — includes the -D{n} suffix, which
@@ -565,7 +729,9 @@ export class SimulationService {
         skuId: sku.id,
         skuCode: sku.code,
         abcClass: (sku.abcClass || 'C').toUpperCase(),
-        fmsClass: (sku as any).warehouseClasses?.[0]?.fmsClass ? (sku as any).warehouseClasses[0].fmsClass.toUpperCase() : null,
+        fmsClass: (sku as any).warehouseClasses?.[0]?.fmsClass
+          ? (sku as any).warehouseClasses[0].fmsClass.toUpperCase()
+          : null,
         categoryId: category!.id,
         categoryName: (sku as any).category?.name || SIM_CATEGORY_NAME,
         quantity,

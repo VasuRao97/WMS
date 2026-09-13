@@ -1,4 +1,17 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
@@ -7,8 +20,15 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { MASTER_DATA_READ_ROLES, MASTER_DATA_WRITE_ROLES } from '../common/tenant.util';
-import { stripHeaderAsterisks, toNumberOrUndefined } from '../common/xlsx-parse.util';
+import {
+  type AuthUser,
+  MASTER_DATA_READ_ROLES,
+  MASTER_DATA_WRITE_ROLES,
+} from '../common/tenant.util';
+import {
+  stripHeaderAsterisks,
+  toNumberOrUndefined,
+} from '../common/xlsx-parse.util';
 
 @Controller('locations')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -17,7 +37,7 @@ export class LocationsController {
 
   @Post()
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  create(@Body() body: any, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.locationsService.create(body, user);
   }
 
@@ -26,33 +46,60 @@ export class LocationsController {
   // LocationsService.generate() and CLAUDE.md's Locations/Bins notes.
   @Post('generate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  generate(@Body() body: any, @CurrentUser() user: any) {
+  generate(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.locationsService.generate(body, user);
   }
 
   @Post('import')
   @Roles(...MASTER_DATA_WRITE_ROLES)
   @UseInterceptors(FileInterceptor('file'))
-  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+  async importFile(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthUser,
+  ) {
     let workbook: XLSX.WorkBook;
     try {
       workbook = XLSX.read(file.buffer, { type: 'buffer' });
     } catch {
-      return { totalRows: 0, successCount: 0, failCount: 0, results: [{ status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+      return {
+        totalRows: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            status: 'error',
+            errors: ['File could not be read — is it a valid .xlsx file?'],
+          },
+        ],
+      };
     }
     // Read by sheet NAME, not position — see CLAUDE.md's note on Warehouse's
     // import controller for why (a reordered sheet silently reading the
     // wrong tab bit this project once already).
     const sheet = workbook.Sheets['Location Import'];
     if (!sheet) {
-      return { totalRows: 0, successCount: 0, failCount: 0, results: [{ status: 'error', errors: ['No "Location Import" sheet found in this file.'] }] };
+      return {
+        totalRows: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            status: 'error',
+            errors: ['No "Location Import" sheet found in this file.'],
+          },
+        ],
+      };
     }
-    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+    const rawRows: any[] = stripHeaderAsterisks(
+      XLSX.utils.sheet_to_json(sheet, { defval: '' }),
+    );
 
     const rows = rawRows
       .filter((r) => r['Warehouse Code'] || r['Aisle']) // skip fully-blank trailing rows
       .map((r) => ({
-        warehouseCode: r['Warehouse Code'] ? String(r['Warehouse Code']).trim() : '',
+        warehouseCode: r['Warehouse Code']
+          ? String(r['Warehouse Code']).trim()
+          : '',
         zoneType: r['Zone Type'] ? String(r['Zone Type']).trim() : '',
         storageType: r['Storage Type'] ? String(r['Storage Type']).trim() : '',
         category: r['Category'] ? String(r['Category']).trim() : undefined,
@@ -74,7 +121,7 @@ export class LocationsController {
 
   @Get()
   @Roles(...MASTER_DATA_READ_ROLES)
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: AuthUser) {
     return this.locationsService.findAll(user);
   }
 
@@ -82,7 +129,10 @@ export class LocationsController {
   // occupied location, for the Category/ABC-Class coloring modes.
   @Get('occupancy')
   @Roles(...MASTER_DATA_READ_ROLES)
-  occupancy(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+  occupancy(
+    @Query('warehouseId') warehouseId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.locationsService.occupancyByWarehouse(warehouseId, user);
   }
 
@@ -90,7 +140,10 @@ export class LocationsController {
   // Floor bin's own POSITION represents, no occupancy needed at all.
   @Get('bin-rank')
   @Roles(...MASTER_DATA_READ_ROLES)
-  binRank(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+  binRank(
+    @Query('warehouseId') warehouseId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.locationsService.binRankByWarehouse(warehouseId, user);
   }
 
@@ -102,7 +155,10 @@ export class LocationsController {
   // reasoning.
   @Get('rack-rank')
   @Roles(...MASTER_DATA_READ_ROLES)
-  rackRank(@Query('warehouseId') warehouseId: string, @CurrentUser() user: any) {
+  rackRank(
+    @Query('warehouseId') warehouseId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.locationsService.rackRankByWarehouse(warehouseId, user);
   }
 
@@ -113,8 +169,15 @@ export class LocationsController {
   // LocationsService.buildLabelsZip()'s own comment for the full reasoning.
   @Post('labels')
   @Roles(...MASTER_DATA_READ_ROLES)
-  async labels(@Body('locationIds') locationIds: string[], @Res() res: Response, @CurrentUser() user: any) {
-    const buffer = await this.locationsService.buildLabelsZip(locationIds, user);
+  async labels(
+    @Body('locationIds') locationIds: string[],
+    @Res() res: Response,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const buffer = await this.locationsService.buildLabelsZip(
+      locationIds,
+      user,
+    );
     res.set({
       'Content-Type': 'application/zip',
       'Content-Disposition': 'attachment; filename="Location_Labels.zip"',
@@ -124,34 +187,40 @@ export class LocationsController {
 
   @Get('export')
   @Roles(...MASTER_DATA_READ_ROLES)
-  async export(@Res() res: Response, @CurrentUser() user: any) {
+  async export(@Res() res: Response, @CurrentUser() user: AuthUser) {
     const rows = await this.locationsService.exportRows(user);
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Location Import');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     res.set({
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': 'attachment; filename="Location_Master_Export.xlsx"',
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition':
+        'attachment; filename="Location_Master_Export.xlsx"',
     });
     res.send(buffer);
   }
 
   @Patch(':id')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  update(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+  update(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.locationsService.update(id, body, user);
   }
 
   @Patch(':id/deactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  deactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.locationsService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  reactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.locationsService.reactivate(id, user);
   }
 
@@ -159,13 +228,13 @@ export class LocationsController {
   // @Delete(':id') or Nest matches "all" as an :id param.
   @Delete('all')
   @Roles('COMPANY_ADMIN')
-  removeAll(@CurrentUser() user: any) {
+  removeAll(@CurrentUser() user: AuthUser) {
     return this.locationsService.removeAll(user);
   }
 
   @Delete(':id')
   @Roles('COMPANY_ADMIN')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
+  remove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.locationsService.remove(id, user);
   }
 }

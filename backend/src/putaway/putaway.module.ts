@@ -11,7 +11,13 @@ import { PrismaService } from '../prisma/prisma.service';
 @Module({
   imports: [NotificationsModule],
   controllers: [PutawayTasksController, MultiSkuLaneExceptionsController],
-  providers: [PutawayTasksService, MultiSkuLaneExceptionsService, PutawayClaimExpiryScheduler, PutawayAssignmentScheduler, PrismaService],
+  providers: [
+    PutawayTasksService,
+    MultiSkuLaneExceptionsService,
+    PutawayClaimExpiryScheduler,
+    PutawayAssignmentScheduler,
+    PrismaService,
+  ],
   // Exported so InboundModule/YardGateModule can call into task creation
   // (BATCH-mode receipt-status hook, IMMEDIATE-mode scan hook) — same
   // cross-module service reuse pattern as NotificationsModule.

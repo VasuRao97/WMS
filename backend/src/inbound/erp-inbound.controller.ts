@@ -20,7 +20,9 @@ import { CurrentCompany } from '../common/current-company.decorator';
 @Controller('erp')
 @UseGuards(ApiKeyGuard)
 export class ErpInboundController {
-  constructor(private readonly inboundReceiptsService: InboundReceiptsService) {}
+  constructor(
+    private readonly inboundReceiptsService: InboundReceiptsService,
+  ) {}
 
   @Post('inbound-receipts')
   push(@Body() body: any, @CurrentCompany() company: any) {

@@ -1,6 +1,16 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { companyFilter, ownWarehouseIds, WAREHOUSE_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  companyFilter,
+  ownWarehouseIds,
+  WAREHOUSE_SCOPED_ROLES,
+} from '../common/tenant.util';
 import { PutawayTasksService } from '../putaway/putaway-tasks.service';
 import * as bwipjs from 'bwip-js';
 import { ZipArchive } from 'archiver';
@@ -52,14 +62,22 @@ export class PalletsService {
     private putawayTasks: PutawayTasksService,
   ) {}
 
-  private async assertWarehouseAccess(warehouseId: string, user: any) {
-    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
-    if (!warehouse || (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)) {
+  private async assertWarehouseAccess(warehouseId: string, user: AuthUser) {
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { id: warehouseId },
+    });
+    if (
+      !warehouse ||
+      (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)
+    ) {
       throw new BadRequestException('Warehouse not found.');
     }
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouseId)) throw new ForbiddenException('You do not have access to this warehouse.');
+      if (!ids.includes(warehouseId))
+        throw new ForbiddenException(
+          'You do not have access to this warehouse.',
+        );
     }
     return warehouse;
   }
@@ -68,16 +86,25 @@ export class PalletsService {
   // Master CRUD — same shape as LocationsService
   // ------------------------------------------------------------
 
-  async findAll(user: any, warehouseId?: string, status?: string) {
+  async findAll(user: AuthUser, warehouseId?: string, status?: string) {
     const where: any = { warehouse: { ...companyFilter(user) } };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
-      where.warehouseId = { in: await ownWarehouseIds(this.prisma, user.userId) };
+      where.warehouseId = {
+        in: await ownWarehouseIds(this.prisma, user.userId),
+      };
     }
     if (warehouseId) where.warehouseId = warehouseId;
     if (status) where.status = status;
     return this.prisma.pallet.findMany({
       where,
-      include: { loads: { where: { status: 'OPEN' }, include: { sku: { select: { id: true, code: true, description: true } } } } },
+      include: {
+        loads: {
+          where: { status: 'OPEN' },
+          include: {
+            sku: { select: { id: true, code: true, description: true } },
+          },
+        },
+      },
       orderBy: { code: 'asc' },
     });
   }
@@ -92,11 +119,23 @@ export class PalletsService {
   // resolveLoadForScan() with a clear message, same as picking the wrong
   // physical pallet in real life. An optional skuId narrows the list
   // anyway, for a future caller that DOES know the SKU up front.
-  async findLoadable(user: any, warehouseId: string, skuId?: string) {
+  async findLoadable(user: AuthUser, warehouseId: string, skuId?: string) {
     await this.assertWarehouseAccess(warehouseId, user);
     const pallets = await this.prisma.pallet.findMany({
-      where: { warehouseId, isActive: true, OR: [{ status: 'AVAILABLE' }, { loads: { some: { status: 'OPEN', ...(skuId ? { skuId } : {}) } } }] },
-      include: { loads: { where: { status: 'OPEN' }, include: { sku: { select: { id: true, code: true } } } } },
+      where: {
+        warehouseId,
+        isActive: true,
+        OR: [
+          { status: 'AVAILABLE' },
+          { loads: { some: { status: 'OPEN', ...(skuId ? { skuId } : {}) } } },
+        ],
+      },
+      include: {
+        loads: {
+          where: { status: 'OPEN' },
+          include: { sku: { select: { id: true, code: true } } },
+        },
+      },
       orderBy: { code: 'asc' },
     });
     return pallets.map((p) => {
@@ -105,70 +144,116 @@ export class PalletsService {
         id: p.id,
         code: p.code,
         status: p.status,
-        activeLoad: openLoad ? { id: openLoad.id, skuId: openLoad.sku.id, skuCode: openLoad.sku.code } : null,
+        activeLoad: openLoad
+          ? {
+              id: openLoad.id,
+              skuId: openLoad.sku.id,
+              skuCode: openLoad.sku.code,
+            }
+          : null,
       };
     });
   }
 
-  async generate(data: any, user: any) {
+  async generate(data: any, user: AuthUser) {
     const warehouseId = data?.warehouseId;
     if (!warehouseId) throw new BadRequestException('A warehouse is required.');
     await this.assertWarehouseAccess(warehouseId, user);
 
-    const prefix = data?.codePrefix ? String(data.codePrefix).trim().toUpperCase() : 'PLT';
+    const prefix = data?.codePrefix
+      ? String(data.codePrefix).trim().toUpperCase()
+      : 'PLT';
     const numbers = expandRange(data?.range);
-    if (numbers.length === 0) throw new BadRequestException('A number or range is required (e.g. "0001-0100").');
+    if (numbers.length === 0)
+      throw new BadRequestException(
+        'A number or range is required (e.g. "0001-0100").',
+      );
     if (numbers.length > MAX_GENERATE_BATCH) {
-      throw new BadRequestException(`This range would generate ${numbers.length} pallets in one batch — narrow it down (max ${MAX_GENERATE_BATCH} per generation).`);
+      throw new BadRequestException(
+        `This range would generate ${numbers.length} pallets in one batch — narrow it down (max ${MAX_GENERATE_BATCH} per generation).`,
+      );
     }
 
-    const results: { id?: string; code: string; status: 'success' | 'error'; errors?: string[] }[] = [];
+    const results: {
+      id?: string;
+      code: string;
+      status: 'success' | 'error';
+      errors?: string[];
+    }[] = [];
     const codesSeen = new Set<string>();
     for (const n of numbers) {
       const code = `${prefix}-${n}`;
       if (codesSeen.has(code)) {
-        results.push({ code, status: 'error', errors: ['Duplicate within this generation batch.'] });
+        results.push({
+          code,
+          status: 'error',
+          errors: ['Duplicate within this generation batch.'],
+        });
         continue;
       }
       codesSeen.add(code);
-      const existing = await this.prisma.pallet.findUnique({ where: { warehouseId_code: { warehouseId, code } } });
+      const existing = await this.prisma.pallet.findUnique({
+        where: { warehouseId_code: { warehouseId, code } },
+      });
       if (existing) {
-        results.push({ code, status: 'error', errors: ['A pallet with this code already exists in this warehouse.'] });
+        results.push({
+          code,
+          status: 'error',
+          errors: ['A pallet with this code already exists in this warehouse.'],
+        });
         continue;
       }
-      const created = await this.prisma.pallet.create({ data: { warehouseId, code } });
+      const created = await this.prisma.pallet.create({
+        data: { warehouseId, code },
+      });
       results.push({ id: created.id, code, status: 'success' });
     }
     return results;
   }
 
-  private async assertAccess(id: string, user: any) {
-    const pallet = await this.prisma.pallet.findUnique({ where: { id }, include: { warehouse: true } });
+  private async assertAccess(id: string, user: AuthUser) {
+    const pallet = await this.prisma.pallet.findUnique({
+      where: { id },
+      include: { warehouse: true },
+    });
     if (!pallet) throw new NotFoundException('Pallet not found.');
-    if (user.role !== 'SUPER_ADMIN' && pallet.warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this pallet.');
+    if (
+      user.role !== 'SUPER_ADMIN' &&
+      pallet.warehouse.companyId !== user.companyId
+    )
+      throw new ForbiddenException('You do not have access to this pallet.');
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(pallet.warehouseId)) throw new ForbiddenException('You do not have access to this pallet.');
+      if (!ids.includes(pallet.warehouseId))
+        throw new ForbiddenException('You do not have access to this pallet.');
     }
     return pallet;
   }
 
-  async deactivate(id: string, isActive: boolean, user: any) {
+  async deactivate(id: string, isActive: boolean, user: AuthUser) {
     await this.assertAccess(id, user);
     return this.prisma.pallet.update({ where: { id }, data: { isActive } });
   }
 
-  async removeAll(user: any) {
+  async removeAll(user: AuthUser) {
     const pallets = await this.prisma.pallet.findMany({
       where: { warehouse: { ...companyFilter(user) } },
       select: { id: true, code: true, _count: { select: { loads: true } } },
     });
-    const deletable = pallets.filter((p) => p._count.loads === 0).map((p) => p.id);
-    const blocked = pallets.filter((p) => p._count.loads > 0).map((p) => p.code);
+    const deletable = pallets
+      .filter((p) => p._count.loads === 0)
+      .map((p) => p.id);
+    const blocked = pallets
+      .filter((p) => p._count.loads > 0)
+      .map((p) => p.code);
     if (deletable.length > 0) {
       await this.prisma.pallet.deleteMany({ where: { id: { in: deletable } } });
     }
-    return { deletedCount: deletable.length, blockedCount: blocked.length, blockedCodes: blocked };
+    return {
+      deletedCount: deletable.length,
+      blockedCount: blocked.length,
+      blockedCodes: blocked,
+    };
   }
 
   // ------------------------------------------------------------
@@ -177,17 +262,28 @@ export class PalletsService {
   // physical pallet once, at registration, never reprinted per load").
   // ------------------------------------------------------------
 
-  async buildLabelsZip(palletIds: string[], user: any): Promise<Buffer> {
-    if (!palletIds || palletIds.length === 0) throw new BadRequestException('No pallets given.');
+  async buildLabelsZip(palletIds: string[], user: AuthUser): Promise<Buffer> {
+    if (!palletIds || palletIds.length === 0)
+      throw new BadRequestException('No pallets given.');
     if (palletIds.length > MAX_GENERATE_BATCH) {
-      throw new BadRequestException(`Too many pallets at once — narrow it down (max ${MAX_GENERATE_BATCH} per label batch).`);
+      throw new BadRequestException(
+        `Too many pallets at once — narrow it down (max ${MAX_GENERATE_BATCH} per label batch).`,
+      );
     }
-    const where: any = { id: { in: palletIds }, warehouse: { ...companyFilter(user) } };
+    const where: any = {
+      id: { in: palletIds },
+      warehouse: { ...companyFilter(user) },
+    };
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
-      where.warehouseId = { in: await ownWarehouseIds(this.prisma, user.userId) };
+      where.warehouseId = {
+        in: await ownWarehouseIds(this.prisma, user.userId),
+      };
     }
     const pallets = await this.prisma.pallet.findMany({ where });
-    if (pallets.length === 0) throw new BadRequestException('None of the given pallets were found, or you do not have access to them.');
+    if (pallets.length === 0)
+      throw new BadRequestException(
+        'None of the given pallets were found, or you do not have access to them.',
+      );
 
     return new Promise((resolve, reject) => {
       const archive = new ZipArchive({ zlib: { level: 9 } });
@@ -198,7 +294,14 @@ export class PalletsService {
 
       Promise.all(
         pallets.map(async (p) => {
-          const png = await bwipjs.toBuffer({ bcid: 'code128', text: p.code, scale: 3, height: 12, includetext: true, textxalign: 'center' });
+          const png = await bwipjs.toBuffer({
+            bcid: 'code128',
+            text: p.code,
+            scale: 3,
+            height: 12,
+            includetext: true,
+            textxalign: 'center',
+          });
           archive.append(png, { name: `${p.code}.png` });
         }),
       )
@@ -217,7 +320,15 @@ export class PalletsService {
   // — "the scan IS the marrying action," confirmed 2026-09-01 rather than a
   // separate consolidation screen. Resolves (or opens) the OPEN PalletLoad
   // for this pallet, enforcing single-SKU-per-pallet.
-  async resolveLoadForScan(tx: any, params: { warehouseId: string; skuId: string; palletId: string; receiptLineId: string }): Promise<string> {
+  async resolveLoadForScan(
+    tx: any,
+    params: {
+      warehouseId: string;
+      skuId: string;
+      palletId: string;
+      receiptLineId: string;
+    },
+  ): Promise<string> {
     const { warehouseId, skuId, palletId, receiptLineId } = params;
 
     // 2026-09-06 hardening-pass fix — a real race here, not just a
@@ -242,23 +353,39 @@ export class PalletsService {
     await tx.$queryRaw`SELECT id FROM "Pallet" WHERE id = ${palletId} FOR UPDATE`;
 
     const pallet = await tx.pallet.findUnique({ where: { id: palletId } });
-    if (!pallet || pallet.warehouseId !== warehouseId) throw new BadRequestException('Pallet not found in this warehouse.');
-    if (!pallet.isActive) throw new BadRequestException(`Pallet "${pallet.code}" is inactive.`);
+    if (!pallet || pallet.warehouseId !== warehouseId)
+      throw new BadRequestException('Pallet not found in this warehouse.');
+    if (!pallet.isActive)
+      throw new BadRequestException(`Pallet "${pallet.code}" is inactive.`);
 
-    let load = await tx.palletLoad.findFirst({ where: { palletId, status: 'OPEN' } });
+    let load = await tx.palletLoad.findFirst({
+      where: { palletId, status: 'OPEN' },
+    });
     if (load) {
       if (load.skuId !== skuId) {
-        const existingSku = await tx.sku.findUnique({ where: { id: load.skuId }, select: { code: true } });
-        throw new BadRequestException(`Pallet "${pallet.code}" already has ${existingSku?.code ?? 'a different SKU'} loaded onto it — single-SKU pallets only.`);
+        const existingSku = await tx.sku.findUnique({
+          where: { id: load.skuId },
+          select: { code: true },
+        });
+        throw new BadRequestException(
+          `Pallet "${pallet.code}" already has ${existingSku?.code ?? 'a different SKU'} loaded onto it — single-SKU pallets only.`,
+        );
       }
       return load.id;
     }
 
     if (pallet.status !== 'AVAILABLE') {
-      throw new BadRequestException(`Pallet "${pallet.code}" is not available — it may already be in use, or awaiting Putaway.`);
+      throw new BadRequestException(
+        `Pallet "${pallet.code}" is not available — it may already be in use, or awaiting Putaway.`,
+      );
     }
-    load = await tx.palletLoad.create({ data: { palletId, skuId, receiptLineId } });
-    await tx.pallet.update({ where: { id: palletId }, data: { status: 'IN_USE' } });
+    load = await tx.palletLoad.create({
+      data: { palletId, skuId, receiptLineId },
+    });
+    await tx.pallet.update({
+      where: { id: palletId },
+      data: { status: 'IN_USE' },
+    });
     return load.id;
   }
 
@@ -270,21 +397,46 @@ export class PalletsService {
   // it, per the design ("closed either by hitting a max-cases number... or
   // an operator's manual short-close").
   async maybeAutoCloseLoad(tx: any, loadId: string) {
-    const load = await tx.palletLoad.findUnique({ where: { id: loadId }, include: { sku: { select: { maxCasesPerPallet: true, companyId: true } } } });
+    const load = await tx.palletLoad.findUnique({
+      where: { id: loadId },
+      include: {
+        sku: { select: { maxCasesPerPallet: true, companyId: true } },
+      },
+    });
     if (!load || load.status !== 'OPEN') return;
-    const company = await tx.company.findUnique({ where: { id: load.sku.companyId }, select: { defaultMaxCasesPerPallet: true } });
-    const effectiveMax = load.sku.maxCasesPerPallet ?? company?.defaultMaxCasesPerPallet ?? null;
+    const company = await tx.company.findUnique({
+      where: { id: load.sku.companyId },
+      select: { defaultMaxCasesPerPallet: true },
+    });
+    const effectiveMax =
+      load.sku.maxCasesPerPallet ?? company?.defaultMaxCasesPerPallet ?? null;
     if (effectiveMax == null) return;
 
-    const agg = await tx.stockMovement.aggregate({ where: { palletLoadId: loadId }, _sum: { quantity: true } });
+    const agg = await tx.stockMovement.aggregate({
+      where: { palletLoadId: loadId },
+      _sum: { quantity: true },
+    });
     const qty = Number(agg._sum.quantity || 0);
     if (qty >= Number(effectiveMax)) {
       await this.closeLoad(tx, loadId, 'CASES_FULL', null);
     }
   }
 
-  private async closeLoad(tx: any, loadId: string, reason: string, closedById: string | null) {
-    await tx.palletLoad.update({ where: { id: loadId }, data: { status: 'CLOSED', closeReason: reason, closedAt: new Date(), closedById: closedById ?? undefined } });
+  private async closeLoad(
+    tx: any,
+    loadId: string,
+    reason: string,
+    closedById: string | null,
+  ) {
+    await tx.palletLoad.update({
+      where: { id: loadId },
+      data: {
+        status: 'CLOSED',
+        closeReason: reason,
+        closedAt: new Date(),
+        closedById: closedById ?? undefined,
+      },
+    });
     await this.putawayTasks.createTaskForClosedPallet(tx, loadId);
   }
 
@@ -294,24 +446,39 @@ export class PalletsService {
   // (nothing ever scanned onto it) is closed too but produces no Putaway
   // task (createTaskForClosedPallet is a no-op on zero quantity) and simply
   // frees the pallet back to AVAILABLE.
-  async manualShortClose(loadId: string, user: any) {
-    const load = await this.prisma.palletLoad.findUnique({ where: { id: loadId }, include: { pallet: { include: { warehouse: true } } } });
+  async manualShortClose(loadId: string, user: AuthUser) {
+    const load = await this.prisma.palletLoad.findUnique({
+      where: { id: loadId },
+      include: { pallet: { include: { warehouse: true } } },
+    });
     if (!load) throw new NotFoundException('Pallet load not found.');
-    if (user.role !== 'SUPER_ADMIN' && load.pallet.warehouse.companyId !== user.companyId) throw new ForbiddenException('You do not have access to this pallet.');
+    if (
+      user.role !== 'SUPER_ADMIN' &&
+      load.pallet.warehouse.companyId !== user.companyId
+    )
+      throw new ForbiddenException('You do not have access to this pallet.');
     if (WAREHOUSE_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(load.pallet.warehouseId)) throw new ForbiddenException('You do not have access to this pallet.');
+      if (!ids.includes(load.pallet.warehouseId))
+        throw new ForbiddenException('You do not have access to this pallet.');
     }
-    if (load.status !== 'OPEN') throw new BadRequestException('This pallet load is already closed.');
+    if (load.status !== 'OPEN')
+      throw new BadRequestException('This pallet load is already closed.');
 
     return this.prisma.$transaction(async (tx) => {
       await this.closeLoad(tx, loadId, 'MANUAL_SHORT_CLOSE', user.userId);
       // A pallet whose just-closed load turned out genuinely empty (short-
       // closed with nothing ever scanned onto it) frees back up immediately
       // — nothing for Putaway to do, no reason to keep it IN_USE.
-      const agg = await tx.stockMovement.aggregate({ where: { palletLoadId: loadId }, _sum: { quantity: true } });
+      const agg = await tx.stockMovement.aggregate({
+        where: { palletLoadId: loadId },
+        _sum: { quantity: true },
+      });
       if (Number(agg._sum.quantity || 0) <= 0) {
-        await tx.pallet.update({ where: { id: load.palletId }, data: { status: 'AVAILABLE' } });
+        await tx.pallet.update({
+          where: { id: load.palletId },
+          data: { status: 'AVAILABLE' },
+        });
       }
       return tx.palletLoad.findUnique({ where: { id: loadId } });
     });

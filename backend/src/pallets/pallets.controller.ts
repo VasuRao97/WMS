@@ -1,10 +1,26 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { MASTER_DATA_READ_ROLES, MASTER_DATA_WRITE_ROLES, INBOUND_SCAN_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  MASTER_DATA_READ_ROLES,
+  MASTER_DATA_WRITE_ROLES,
+  INBOUND_SCAN_ROLES,
+} from '../common/tenant.util';
 import { PalletsService } from './pallets.service';
 
 // Pallet Master — same read/write role tier as Locations (occasional-edit
@@ -17,7 +33,11 @@ export class PalletsController {
 
   @Get()
   @Roles(...MASTER_DATA_READ_ROLES)
-  findAll(@Query('warehouseId') warehouseId: string, @Query('status') status: string, @CurrentUser() user: any) {
+  findAll(
+    @Query('warehouseId') warehouseId: string,
+    @Query('status') status: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.palletsService.findAll(user, warehouseId, status);
   }
 
@@ -26,33 +46,51 @@ export class PalletsController {
   // consulted mid-receiving, not while browsing master data.
   @Get('loadable')
   @Roles(...INBOUND_SCAN_ROLES)
-  findLoadable(@Query('warehouseId') warehouseId: string, @Query('skuId') skuId: string | undefined, @CurrentUser() user: any) {
-    return this.palletsService.findLoadable(user, warehouseId, skuId || undefined);
+  findLoadable(
+    @Query('warehouseId') warehouseId: string,
+    @Query('skuId') skuId: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.palletsService.findLoadable(
+      user,
+      warehouseId,
+      skuId || undefined,
+    );
   }
 
   @Post('generate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  generate(@Body() body: any, @CurrentUser() user: any) {
+  generate(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.palletsService.generate(body, user);
   }
 
   @Post('labels')
   @Roles(...MASTER_DATA_READ_ROLES)
-  async labels(@Body() body: { palletIds: string[] }, @CurrentUser() user: any, @Res() res: Response) {
-    const buffer = await this.palletsService.buildLabelsZip(body?.palletIds || [], user);
-    res.set({ 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="Pallet_Labels.zip"' });
+  async labels(
+    @Body() body: { palletIds: string[] },
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ) {
+    const buffer = await this.palletsService.buildLabelsZip(
+      body?.palletIds || [],
+      user,
+    );
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="Pallet_Labels.zip"',
+    });
     res.send(buffer);
   }
 
   @Patch(':id/deactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  deactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.palletsService.deactivate(id, false, user);
   }
 
   @Patch(':id/reactivate')
   @Roles(...MASTER_DATA_WRITE_ROLES)
-  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  reactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.palletsService.deactivate(id, true, user);
   }
 
@@ -61,14 +99,14 @@ export class PalletsController {
   // All in this codebase.
   @Delete('all')
   @Roles('COMPANY_ADMIN')
-  removeAll(@CurrentUser() user: any) {
+  removeAll(@CurrentUser() user: AuthUser) {
     return this.palletsService.removeAll(user);
   }
 
   // Manual short-close (2026-09-01) — "an operator's manual short-close."
   @Patch('loads/:id/close')
   @Roles(...INBOUND_SCAN_ROLES)
-  closeLoad(@Param('id') id: string, @CurrentUser() user: any) {
+  closeLoad(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.palletsService.manualShortClose(id, user);
   }
 }

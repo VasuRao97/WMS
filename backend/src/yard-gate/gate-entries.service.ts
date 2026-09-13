@@ -1,7 +1,18 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeCode } from '../common/normalize.util';
-import { assertGateAccessAllowed, companyFilter, ownWarehouseIds, GATE_YARD_SCOPED_ROLES } from '../common/tenant.util';
+import {
+  type AuthUser,
+  assertGateAccessAllowed,
+  companyFilter,
+  ownWarehouseIds,
+  GATE_YARD_SCOPED_ROLES,
+} from '../common/tenant.util';
 import { DriverNotificationService } from './driver-notification.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PutawayTasksService } from '../putaway/putaway-tasks.service';
@@ -21,7 +32,16 @@ const DOCUMENT_STATUS_VALUES = ['OK', 'FLAGGED', 'MISSING'];
 
 const GATE_ENTRY_INCLUDE = {
   warehouse: { select: { id: true, code: true, name: true } },
-  vehicle: { select: { id: true, vehicleNumber: true, maxTonnage: true, vehicleType: { select: { id: true, name: true, segment: true, maxTonnage: true } } } },
+  vehicle: {
+    select: {
+      id: true,
+      vehicleNumber: true,
+      maxTonnage: true,
+      vehicleType: {
+        select: { id: true, name: true, segment: true, maxTonnage: true },
+      },
+    },
+  },
   driver: { select: { id: true, name: true, phone: true } },
   yardSlot: { select: { id: true, code: true } },
   gateInBy: { select: { id: true, name: true } },
@@ -33,7 +53,18 @@ const GATE_ENTRY_INCLUDE = {
   // expected lines, and the full scan log for this visit.
   inboundReceipt: {
     include: {
-      lines: { include: { sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } } } },
+      lines: {
+        include: {
+          sku: {
+            select: {
+              id: true,
+              code: true,
+              description: true,
+              category: { select: { id: true, name: true } },
+            },
+          },
+        },
+      },
       stagingLocation: { select: { id: true, code: true } },
     },
     // requiresPalletConsolidation (2026-09-01) surfaces via the default
@@ -42,7 +73,14 @@ const GATE_ENTRY_INCLUDE = {
   },
   inboundScans: {
     include: {
-      sku: { select: { id: true, code: true, description: true, category: { select: { id: true, name: true } } } },
+      sku: {
+        select: {
+          id: true,
+          code: true,
+          description: true,
+          category: { select: { id: true, name: true } },
+        },
+      },
       scannedBy: { select: { id: true, name: true } },
       reviewedBy: { select: { id: true, name: true } },
     },
@@ -71,12 +109,21 @@ export class GateEntriesService {
   // Net weight is always derived (gross - tare) at read time, never stored —
   // same "always derived" philosophy as Location capacity / on-hand stock.
   private attachNetWeight(entry: any) {
-    const netWeightKg = entry.grossWeightKg != null && entry.tareWeightKg != null ? Number(entry.grossWeightKg) - Number(entry.tareWeightKg) : undefined;
+    const netWeightKg =
+      entry.grossWeightKg != null && entry.tareWeightKg != null
+        ? Number(entry.grossWeightKg) - Number(entry.tareWeightKg)
+        : undefined;
     return { ...entry, netWeightKg };
   }
 
-  private async assertWarehouseAccess(warehouseId: string, user: any, errors: string[]) {
-    const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId } });
+  private async assertWarehouseAccess(
+    warehouseId: string,
+    user: AuthUser,
+    errors: string[],
+  ) {
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { id: warehouseId },
+    });
     if (!warehouse) {
       errors.push('Warehouse not found.');
       return;
@@ -87,19 +134,28 @@ export class GateEntriesService {
     }
     if (GATE_YARD_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(warehouseId)) errors.push('You can only log gate entries for your own assigned warehouse(s).');
+      if (!ids.includes(warehouseId))
+        errors.push(
+          'You can only log gate entries for your own assigned warehouse(s).',
+        );
     }
   }
 
   // Gate In always picks an EXISTING registered Vehicle/Driver — no
   // inline/auto-create (confirmed with the client 2026-08-25). Both are
   // company-scoped master data, same access shape as Warehouse.
-  private async resolveVehicle(vehicleId: any, user: any, errors: string[]): Promise<string | undefined> {
+  private async resolveVehicle(
+    vehicleId: any,
+    user: AuthUser,
+    errors: string[],
+  ): Promise<string | undefined> {
     if (!vehicleId) {
       errors.push('Vehicle is required — select a registered vehicle.');
       return undefined;
     }
-    const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where: { id: vehicleId },
+    });
     if (!vehicle) {
       errors.push('Vehicle not found — it may need to be registered first.');
       return undefined;
@@ -115,12 +171,18 @@ export class GateEntriesService {
     return vehicleId;
   }
 
-  private async resolveDriver(driverId: any, user: any, errors: string[]): Promise<string | undefined> {
+  private async resolveDriver(
+    driverId: any,
+    user: AuthUser,
+    errors: string[],
+  ): Promise<string | undefined> {
     if (!driverId) {
       errors.push('Driver is required — select a registered driver.');
       return undefined;
     }
-    const driver = await this.prisma.driver.findUnique({ where: { id: driverId } });
+    const driver = await this.prisma.driver.findUnique({
+      where: { id: driverId },
+    });
     if (!driver) {
       errors.push('Driver not found — they may need to be registered first.');
       return undefined;
@@ -140,23 +202,33 @@ export class GateEntriesService {
   // RC/PUC/Fitness), one row per type. See schema.prisma's comment on
   // GateEntryDocumentCheck for why this is a separate table rather than
   // fixed columns.
-  private validateDocumentChecks(input: any, errors: string[]): { documentType: string; status: string; note?: string }[] {
+  private validateDocumentChecks(
+    input: any,
+    errors: string[],
+  ): { documentType: string; status: string; note?: string }[] {
     if (input === undefined || input === null) return [];
     if (!Array.isArray(input)) {
       errors.push('Document checks must be a list.');
       return [];
     }
     const seen = new Set<string>();
-    const result: { documentType: string; status: string; note?: string }[] = [];
+    const result: { documentType: string; status: string; note?: string }[] =
+      [];
     for (const row of input) {
-      const documentType = row?.documentType ? normalizeCode(row.documentType) : '';
+      const documentType = row?.documentType
+        ? normalizeCode(row.documentType)
+        : '';
       const status = row?.status ? normalizeCode(row.status) : '';
       if (!DOCUMENT_TYPE_VALUES.includes(documentType)) {
-        errors.push(`Document type must be one of: ${DOCUMENT_TYPE_VALUES.join(', ')}.`);
+        errors.push(
+          `Document type must be one of: ${DOCUMENT_TYPE_VALUES.join(', ')}.`,
+        );
         continue;
       }
       if (!DOCUMENT_STATUS_VALUES.includes(status)) {
-        errors.push(`Document status must be one of: ${DOCUMENT_STATUS_VALUES.join(', ')}.`);
+        errors.push(
+          `Document status must be one of: ${DOCUMENT_STATUS_VALUES.join(', ')}.`,
+        );
         continue;
       }
       if (seen.has(documentType)) {
@@ -164,7 +236,11 @@ export class GateEntriesService {
         continue;
       }
       seen.add(documentType);
-      result.push({ documentType, status, note: row.note ? String(row.note).trim() : undefined });
+      result.push({
+        documentType,
+        status,
+        note: row.note ? String(row.note).trim() : undefined,
+      });
     }
     return result;
   }
@@ -176,8 +252,14 @@ export class GateEntriesService {
   // Gate In/Out itself proceeds exactly as normal (confirmed with the
   // client). Only a warehouse that DOES have slots, all currently occupied,
   // triggers the "yard full" warning/block path.
-  private async assignYardSlot(warehouseId: string, companyId: string, errors: string[]): Promise<{ yardSlotId?: string; yardFullWarning: boolean }> {
-    const totalSlots = await this.prisma.yardSlot.count({ where: { warehouseId, isActive: true } });
+  private async assignYardSlot(
+    warehouseId: string,
+    companyId: string,
+    errors: string[],
+  ): Promise<{ yardSlotId?: string; yardFullWarning: boolean }> {
+    const totalSlots = await this.prisma.yardSlot.count({
+      where: { warehouseId, isActive: true },
+    });
     if (totalSlots === 0) return { yardFullWarning: false };
 
     const freeSlot = await this.prisma.yardSlot.findFirst({
@@ -187,17 +269,23 @@ export class GateEntriesService {
     if (freeSlot) return { yardSlotId: freeSlot.id, yardFullWarning: false };
 
     // Yard is full — always warn; only hard-block if this company opted in.
-    const company = await this.prisma.company.findUnique({ where: { id: companyId } });
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+    });
     if (company?.blockGateInWhenYardFull) {
-      errors.push('The yard is at full capacity — no parking slots available. This vehicle cannot be gated in until a slot frees up.');
+      errors.push(
+        'The yard is at full capacity — no parking slots available. This vehicle cannot be gated in until a slot frees up.',
+      );
     }
     return { yardFullWarning: true };
   }
 
-  async create(data: any, user: any) {
+  async create(data: any, user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     if (!user.companyId) {
-      throw new ForbiddenException('Super admin accounts cannot log gate entries directly — log in as a company admin instead.');
+      throw new ForbiddenException(
+        'Super admin accounts cannot log gate entries directly — log in as a company admin instead.',
+      );
     }
     const errors: string[] = [];
     const warehouseId = data.warehouseId;
@@ -205,7 +293,10 @@ export class GateEntriesService {
     if (!warehouseId) errors.push('Warehouse is required.');
     else {
       await this.assertWarehouseAccess(warehouseId, user, errors);
-      const warehouse = await this.prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { companyId: true } });
+      const warehouse = await this.prisma.warehouse.findUnique({
+        where: { id: warehouseId },
+        select: { companyId: true },
+      });
       companyId = warehouse?.companyId;
     }
 
@@ -224,27 +315,48 @@ export class GateEntriesService {
     if (vehicleId) {
       const openElsewhere = await this.prisma.vehicleGateEntry.findFirst({
         where: { vehicleId, gateOutAt: null },
-        select: { id: true, warehouse: { select: { code: true } }, gateInAt: true },
+        select: {
+          id: true,
+          warehouse: { select: { code: true } },
+          gateInAt: true,
+        },
       });
       if (openElsewhere) {
-        errors.push(`This vehicle already has an open gate entry at ${openElsewhere.warehouse.code} (since ${openElsewhere.gateInAt.toISOString()}) — gate it out there first.`);
+        errors.push(
+          `This vehicle already has an open gate entry at ${openElsewhere.warehouse.code} (since ${openElsewhere.gateInAt.toISOString()}) — gate it out there first.`,
+        );
       }
     }
 
     const purpose = data.purpose ? normalizeCode(data.purpose) : '';
     if (!purpose) errors.push('Purpose is required.');
-    else if (!PURPOSE_VALUES.includes(purpose)) errors.push(`Purpose must be one of: ${Object.values(PURPOSE_LABELS).join(', ')}.`);
+    else if (!PURPOSE_VALUES.includes(purpose))
+      errors.push(
+        `Purpose must be one of: ${Object.values(PURPOSE_LABELS).join(', ')}.`,
+      );
 
     let grossWeightKg: number | undefined;
-    if (data.grossWeightKg !== undefined && data.grossWeightKg !== null && data.grossWeightKg !== '') {
+    if (
+      data.grossWeightKg !== undefined &&
+      data.grossWeightKg !== null &&
+      data.grossWeightKg !== ''
+    ) {
       grossWeightKg = Number(data.grossWeightKg);
-      if (!Number.isFinite(grossWeightKg) || grossWeightKg <= 0) errors.push('Gross Weight must be a positive number.');
+      if (!Number.isFinite(grossWeightKg) || grossWeightKg <= 0)
+        errors.push('Gross Weight must be a positive number.');
     }
 
-    const documentChecks = this.validateDocumentChecks(data.documentChecks, errors);
-    const commodityDescription = data.commodityDescription ? String(data.commodityDescription).trim() : undefined;
+    const documentChecks = this.validateDocumentChecks(
+      data.documentChecks,
+      errors,
+    );
+    const commodityDescription = data.commodityDescription
+      ? String(data.commodityDescription).trim()
+      : undefined;
 
-    let yardResult: { yardSlotId?: string; yardFullWarning: boolean } = { yardFullWarning: false };
+    let yardResult: { yardSlotId?: string; yardFullWarning: boolean } = {
+      yardFullWarning: false,
+    };
     if (warehouseId && companyId && errors.length === 0) {
       yardResult = await this.assignYardSlot(warehouseId, companyId, errors);
     }
@@ -257,23 +369,40 @@ export class GateEntriesService {
           warehouse: { connect: { id: warehouseId } },
           vehicle: { connect: { id: vehicleId } },
           driver: { connect: { id: driverId } },
-          transporterName: data.transporterName ? String(data.transporterName).trim() : undefined,
+          transporterName: data.transporterName
+            ? String(data.transporterName).trim()
+            : undefined,
           purpose: purpose as any,
-          referenceNo: data.referenceNo ? String(data.referenceNo).trim() : undefined,
-          destinationCity: data.destinationCity ? String(data.destinationCity).trim() : undefined,
+          referenceNo: data.referenceNo
+            ? String(data.referenceNo).trim()
+            : undefined,
+          destinationCity: data.destinationCity
+            ? String(data.destinationCity).trim()
+            : undefined,
           commodityDescription,
-          yardSlot: yardResult.yardSlotId ? { connect: { id: yardResult.yardSlotId } } : undefined,
+          yardSlot: yardResult.yardSlotId
+            ? { connect: { id: yardResult.yardSlotId } }
+            : undefined,
           gateInBy: { connect: { id: user.userId } },
           grossWeightKg: grossWeightKg,
           grossWeighedAt: grossWeightKg !== undefined ? new Date() : undefined,
           documentChecks: documentChecks.length
-            ? { create: documentChecks.map((d) => ({ documentType: d.documentType as any, status: d.status as any, note: d.note })) }
+            ? {
+                create: documentChecks.map((d) => ({
+                  documentType: d.documentType as any,
+                  status: d.status as any,
+                  note: d.note,
+                })),
+              }
             : undefined,
         },
         include: GATE_ENTRY_INCLUDE,
       });
       if (yardResult.yardSlotId) {
-        await tx.yardSlot.update({ where: { id: yardResult.yardSlotId }, data: { status: 'OCCUPIED' } });
+        await tx.yardSlot.update({
+          where: { id: yardResult.yardSlotId },
+          data: { status: 'OCCUPIED' },
+        });
       }
       return entry;
     });
@@ -285,11 +414,18 @@ export class GateEntriesService {
     // DetentionAlertScheduler already uses for its own recipient lookup.
     // Fire-and-forget in spirit (errors here shouldn't fail the Gate In
     // itself) but awaited so a real send failure still surfaces in logs.
-    if (purpose === 'INBOUND_DELIVERY' && documentChecks.length === DOCUMENT_TYPE_VALUES.length && documentChecks.every((d) => d.status === 'OK')) {
+    if (
+      purpose === 'INBOUND_DELIVERY' &&
+      documentChecks.length === DOCUMENT_TYPE_VALUES.length &&
+      documentChecks.every((d) => d.status === 'OK')
+    ) {
       await this.notifyVehicleReady(created, companyId!);
     }
 
-    return { ...this.attachNetWeight(created), yardFullWarning: yardResult.yardFullWarning };
+    return {
+      ...this.attachNetWeight(created),
+      yardFullWarning: yardResult.yardFullWarning,
+    };
   }
 
   private async notifyVehicleReady(entry: any, companyId: string) {
@@ -322,11 +458,13 @@ export class GateEntriesService {
     }
   }
 
-  async findAll(user: any) {
+  async findAll(user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const where: any = { warehouse: { ...companyFilter(user) } };
     if (GATE_YARD_SCOPED_ROLES.includes(user.role)) {
-      where.warehouseId = { in: await ownWarehouseIds(this.prisma, user.userId) };
+      where.warehouseId = {
+        in: await ownWarehouseIds(this.prisma, user.userId),
+      };
     }
     const entries = await this.prisma.vehicleGateEntry.findMany({
       where,
@@ -341,16 +479,16 @@ export class GateEntriesService {
   // i.e. filtering happens in Excel afterward, not in this endpoint).
   // Same shape convention as every other master-data export in this
   // codebase, applied to a transaction log for the first time.
-  async exportRows(user: any) {
+  async exportRows(user: AuthUser) {
     const entries = await this.findAll(user);
     return entries.map((e: any) => ({
       'Gate In At': e.gateInAt ? e.gateInAt.toISOString() : '',
       'Gate In By': e.gateInBy?.name || '',
-      'Warehouse': e.warehouse.code,
+      Warehouse: e.warehouse.code,
       'Vehicle Number': e.vehicle.vehicleNumber,
-      'Driver': e.driver.name,
-      'Transporter': e.transporterName || '',
-      'Purpose': e.purpose,
+      Driver: e.driver.name,
+      Transporter: e.transporterName || '',
+      Purpose: e.purpose,
       'Reference No': e.referenceNo || '',
       'Destination City': e.destinationCity || '',
       'Commodity Description': e.commodityDescription || '',
@@ -358,37 +496,56 @@ export class GateEntriesService {
       'Assigned Dock': e.assignedDockNumber || '',
       'Docked In At': e.dockedInAt ? e.dockedInAt.toISOString() : '',
       'Docked In By': e.dockedInBy?.name || '',
-      'Physical Condition OK': e.physicalConditionOk === true ? 'TRUE' : e.physicalConditionOk === false ? 'FALSE' : '',
+      'Physical Condition OK':
+        e.physicalConditionOk === true
+          ? 'TRUE'
+          : e.physicalConditionOk === false
+            ? 'FALSE'
+            : '',
       'Physical Condition Remarks': e.physicalConditionRemarks || '',
       'Seal Number': e.sealNumber || '',
-      'Inward Completed At': e.inwardCompletedAt ? e.inwardCompletedAt.toISOString() : '',
+      'Inward Completed At': e.inwardCompletedAt
+        ? e.inwardCompletedAt.toISOString()
+        : '',
       'Inward Completed By': e.inwardCompletedBy?.name || '',
       'Inward Completion Remarks': e.inwardCompletionRemarks || '',
       'Gate Out At': e.gateOutAt ? e.gateOutAt.toISOString() : '',
       'Gate Out By': e.gateOutBy?.name || '',
       'E-Way Bill No': e.eWayBillNo || '',
       'Invoice Weight Kg': e.invoiceWeightKg ?? '',
-      'Material Received Confirmed': e.materialReceivedConfirmed ? 'TRUE' : 'FALSE',
+      'Material Received Confirmed': e.materialReceivedConfirmed
+        ? 'TRUE'
+        : 'FALSE',
       'Gross Weight Kg': e.grossWeightKg ?? '',
       'Tare Weight Kg': e.tareWeightKg ?? '',
       'Net Weight Kg': e.netWeightKg ?? '',
-      'Document Checks': (e.documentChecks || []).map((d: any) => `${d.documentType}:${d.status}`).join(', '),
-      'Status': e.gateOutAt ? 'GATED_OUT' : e.dockedInAt ? 'DOCKED' : 'IN_YARD',
+      'Document Checks': (e.documentChecks || [])
+        .map((d: any) => `${d.documentType}:${d.status}`)
+        .join(', '),
+      Status: e.gateOutAt ? 'GATED_OUT' : e.dockedInAt ? 'DOCKED' : 'IN_YARD',
     }));
   }
 
-  private async assertAccess(id: string, user: any) {
+  private async assertAccess(id: string, user: AuthUser) {
     const entry = await this.prisma.vehicleGateEntry.findUnique({
       where: { id },
       include: { warehouse: true, vehicle: { include: { vehicleType: true } } },
     });
     if (!entry) throw new NotFoundException('Gate entry not found.');
-    if (user.role !== 'SUPER_ADMIN' && entry.warehouse.companyId !== user.companyId) {
-      throw new ForbiddenException('You do not have access to this gate entry.');
+    if (
+      user.role !== 'SUPER_ADMIN' &&
+      entry.warehouse.companyId !== user.companyId
+    ) {
+      throw new ForbiddenException(
+        'You do not have access to this gate entry.',
+      );
     }
     if (GATE_YARD_SCOPED_ROLES.includes(user.role)) {
       const ids = await ownWarehouseIds(this.prisma, user.userId);
-      if (!ids.includes(entry.warehouseId)) throw new ForbiddenException('You do not have access to this gate entry.');
+      if (!ids.includes(entry.warehouseId))
+        throw new ForbiddenException(
+          'You do not have access to this gate entry.',
+        );
     }
     return entry;
   }
@@ -398,14 +555,23 @@ export class GateEntriesService {
   // deliberately not editable here (changing either mid-visit would be a
   // data-integrity smell, not a real correction) — a mistaken entry should
   // be re-logged instead.
-  async update(id: string, data: any, user: any) {
+  async update(id: string, data: any, user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
-    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out — its entry can no longer be edited.');
+    if (existing.gateOutAt)
+      throw new BadRequestException(
+        'This vehicle has already gated out — its entry can no longer be edited.',
+      );
 
     const errors: string[] = [];
-    const vehicleId = data.vehicleId !== undefined ? await this.resolveVehicle(data.vehicleId, user, errors) : existing.vehicleId;
-    const driverId = data.driverId !== undefined ? await this.resolveDriver(data.driverId, user, errors) : existing.driverId;
+    const vehicleId =
+      data.vehicleId !== undefined
+        ? await this.resolveVehicle(data.vehicleId, user, errors)
+        : existing.vehicleId;
+    const driverId =
+      data.driverId !== undefined
+        ? await this.resolveDriver(data.driverId, user, errors)
+        : existing.driverId;
     if (errors.length > 0) throw new BadRequestException(errors);
 
     const updated = await this.prisma.vehicleGateEntry.update({
@@ -413,9 +579,18 @@ export class GateEntriesService {
       data: {
         vehicle: { connect: { id: vehicleId } },
         driver: { connect: { id: driverId } },
-        transporterName: data.transporterName !== undefined ? String(data.transporterName).trim() || null : undefined,
-        referenceNo: data.referenceNo !== undefined ? String(data.referenceNo).trim() || null : undefined,
-        destinationCity: data.destinationCity !== undefined ? String(data.destinationCity).trim() || null : undefined,
+        transporterName:
+          data.transporterName !== undefined
+            ? String(data.transporterName).trim() || null
+            : undefined,
+        referenceNo:
+          data.referenceNo !== undefined
+            ? String(data.referenceNo).trim() || null
+            : undefined,
+        destinationCity:
+          data.destinationCity !== undefined
+            ? String(data.destinationCity).trim() || null
+            : undefined,
       },
       include: GATE_ENTRY_INCLUDE,
     });
@@ -433,23 +608,40 @@ export class GateEntriesService {
   // (2026-08-27, Yard/Gate competitor-research follow-up) — see
   // schema.prisma's comments on those fields. All optional; nothing here
   // blocks Dock In if left blank.
-  async dockIn(id: string, data: any, user: any) {
+  async dockIn(id: string, data: any, user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
-    if (existing.dockedInAt) throw new BadRequestException('This vehicle has already been marked docked in.');
-    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+    if (existing.dockedInAt)
+      throw new BadRequestException(
+        'This vehicle has already been marked docked in.',
+      );
+    if (existing.gateOutAt)
+      throw new BadRequestException('This vehicle has already gated out.');
     // A vehicle can't physically be docked in without a dock to dock in AT
     // — real gap caught live-testing, 2026-08-27 follow-up: this used to
     // let a vehicle be marked Docked In with no assignedDockNumber at all.
     if (!existing.assignedDockNumber) {
-      throw new BadRequestException('Assign a dock to this vehicle before marking it Docked In.');
+      throw new BadRequestException(
+        'Assign a dock to this vehicle before marking it Docked In.',
+      );
     }
 
-    const physicalConditionOk = data?.physicalConditionOk !== undefined && data.physicalConditionOk !== null ? !!data.physicalConditionOk : undefined;
-    const physicalConditionRemarks = data?.physicalConditionRemarks ? String(data.physicalConditionRemarks).trim() : undefined;
-    const sealNumber = data?.sealNumber ? String(data.sealNumber).trim() : undefined;
-    const sealSignatureData = data?.sealSignatureData ? String(data.sealSignatureData) : undefined;
-    const sealCaptured = sealNumber !== undefined || sealSignatureData !== undefined;
+    const physicalConditionOk =
+      data?.physicalConditionOk !== undefined &&
+      data.physicalConditionOk !== null
+        ? !!data.physicalConditionOk
+        : undefined;
+    const physicalConditionRemarks = data?.physicalConditionRemarks
+      ? String(data.physicalConditionRemarks).trim()
+      : undefined;
+    const sealNumber = data?.sealNumber
+      ? String(data.sealNumber).trim()
+      : undefined;
+    const sealSignatureData = data?.sealSignatureData
+      ? String(data.sealSignatureData)
+      : undefined;
+    const sealCaptured =
+      sealNumber !== undefined || sealSignatureData !== undefined;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const entry = await tx.vehicleGateEntry.update({
@@ -462,14 +654,24 @@ export class GateEntriesService {
           sealNumber,
           sealSignatureData,
           sealCapturedAt: sealCaptured ? new Date() : undefined,
-          sealCapturedBy: sealCaptured ? { connect: { id: user.userId } } : undefined,
+          sealCapturedBy: sealCaptured
+            ? { connect: { id: user.userId } }
+            : undefined,
         },
         include: GATE_ENTRY_INCLUDE,
       });
       if (existing.yardSlotId) {
-        await tx.yardSlot.update({ where: { id: existing.yardSlotId }, data: { status: 'AVAILABLE' } });
+        await tx.yardSlot.update({
+          where: { id: existing.yardSlotId },
+          data: { status: 'AVAILABLE' },
+        });
       }
-      await this.setDockDoorStatus(tx, existing.warehouseId, existing.assignedDockNumber, 'OCCUPIED');
+      await this.setDockDoorStatus(
+        tx,
+        existing.warehouseId,
+        existing.assignedDockNumber,
+        'OCCUPIED',
+      );
       return entry;
     });
 
@@ -509,18 +711,35 @@ export class GateEntriesService {
   // philosophy as everywhere else in this codebase — not a stored lock. A
   // Location that doesn't match the Dock{N}-SA-IB/OB naming (i.e. wasn't
   // auto-generated) has no sibling and is never blocked by this check.
-  private async assertStagingBinAvailable(location: { code: string; warehouseId: string }) {
+  private async assertStagingBinAvailable(location: {
+    code: string;
+    warehouseId: string;
+  }) {
     let siblingCode: string | undefined;
-    if (location.code.endsWith('-SA-IB')) siblingCode = location.code.slice(0, -'-SA-IB'.length) + '-SA-OB';
-    else if (location.code.endsWith('-SA-OB')) siblingCode = location.code.slice(0, -'-SA-OB'.length) + '-SA-IB';
+    if (location.code.endsWith('-SA-IB'))
+      siblingCode = location.code.slice(0, -'-SA-IB'.length) + '-SA-OB';
+    else if (location.code.endsWith('-SA-OB'))
+      siblingCode = location.code.slice(0, -'-SA-OB'.length) + '-SA-IB';
     if (!siblingCode) return;
 
-    const sibling = await this.prisma.location.findUnique({ where: { warehouseId_code: { warehouseId: location.warehouseId, code: siblingCode } } });
+    const sibling = await this.prisma.location.findUnique({
+      where: {
+        warehouseId_code: {
+          warehouseId: location.warehouseId,
+          code: siblingCode,
+        },
+      },
+    });
     if (!sibling) return;
-    const onHand = await this.prisma.stockMovement.aggregate({ where: { locationId: sibling.id }, _sum: { quantity: true } });
+    const onHand = await this.prisma.stockMovement.aggregate({
+      where: { locationId: sibling.id },
+      _sum: { quantity: true },
+    });
     const qty = onHand._sum.quantity ? Number(onHand._sum.quantity) : 0;
     if (qty > 0) {
-      throw new BadRequestException(`"${sibling.code}" is currently in use at this dock — only one of Inbound/Outbound staging can be active per dock at a time.`);
+      throw new BadRequestException(
+        `"${sibling.code}" is currently in use at this dock — only one of Inbound/Outbound staging can be active per dock at a time.`,
+      );
     }
   }
 
@@ -537,41 +756,83 @@ export class GateEntriesService {
   // registered — an unrecognized dock number is a harmless no-op. Never
   // overwrites a dock a staff member has manually set to MAINTENANCE, in
   // either direction — that stays a deliberate manual override.
-  private async setDockDoorStatus(tx: any, warehouseId: string, dockNumber: string | null | undefined, status: 'AVAILABLE' | 'OCCUPIED') {
+  private async setDockDoorStatus(
+    tx: any,
+    warehouseId: string,
+    dockNumber: string | null | undefined,
+    status: 'AVAILABLE' | 'OCCUPIED',
+  ) {
     if (!dockNumber) return;
-    const door = await tx.dockDoor.findUnique({ where: { warehouseId_code: { warehouseId, code: dockNumber } } });
+    const door = await tx.dockDoor.findUnique({
+      where: { warehouseId_code: { warehouseId, code: dockNumber } },
+    });
     if (!door || door.status === 'MAINTENANCE') return;
     await tx.dockDoor.update({ where: { id: door.id }, data: { status } });
   }
 
-  async matchReceipt(id: string, data: any, user: any) {
+  async matchReceipt(id: string, data: any, user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
-    if (existing.purpose !== 'INBOUND_DELIVERY') throw new BadRequestException('Only Inbound Delivery vehicles can be matched to an order.');
-    if (!existing.dockedInAt) throw new BadRequestException('Mark this vehicle Docked In before matching it to an order.');
-    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
-    if ((existing as any).inboundReceiptId) throw new BadRequestException('This vehicle is already matched to an order.');
+    if (existing.purpose !== 'INBOUND_DELIVERY')
+      throw new BadRequestException(
+        'Only Inbound Delivery vehicles can be matched to an order.',
+      );
+    if (!existing.dockedInAt)
+      throw new BadRequestException(
+        'Mark this vehicle Docked In before matching it to an order.',
+      );
+    if (existing.gateOutAt)
+      throw new BadRequestException('This vehicle has already gated out.');
+    if ((existing as any).inboundReceiptId)
+      throw new BadRequestException(
+        'This vehicle is already matched to an order.',
+      );
 
     const stagingLocationId = data?.stagingLocationId || undefined;
-    if (!stagingLocationId) throw new BadRequestException('A staging location is required — where is this delivery being unloaded to?');
+    if (!stagingLocationId)
+      throw new BadRequestException(
+        'A staging location is required — where is this delivery being unloaded to?',
+      );
 
     const [receipt, stagingLocation] = await Promise.all([
-      this.prisma.inboundReceipt.findFirst({ where: { vehicleId: (existing as any).vehicleId, gateEntry: null } }),
+      this.prisma.inboundReceipt.findFirst({
+        where: { vehicleId: (existing as any).vehicleId, gateEntry: null },
+      }),
       this.prisma.location.findUnique({ where: { id: stagingLocationId } }),
     ]);
-    if (!receipt) throw new BadRequestException(`No pending order found for vehicle "${(existing as any).vehicle?.vehicleNumber}" — create one first.`);
+    if (!receipt)
+      throw new BadRequestException(
+        `No pending order found for vehicle "${(existing as any).vehicle?.vehicleNumber}" — create one first.`,
+      );
     if (receipt.warehouseId !== existing.warehouseId) {
-      throw new BadRequestException(`Order "${receipt.referenceNo}" for this vehicle was created for a different warehouse.`);
+      throw new BadRequestException(
+        `Order "${receipt.referenceNo}" for this vehicle was created for a different warehouse.`,
+      );
     }
-    if (receipt.status === 'RECEIVED' || receipt.status === 'PUTAWAY_COMPLETE') {
-      throw new BadRequestException('This order has already been fully received.');
+    if (
+      receipt.status === 'RECEIVED' ||
+      receipt.status === 'PUTAWAY_COMPLETE'
+    ) {
+      throw new BadRequestException(
+        'This order has already been fully received.',
+      );
     }
-    if (!stagingLocation || stagingLocation.warehouseId !== existing.warehouseId) {
-      throw new BadRequestException('Staging location not found for this warehouse.');
+    if (
+      !stagingLocation ||
+      stagingLocation.warehouseId !== existing.warehouseId
+    ) {
+      throw new BadRequestException(
+        'Staging location not found for this warehouse.',
+      );
     }
     await this.assertStagingBinAvailable(stagingLocation);
-    const alreadyClaimed = await this.prisma.vehicleGateEntry.findFirst({ where: { inboundReceiptId: receipt.id } });
-    if (alreadyClaimed) throw new BadRequestException('This order has already been matched to a different vehicle.');
+    const alreadyClaimed = await this.prisma.vehicleGateEntry.findFirst({
+      where: { inboundReceiptId: receipt.id },
+    });
+    if (alreadyClaimed)
+      throw new BadRequestException(
+        'This order has already been matched to a different vehicle.',
+      );
 
     // Pallet consolidation (2026-09-01, see [[wms-putaway-design]]) — set
     // here, not at order creation, since this is the first moment staff are
@@ -579,8 +840,14 @@ export class GateEntriesService {
     // (loose cases vs. ready-built pallets). Conditional: `undefined` when
     // omitted leaves the receipt's existing value untouched (a re-match
     // shouldn't silently reset it); explicit true/false sets it.
-    const requiresPalletConsolidation = data?.requiresPalletConsolidation === undefined ? undefined : !!data.requiresPalletConsolidation;
-    await this.prisma.inboundReceipt.update({ where: { id: receipt.id }, data: { stagingLocationId, requiresPalletConsolidation } });
+    const requiresPalletConsolidation =
+      data?.requiresPalletConsolidation === undefined
+        ? undefined
+        : !!data.requiresPalletConsolidation;
+    await this.prisma.inboundReceipt.update({
+      where: { id: receipt.id },
+      data: { stagingLocationId, requiresPalletConsolidation },
+    });
     const updated = await this.prisma.vehicleGateEntry.update({
       where: { id },
       data: { inboundReceiptId: receipt.id },
@@ -597,20 +864,33 @@ export class GateEntriesService {
   // SKUs elsewhere — see schema.prisma's comment on SkuBarcode.
   // storageUnitId) — a scan is unambiguous as long as at most one expected,
   // not-yet-fully-received line on this receipt matches it.
-  async scan(id: string, barcode: any, user: any, palletId?: string) {
+  async scan(id: string, barcode: any, user: AuthUser, palletId?: string) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
-    if (!(existing as any).inboundReceiptId) throw new BadRequestException('This vehicle has not been matched to an order yet.');
-    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+    if (!(existing as any).inboundReceiptId)
+      throw new BadRequestException(
+        'This vehicle has not been matched to an order yet.',
+      );
+    if (existing.gateOutAt)
+      throw new BadRequestException('This vehicle has already gated out.');
 
     const trimmed = barcode != null ? String(barcode).trim() : '';
     if (!trimmed) throw new BadRequestException('A barcode is required.');
 
     const receiptId = (existing as any).inboundReceiptId as string;
     const [barcodeMatches, receiptLines, receipt] = await Promise.all([
-      this.prisma.skuBarcode.findMany({ where: { barcode: trimmed, sku: { companyId: existing.warehouse.companyId } }, include: { storageUnit: true } }),
+      this.prisma.skuBarcode.findMany({
+        where: {
+          barcode: trimmed,
+          sku: { companyId: existing.warehouse.companyId },
+        },
+        include: { storageUnit: true },
+      }),
       this.prisma.inboundReceiptLine.findMany({ where: { receiptId } }),
-      this.prisma.inboundReceipt.findUnique({ where: { id: receiptId }, select: { stagingLocationId: true, requiresPalletConsolidation: true } }),
+      this.prisma.inboundReceipt.findUnique({
+        where: { id: receiptId },
+        select: { stagingLocationId: true, requiresPalletConsolidation: true },
+      }),
     ]);
     // Pallet consolidation (2026-09-01) — for a receipt flagged at Match
     // Order as arriving in loose cases, a Pallet must be picked before
@@ -621,7 +901,9 @@ export class GateEntriesService {
     // a missing pallet selection fails fast with a clear message rather
     // than silently accepting an un-tagged scan on a palletized receipt.
     if (receipt?.requiresPalletConsolidation && !palletId) {
-      throw new BadRequestException('This order requires pallet consolidation — select a pallet to load these cases onto before scanning.');
+      throw new BadRequestException(
+        'This order requires pallet consolidation — select a pallet to load these cases onto before scanning.',
+      );
     }
     // Line override first, falling back to the receipt's own staging spot
     // set at Match Order — see schema.prisma's comment on
@@ -639,25 +921,51 @@ export class GateEntriesService {
         if (qty > remaining) return null; // would exceed this line's expected qty — blocked, not auto-accepted
         return { skuId: bc.skuId, receiptLineId: line.id, quantity: qty };
       })
-      .filter((c): c is { skuId: string; receiptLineId: string; quantity: number } => c !== null);
+      .filter(
+        (c): c is { skuId: string; receiptLineId: string; quantity: number } =>
+          c !== null,
+      );
 
     if (candidates.length === 1) {
       const c = candidates[0];
-      const receivedDate = await this.putawayTasks.resolveReceivedDate(this.prisma, receiptId);
+      const receivedDate = await this.putawayTasks.resolveReceivedDate(
+        this.prisma,
+        receiptId,
+      );
       const scan = await this.prisma.$transaction(async (tx) => {
         const created = await tx.inboundReceiptScan.create({
-          data: { receiptId, gateEntryId: id, barcodeScanned: trimmed, skuId: c.skuId, receiptLineId: c.receiptLineId, quantity: c.quantity, status: 'ACCEPTED', scannedById: user.userId },
+          data: {
+            receiptId,
+            gateEntryId: id,
+            barcodeScanned: trimmed,
+            skuId: c.skuId,
+            receiptLineId: c.receiptLineId,
+            quantity: c.quantity,
+            status: 'ACCEPTED',
+            scannedById: user.userId,
+          },
         });
-        const line = await tx.inboundReceiptLine.update({ where: { id: c.receiptLineId }, data: { receivedQty: { increment: c.quantity } } });
+        const line = await tx.inboundReceiptLine.update({
+          where: { id: c.receiptLineId },
+          data: { receivedQty: { increment: c.quantity } },
+        });
         const locationId = line.stagingLocationId ?? receiptStagingLocationId;
-        if (!locationId) throw new BadRequestException('This order has no staging location set — match it to a dock/staging spot first.');
+        if (!locationId)
+          throw new BadRequestException(
+            'This order has no staging location set — match it to a dock/staging spot first.',
+          );
 
         // Pallet consolidation (2026-09-01) — resolves (or opens) the
         // pallet's OPEN load BEFORE writing the movement, so the movement
         // itself can carry palletLoadId in the same insert ("the scan IS
         // the marrying action").
         const palletLoadId = receipt?.requiresPalletConsolidation
-          ? await this.pallets.resolveLoadForScan(tx, { warehouseId: existing.warehouseId, skuId: c.skuId, palletId: palletId!, receiptLineId: c.receiptLineId })
+          ? await this.pallets.resolveLoadForScan(tx, {
+              warehouseId: existing.warehouseId,
+              skuId: c.skuId,
+              palletId: palletId!,
+              receiptLineId: c.receiptLineId,
+            })
           : undefined;
 
         await tx.stockMovement.create({
@@ -708,11 +1016,22 @@ export class GateEntriesService {
     // own blocked scan — only a Supervisor can, via approveScan/rejectScan
     // in InboundReceiptsService.
     let blockReason = 'Unrecognized barcode — not on this order.';
-    if (barcodeMatches.length > 0 && candidates.length === 0) blockReason = 'SKU not expected on this order, or already fully received.';
-    else if (candidates.length > 1) blockReason = 'Barcode matches more than one SKU on this order — needs manual resolution.';
+    if (barcodeMatches.length > 0 && candidates.length === 0)
+      blockReason =
+        'SKU not expected on this order, or already fully received.';
+    else if (candidates.length > 1)
+      blockReason =
+        'Barcode matches more than one SKU on this order — needs manual resolution.';
 
     return this.prisma.inboundReceiptScan.create({
-      data: { receiptId, gateEntryId: id, barcodeScanned: trimmed, status: 'BLOCKED', blockReason, scannedById: user.userId },
+      data: {
+        receiptId,
+        gateEntryId: id,
+        barcodeScanned: trimmed,
+        status: 'BLOCKED',
+        blockReason,
+        scannedById: user.userId,
+      },
     });
   }
 
@@ -724,13 +1043,29 @@ export class GateEntriesService {
   async recomputeReceiptStatus(tx: any, receiptId: string) {
     const before = await tx.inboundReceipt.findUnique({
       where: { id: receiptId },
-      select: { status: true, warehouseId: true, requiresPalletConsolidation: true, warehouse: { select: { companyId: true } } },
+      select: {
+        status: true,
+        warehouseId: true,
+        requiresPalletConsolidation: true,
+        warehouse: { select: { companyId: true } },
+      },
     });
-    const lines = await tx.inboundReceiptLine.findMany({ where: { receiptId } });
-    const allReceived = lines.length > 0 && lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
+    const lines = await tx.inboundReceiptLine.findMany({
+      where: { receiptId },
+    });
+    const allReceived =
+      lines.length > 0 &&
+      lines.every((l: any) => Number(l.receivedQty) >= Number(l.expectedQty));
     const anyReceived = lines.some((l: any) => Number(l.receivedQty) > 0);
-    const status = allReceived ? 'RECEIVED' : anyReceived ? 'PARTIALLY_RECEIVED' : 'PENDING';
-    await tx.inboundReceipt.update({ where: { id: receiptId }, data: { status } });
+    const status = allReceived
+      ? 'RECEIVED'
+      : anyReceived
+        ? 'PARTIALLY_RECEIVED'
+        : 'PENDING';
+    await tx.inboundReceipt.update({
+      where: { id: receiptId },
+      data: { status },
+    });
 
     // BATCH putaway trigger mode: create every line's task the moment the
     // whole receipt is fully reconciled, once, on the transition into
@@ -740,8 +1075,16 @@ export class GateEntriesService {
     // creation trigger is a Pallet closing (PalletsService.
     // maybeAutoCloseLoad()/manualShortClose() -> createTaskForClosedPallet),
     // never this per-receipt BATCH/IMMEDIATE mechanism.
-    if (before && !before.requiresPalletConsolidation && before.status !== 'RECEIVED' && status === 'RECEIVED') {
-      const company = await tx.company.findUnique({ where: { id: before.warehouse.companyId }, select: { putawayTriggerMode: true } });
+    if (
+      before &&
+      !before.requiresPalletConsolidation &&
+      before.status !== 'RECEIVED' &&
+      status === 'RECEIVED'
+    ) {
+      const company = await tx.company.findUnique({
+        where: { id: before.warehouse.companyId },
+        select: { putawayTriggerMode: true },
+      });
       if (company?.putawayTriggerMode === 'BATCH') {
         await this.putawayTasks.createBatchTasksForReceipt(tx, receiptId);
       }
@@ -756,17 +1099,35 @@ export class GateEntriesService {
   // optional remarks note. gateOut() now requires this to be set for
   // Inbound, not just the receipt's own status — see schema.prisma's
   // comment on inwardCompletedAt.
-  async completeInward(id: string, remarks: any, user: any) {
+  async completeInward(id: string, remarks: any, user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
-    if (existing.purpose !== 'INBOUND_DELIVERY') throw new BadRequestException('Only Inbound Delivery vehicles have an inward process to complete.');
-    if (!(existing as any).inboundReceiptId) throw new BadRequestException('This vehicle has not been matched to an order yet.');
-    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
-    if ((existing as any).inwardCompletedAt) throw new BadRequestException('The inward process has already been completed for this vehicle.');
+    if (existing.purpose !== 'INBOUND_DELIVERY')
+      throw new BadRequestException(
+        'Only Inbound Delivery vehicles have an inward process to complete.',
+      );
+    if (!(existing as any).inboundReceiptId)
+      throw new BadRequestException(
+        'This vehicle has not been matched to an order yet.',
+      );
+    if (existing.gateOutAt)
+      throw new BadRequestException('This vehicle has already gated out.');
+    if ((existing as any).inwardCompletedAt)
+      throw new BadRequestException(
+        'The inward process has already been completed for this vehicle.',
+      );
 
-    const receipt = await this.prisma.inboundReceipt.findUnique({ where: { id: (existing as any).inboundReceiptId }, select: { status: true } });
-    if (receipt?.status !== 'RECEIVED' && receipt?.status !== 'PUTAWAY_COMPLETE') {
-      throw new BadRequestException('This order has not been fully received yet — every expected SKU/quantity must be scanned (or supervisor-approved) first.');
+    const receipt = await this.prisma.inboundReceipt.findUnique({
+      where: { id: (existing as any).inboundReceiptId },
+      select: { status: true },
+    });
+    if (
+      receipt?.status !== 'RECEIVED' &&
+      receipt?.status !== 'PUTAWAY_COMPLETE'
+    ) {
+      throw new BadRequestException(
+        'This order has not been fully received yet — every expected SKU/quantity must be scanned (or supervisor-approved) first.',
+      );
     }
 
     const updated = await this.prisma.vehicleGateEntry.update({
@@ -790,10 +1151,11 @@ export class GateEntriesService {
   // "Dock 5" would be worse than one extra call. Allowed any time before
   // Gate Out, including after Docked In (a re-route while still on-site is
   // plausible), unlike dockIn()/gateOut() which are strict one-way gates.
-  async assignDock(id: string, dockNumber: any, user: any) {
+  async assignDock(id: string, dockNumber: any, user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
-    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+    if (existing.gateOutAt)
+      throw new BadRequestException('This vehicle has already gated out.');
 
     const trimmed = dockNumber != null ? String(dockNumber).trim() : '';
     if (!trimmed) throw new BadRequestException('Dock Number is required.');
@@ -812,11 +1174,25 @@ export class GateEntriesService {
       // yet docked in has nothing occupying either dock, so this is a
       // no-op (setDockDoorStatus still runs but there's no real occupancy
       // to move).
-      if (existing.dockedInAt && previousDockNumber && previousDockNumber !== trimmed) {
-        await this.setDockDoorStatus(tx, existing.warehouseId, previousDockNumber, 'AVAILABLE');
+      if (
+        existing.dockedInAt &&
+        previousDockNumber &&
+        previousDockNumber !== trimmed
+      ) {
+        await this.setDockDoorStatus(
+          tx,
+          existing.warehouseId,
+          previousDockNumber,
+          'AVAILABLE',
+        );
       }
       if (existing.dockedInAt) {
-        await this.setDockDoorStatus(tx, existing.warehouseId, trimmed, 'OCCUPIED');
+        await this.setDockDoorStatus(
+          tx,
+          existing.warehouseId,
+          trimmed,
+          'OCCUPIED',
+        );
       }
       return entry;
     });
@@ -843,38 +1219,61 @@ export class GateEntriesService {
   //    — a placeholder until real Inbound/Receiving exists to drive this
   //    automatically.
   //  - RETURNS: neither requirement applies (not yet raised as a real need).
-  async gateOut(id: string, data: any, user: any) {
+  async gateOut(id: string, data: any, user: AuthUser) {
     await assertGateAccessAllowed(this.prisma, user);
     const existing = await this.assertAccess(id, user);
-    if (existing.gateOutAt) throw new BadRequestException('This vehicle has already gated out.');
+    if (existing.gateOutAt)
+      throw new BadRequestException('This vehicle has already gated out.');
 
     const errors: string[] = [];
 
     let tareWeightKg: number | undefined;
-    if (data?.tareWeightKg !== undefined && data.tareWeightKg !== null && data.tareWeightKg !== '') {
+    if (
+      data?.tareWeightKg !== undefined &&
+      data.tareWeightKg !== null &&
+      data.tareWeightKg !== ''
+    ) {
       tareWeightKg = Number(data.tareWeightKg);
-      if (!Number.isFinite(tareWeightKg) || tareWeightKg <= 0) errors.push('Tare Weight must be a positive number.');
+      if (!Number.isFinite(tareWeightKg) || tareWeightKg <= 0)
+        errors.push('Tare Weight must be a positive number.');
     }
 
-    const eWayBillNo = data?.eWayBillNo !== undefined ? String(data.eWayBillNo).trim() || undefined : undefined;
+    const eWayBillNo =
+      data?.eWayBillNo !== undefined
+        ? String(data.eWayBillNo).trim() || undefined
+        : undefined;
     const materialReceivedConfirmed = !!data?.materialReceivedConfirmed;
 
     // Seal number/signature — Outbound only lands here (Inbound captures it
     // at Dock In instead, see dockIn() above). Optional either way.
-    const sealNumber = data?.sealNumber ? String(data.sealNumber).trim() : undefined;
-    const sealSignatureData = data?.sealSignatureData ? String(data.sealSignatureData) : undefined;
-    const sealCaptured = sealNumber !== undefined || sealSignatureData !== undefined;
+    const sealNumber = data?.sealNumber
+      ? String(data.sealNumber).trim()
+      : undefined;
+    const sealSignatureData = data?.sealSignatureData
+      ? String(data.sealSignatureData)
+      : undefined;
+    const sealCaptured =
+      sealNumber !== undefined || sealSignatureData !== undefined;
 
     let invoiceWeightKg: number | undefined;
-    if (data?.invoiceWeightKg !== undefined && data.invoiceWeightKg !== null && data.invoiceWeightKg !== '') {
+    if (
+      data?.invoiceWeightKg !== undefined &&
+      data.invoiceWeightKg !== null &&
+      data.invoiceWeightKg !== ''
+    ) {
       invoiceWeightKg = Number(data.invoiceWeightKg);
-      if (!Number.isFinite(invoiceWeightKg) || invoiceWeightKg <= 0) errors.push('Invoice Weight must be a positive number.');
+      if (!Number.isFinite(invoiceWeightKg) || invoiceWeightKg <= 0)
+        errors.push('Invoice Weight must be a positive number.');
     }
 
     if (existing.purpose === 'OUTBOUND_DISPATCH') {
-      const company = await this.prisma.company.findUnique({ where: { id: existing.warehouse.companyId } });
+      const company = await this.prisma.company.findUnique({
+        where: { id: existing.warehouse.companyId },
+      });
       if (company?.requireEwayBillForOutboundGateOut && !eWayBillNo) {
-        errors.push('An E-Way Bill number is required before this vehicle can gate out.');
+        errors.push(
+          'An E-Way Bill number is required before this vehicle can gate out.',
+        );
       }
       // Overweight check — the client's own KPI, always on for Outbound (not
       // a per-company toggle like the E-Way Bill requirement above). Real
@@ -884,9 +1283,13 @@ export class GateEntriesService {
       // Compares against Vehicle.maxTonnage, falling back to VehicleType's
       // generic ceiling when no per-vehicle override was registered.
       if (invoiceWeightKg === undefined) {
-        errors.push('Invoice Weight is required before an Outbound vehicle can gate out.');
+        errors.push(
+          'Invoice Weight is required before an Outbound vehicle can gate out.',
+        );
       } else if (errors.length === 0) {
-        const maxTonnage = existing.vehicle.maxTonnage ?? existing.vehicle.vehicleType.maxTonnage;
+        const maxTonnage =
+          existing.vehicle.maxTonnage ??
+          existing.vehicle.vehicleType.maxTonnage;
         const maxWeightKg = Number(maxTonnage) * 1000;
         if (invoiceWeightKg > maxWeightKg) {
           errors.push(
@@ -908,10 +1311,14 @@ export class GateEntriesService {
       const receiptId = (existing as any).inboundReceiptId as string | null;
       if (receiptId) {
         if (!(existing as any).inwardCompletedAt) {
-          errors.push('Complete the inward process (on Inbound Orders) before this vehicle can gate out.');
+          errors.push(
+            'Complete the inward process (on Inbound Orders) before this vehicle can gate out.',
+          );
         }
       } else if (!materialReceivedConfirmed) {
-        errors.push('Confirm that all material has been received/scanned before this vehicle can gate out.');
+        errors.push(
+          'Confirm that all material has been received/scanned before this vehicle can gate out.',
+        );
       }
     }
 
@@ -926,13 +1333,16 @@ export class GateEntriesService {
           tareWeightKg,
           tareWeighedAt: tareWeightKg !== undefined ? new Date() : undefined,
           eWayBillNo,
-          eWayBillGeneratedAt: eWayBillNo !== undefined ? new Date() : undefined,
+          eWayBillGeneratedAt:
+            eWayBillNo !== undefined ? new Date() : undefined,
           materialReceivedConfirmed,
           invoiceWeightKg,
           sealNumber,
           sealSignatureData,
           sealCapturedAt: sealCaptured ? new Date() : undefined,
-          sealCapturedBy: sealCaptured ? { connect: { id: user.userId } } : undefined,
+          sealCapturedBy: sealCaptured
+            ? { connect: { id: user.userId } }
+            : undefined,
         },
         include: GATE_ENTRY_INCLUDE,
       });
@@ -942,9 +1352,17 @@ export class GateEntriesService {
       // the slot leaks as permanently occupied. If dockIn() already ran,
       // the slot is already AVAILABLE and this is a harmless no-op.
       if (existing.yardSlotId) {
-        await tx.yardSlot.update({ where: { id: existing.yardSlotId }, data: { status: 'AVAILABLE' } });
+        await tx.yardSlot.update({
+          where: { id: existing.yardSlotId },
+          data: { status: 'AVAILABLE' },
+        });
       }
-      await this.setDockDoorStatus(tx, existing.warehouseId, existing.assignedDockNumber, 'AVAILABLE');
+      await this.setDockDoorStatus(
+        tx,
+        existing.warehouseId,
+        existing.assignedDockNumber,
+        'AVAILABLE',
+      );
       return entry;
     });
 

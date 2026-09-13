@@ -96,7 +96,17 @@ function authHeaders() {
 function jsonHeaders() {
   return { 'Content-Type': 'application/json', ...authHeaders() };
 }
-function currentUser(): any {
+// Shape of the `user` object /auth/login and /auth/register store into
+// localStorage (see backend/src/auth/auth.service.ts's
+// `{ id, email, role, companyId }`) — not the full User row.
+interface CurrentUser {
+  id: string;
+  email: string;
+  role: string;
+  companyId: string | null;
+}
+
+function currentUser(): CurrentUser | null {
   return localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null;
 }
 function errorText(data: any, fallback: string) {
@@ -165,7 +175,7 @@ function PutawayPage() {
 
   const canRequestException = user?.role === 'WAREHOUSE_MANAGER';
   const canDecideException = user?.role === 'COMPANY_ADMIN';
-  const canReviewDiscrepancies = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'].includes(user?.role);
+  const canReviewDiscrepancies = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'].includes(user?.role ?? '');
 
   const filteredTasks = tasks.filter((t) => {
     const q = filterSearch.trim().toLowerCase();

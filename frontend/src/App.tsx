@@ -83,11 +83,22 @@ const MASTER_TABS: { tab: Tab; label: string }[] = [
   { tab: 'users', label: 'Users' },
 ];
 
+// Shape of the `user` object the backend's /auth/login and /auth/register
+// responses store into localStorage (see backend/src/auth/auth.service.ts's
+// `return { accessToken, user: { id, email, role, companyId } }`) — not the
+// full User row, just these four fields.
+interface CurrentUser {
+  id: string;
+  email: string;
+  role: string;
+  companyId: string | null;
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>('warehouses');
   const [mastersOpen, setMastersOpen] = useState(false);
   const mastersRef = useRef<HTMLDivElement | null>(null);
-  const [user, setUser] = useState<any>(
+  const [user, setUser] = useState<CurrentUser | null>(
     localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')!) : null,
   );
 

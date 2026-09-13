@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DriverChannelAdapter, DriverSendResult } from './driver-channel-adapter.interface';
+import {
+  DriverChannelAdapter,
+  DriverSendResult,
+} from './driver-channel-adapter.interface';
 
 // Stub only — no real voice/IVR provider wired up yet (2026-08-27). An
 // automated call is a genuinely different capability than SMS/Email/
@@ -14,7 +17,9 @@ export class DriverVoiceCallAdapter implements DriverChannelAdapter {
   private readonly logger = new Logger(DriverVoiceCallAdapter.name);
 
   async send(phone: string, message: string): Promise<DriverSendResult> {
-    this.logger.log(`[STUB] Would call driver at ${phone} and play: ${message}`);
+    this.logger.log(
+      `[STUB] Would call driver at ${phone} and play: ${message}`,
+    );
     return { success: true };
   }
 }

@@ -1,4 +1,15 @@
-import { Body, Controller, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import * as XLSX from 'xlsx';
@@ -7,7 +18,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
-import { MASTER_DATA_READ_ROLES } from '../common/tenant.util';
+import { type AuthUser, MASTER_DATA_READ_ROLES } from '../common/tenant.util';
 import { stripHeaderAsterisks } from '../common/xlsx-parse.util';
 
 // OPERATOR never touches this controller — no master-data visibility for
@@ -30,26 +41,27 @@ export class UsersController {
 
   @Post()
   @Roles(...CAN_MANAGE_USERS)
-  create(@Body() body: any, @CurrentUser() user: any) {
+  create(@Body() body: any, @CurrentUser() user: AuthUser) {
     return this.usersService.create(body, user);
   }
 
   @Get()
   @Roles(...CAN_MANAGE_USERS)
-  findAll(@CurrentUser() user: any) {
+  findAll(@CurrentUser() user: AuthUser) {
     return this.usersService.findAll(user);
   }
 
   @Get('export')
   @Roles(...CAN_MANAGE_USERS)
-  async export(@Res() res: Response, @CurrentUser() user: any) {
+  async export(@Res() res: Response, @CurrentUser() user: AuthUser) {
     const rows = await this.usersService.exportRows(user);
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'User Master');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     res.set({
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'Content-Disposition': 'attachment; filename="User_Master_Export.xlsx"',
     });
     res.send(buffer);
@@ -57,25 +69,29 @@ export class UsersController {
 
   @Patch(':id')
   @Roles(...CAN_MANAGE_USERS)
-  update(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+  update(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.usersService.update(id, body, user);
   }
 
   @Patch(':id/deactivate')
   @Roles(...CAN_MANAGE_USERS)
-  deactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  deactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.usersService.deactivate(id, user);
   }
 
   @Patch(':id/reactivate')
   @Roles(...CAN_MANAGE_USERS)
-  reactivate(@Param('id') id: string, @CurrentUser() user: any) {
+  reactivate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.usersService.reactivate(id, user);
   }
 
   @Get(':id/login-history')
   @Roles(...CAN_MANAGE_USERS)
-  getLoginHistory(@Param('id') id: string, @CurrentUser() user: any) {
+  getLoginHistory(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.usersService.getLoginHistory(id, user);
   }
 
@@ -87,16 +103,32 @@ export class UsersController {
   @Post('import')
   @Roles(...CAN_MANAGE_USERS)
   @UseInterceptors(FileInterceptor('file'))
-  async importFile(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: any) {
+  async importFile(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthUser,
+  ) {
     let workbook: XLSX.WorkBook;
     try {
       workbook = XLSX.read(file.buffer, { type: 'buffer' });
     } catch {
-      return { totalUsers: 0, successCount: 0, failCount: 0, results: [{ email: '(file)', status: 'error', errors: ['File could not be read — is it a valid .xlsx file?'] }] };
+      return {
+        totalUsers: 0,
+        successCount: 0,
+        failCount: 0,
+        results: [
+          {
+            email: '(file)',
+            status: 'error',
+            errors: ['File could not be read — is it a valid .xlsx file?'],
+          },
+        ],
+      };
     }
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const rawRows: any[] = stripHeaderAsterisks(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+    const rawRows: any[] = stripHeaderAsterisks(
+      XLSX.utils.sheet_to_json(sheet, { defval: '' }),
+    );
 
     const rows = rawRows
       .filter((r) => r['Login ID'] || r['Name'])
@@ -105,9 +137,13 @@ export class UsersController {
         email: r['Login ID'] ? String(r['Login ID']).trim() : '',
         password: r['Password'] ? String(r['Password']) : '',
         role: r['Role'] ? String(r['Role']).trim() : '',
-        functionTag: r['Function Tag'] ? String(r['Function Tag']).trim() : undefined,
+        functionTag: r['Function Tag']
+          ? String(r['Function Tag']).trim()
+          : undefined,
         phone: r['Phone'] ? String(r['Phone']).trim() : undefined,
-        warehouseCodes: r['Warehouse Code(s)'] ? String(r['Warehouse Code(s)']).trim() : '',
+        warehouseCodes: r['Warehouse Code(s)']
+          ? String(r['Warehouse Code(s)']).trim()
+          : '',
       }));
 
     return this.usersService.bulkImport(rows, user);

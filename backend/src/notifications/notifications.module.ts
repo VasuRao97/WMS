@@ -9,7 +9,14 @@ import { PrismaService } from '../prisma/prisma.service';
 
 @Module({
   controllers: [NotificationsController],
-  providers: [NotificationsService, DetentionAlertScheduler, EmailAdapter, SmsAdapter, WhatsappAdapter, PrismaService],
+  providers: [
+    NotificationsService,
+    DetentionAlertScheduler,
+    EmailAdapter,
+    SmsAdapter,
+    WhatsappAdapter,
+    PrismaService,
+  ],
   // Exported (2026-08-27) so YardGateModule can inject NotificationsService
   // directly for the new "vehicle ready for unloading" event, instead of
   // duplicating the whole send+audit+adapter pipeline — the first real
