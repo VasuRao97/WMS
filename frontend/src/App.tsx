@@ -30,6 +30,8 @@ const AnalyticsPage = lazy(() => import('./AnalyticsPage'));
 const SimulationPage = lazy(() => import('./SimulationPage'));
 const AbcClassificationPage = lazy(() => import('./AbcClassificationPage'));
 const InventoryPage = lazy(() => import('./InventoryPage'));
+const OutboundOrdersPage = lazy(() => import('./OutboundOrdersPage'));
+const PickTasksPage = lazy(() => import('./PickTasksPage'));
 
 // OPERATOR has zero master-data visibility, including the Users tab itself —
 // mirrors UsersController's server-side @Roles() gate (see CLAUDE.md).
@@ -62,7 +64,7 @@ const CAN_VIEW_ABC_CLASSIFICATION = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WARE
 // the role values are identical today.
 const CAN_VIEW_INVENTORY = ['COMPANY_ADMIN', 'WAREHOUSE_MANAGER', 'WAREHOUSE_SUPERVISOR'];
 
-type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'pickface' | 'insights' | 'pallets' | 'analytics' | 'simulation' | 'abcclassification' | 'inventory';
+type Tab = 'warehouses' | 'skus' | 'customers' | 'users' | 'locations' | 'gateyard' | 'vehicledriver' | 'companysettings' | 'inboundorders' | 'dockdoors' | 'equipment' | 'putaway' | 'pickface' | 'insights' | 'pallets' | 'analytics' | 'simulation' | 'abcclassification' | 'inventory' | 'outboundorders' | 'picking';
 
 // The six master-data pages, clubbed under one "Masters" dropdown for
 // simplicity (2026-08-27, the client's own call — the nav bar was getting
@@ -190,6 +192,12 @@ function App() {
         <button onClick={() => setTab('putaway')} style={{ fontWeight: tab === 'putaway' ? 'bold' : 'normal' }}>
           Putaway
         </button>
+        <button onClick={() => setTab('outboundorders')} style={{ fontWeight: tab === 'outboundorders' ? 'bold' : 'normal' }}>
+          Outbound Orders
+        </button>
+        <button onClick={() => setTab('picking')} style={{ fontWeight: tab === 'picking' ? 'bold' : 'normal' }}>
+          Picking
+        </button>
         {CAN_RUN_SIMULATION.includes(user?.role) && (
           <button onClick={() => setTab('simulation')} style={{ fontWeight: tab === 'simulation' ? 'bold' : 'normal' }}>
             Simulation
@@ -229,6 +237,10 @@ function App() {
           <PalletsPage />
         ) : tab === 'putaway' ? (
           <PutawayPage />
+        ) : tab === 'outboundorders' ? (
+          <OutboundOrdersPage />
+        ) : tab === 'picking' ? (
+          <PickTasksPage />
         ) : tab === 'pickface' ? (
           <PickFacePage />
         ) : tab === 'insights' ? (
