@@ -196,6 +196,14 @@ model Company {
   // things here and there."
   putawayAssignmentGraceMinutes Int @default(2)
 
+  // Picking operator-assignment fairness (2026-09-14) — a separate dial
+  // from Putaway's own, same "distinct destinations could diverge later"
+  // convention as CAN_VIEW_INSIGHTS/CAN_VIEW_ANALYTICS, even though the
+  // shape and default are identical today. Reuses the exact same
+  // alert-then-escalate mechanism as Putaway's, just against Picking's own
+  // task queue and PickTrip claims.
+  pickingAssignmentGraceMinutes Int @default(2)
+
   // Putaway location override (2026-09-06, Plan View backlog items 2/3 —
   // see [[wms-putaway-design]]) — the original hard-block ("only a correct
   // scan would complete the process") stays the default for every company;
@@ -360,6 +368,8 @@ model User {
   reslottingSuggestionsActioned   ReslottingSuggestion[]   @relation("ReslottingSuggestionActionedBy")
   outboundOrdersCreated           OutboundOrder[]          @relation("OutboundOrderCreatedBy")
   pickTripsClaimed                PickTrip[]               @relation("PickTripClaimedBy")
+  pickExceptionsReported          PickException[]          @relation("PickExceptionReportedBy")
+  pickExceptionsReviewed          PickException[]          @relation("PickExceptionReviewedBy")
   dispatches                      Dispatch[]               @relation("DispatchedBy")
   movements                       StockMovement[]          @relation("MovementCreatedBy")
   gateEntriesIn                   VehicleGateEntry[]       @relation("GateInBy")
@@ -1945,6 +1955,10 @@ enum NotificationEventType {
   // DETENTION_ALERT already uses) get stamped when it further escalates
   // to the Warehouse Manager after a second lapse.
   PUTAWAY_OPERATOR_MISSED_TURN
+  // Picking's own mirror of PUTAWAY_OPERATOR_MISSED_TURN (2026-09-14) — see
+  // PickAssignmentScheduler for the identical alert-then-escalate shape,
+  // driven by Company.pickingAssignmentGraceMinutes instead.
+  PICKING_OPERATOR_MISSED_TURN
 }
 
 enum NotificationStatus {
@@ -2983,7 +2997,8 @@ model PickTask {
 
   createdAt DateTime @default(now())
 
-  trips PickTrip[]
+  trips      PickTrip[]
+  exceptions PickException[]
 
   @@index([orderLineId])
   @@index([fromLocationId, status])
@@ -3040,8 +3055,59 @@ model PickTrip {
 
   completedAt DateTime?
 
+  exceptions PickException[]
+
   @@index([taskId])
   @@index([claimedById, status])
+}
+
+// Picking gap-analysis pass (2026-09-14, see CLAUDE.md and ROADMAP.md's
+// matching session notes) — a single log covering two distinct situations
+// the client asked to be tracked the same way, as one reviewable
+// "discrepancy" list rather than two separate ones:
+//   - SHORT_STOCK: a PickTask that could find no source at all, either at
+//     allotment time or after a retry — auto-logged, reportedById null.
+//     tripId is null (no trip ever existed to log it against).
+//   - Everything else: an operator's own explicit mid-pick report
+//     (EMPTY_BIN/WRONG_SKU/DAMAGED/OTHER — the assigned location genuinely
+//     didn't have what the ledger says it should) or an automatically
+//     inferred SHORT_QUANTITY (fewer units physically scanned than the
+//     trip expected — no manual report needed, the scan data already
+//     proves it). tripId always set for these.
+// Never deleted, and PickTask/PickTrip rows are never deleted either (see
+// PickTasksService.attemptSourceRecovery) — a task/trip that turns out to
+// be a dead end gets its own quantity trimmed and a fresh sibling task
+// spun off for whatever's still unmet, so this row's taskId/tripId always
+// keeps pointing at a real, permanent record for the audit trail.
+enum PickExceptionReason {
+  SHORT_STOCK
+  EMPTY_BIN
+  WRONG_SKU
+  SHORT_QUANTITY
+  DAMAGED
+  OTHER
+}
+
+model PickException {
+  id     String   @id @default(uuid())
+  taskId String
+  task   PickTask @relation(fields: [taskId], references: [id])
+  tripId String?
+  trip   PickTrip? @relation(fields: [tripId], references: [id])
+
+  reason PickExceptionReason
+  notes  String?
+
+  reportedById String?
+  reportedBy   User?    @relation("PickExceptionReportedBy", fields: [reportedById], references: [id])
+  reportedAt   DateTime @default(now())
+
+  reviewedAt   DateTime?
+  reviewedById String?
+  reviewedBy   User?     @relation("PickExceptionReviewedBy", fields: [reviewedById], references: [id])
+
+  @@index([taskId])
+  @@index([reviewedAt])
 }
 
 model Dispatch {
