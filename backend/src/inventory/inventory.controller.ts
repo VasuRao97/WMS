@@ -31,6 +31,53 @@ export class InventoryController {
     return this.inventoryService.skuSummary(user, warehouseId);
   }
 
+  // Excel export for the two balance-snapshot views above — declared right
+  // after their own JSON reads, same "export sits beside its own read"
+  // layout as the ledger pair further down. Both routes have a fixed
+  // literal path segment ('export'), not a ':id' param, so there's no
+  // route-ordering concern here either.
+  @Get('line-items/export')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  async exportLineItems(
+    @Query('warehouseId') warehouseId: string,
+    @Res() res: Response,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const rows = await this.inventoryService.exportLineItemRows(user, warehouseId);
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Line Items');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    res.set({
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition':
+        'attachment; filename="Inventory_Line_Items_Export.xlsx"',
+    });
+    res.send(buffer);
+  }
+
+  @Get('sku-summary/export')
+  @Roles(...MASTER_DATA_READ_ROLES)
+  async exportSkuSummary(
+    @Query('warehouseId') warehouseId: string,
+    @Res() res: Response,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const rows = await this.inventoryService.exportSkuSummaryRows(user, warehouseId);
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'SKU Summary');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    res.set({
+      'Content-Type':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition':
+        'attachment; filename="Inventory_SKU_Summary_Export.xlsx"',
+    });
+    res.send(buffer);
+  }
+
   // Transaction-level ledger — warehouseId is OPTIONAL here (company-wide
   // dump when omitted, COMPANY_ADMIN/SUPER_ADMIN only — enforced in the
   // service). from/to are plain YYYY-MM-DD strings, both optional; a single

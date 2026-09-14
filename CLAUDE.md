@@ -5442,6 +5442,8 @@ pattern as Locations' own Table View/Plan View toggle), and a client-side search
 other list page's own convention. Deliberately **no Excel export** on this pass — Inventory reads as
 a report page (Insights/Analytics' own tier), and neither of those has export either; the
 master-data-list-page export convention wasn't extended here, a scope choice not an oversight.
+**Added later, 2026-09-14** — see "Inventory: Excel export for Line Items/SKU Summary, module marked
+complete" below.
 
 Verified two ways. Direct API checks against a throwaway company with real seeded `StockMovement`
 rows (two lots of one SKU at different ages/bins, one pallet-linked lot of a second SKU with a real
@@ -5568,6 +5570,52 @@ via curl. `tsc --noEmit`(backend)/`tsc -b`(frontend) both clean.
 
 Outward is still not built — needs Picking/Dispatch to exist and write real movements first; adding
 it needs zero changes here, just a second parallel query/chart pair.
+
+### Inventory: Excel export for Line Items/SKU Summary, module marked complete (2026-09-14)
+
+Closes the two items flagged open at the end of the previous session's Inventory work.
+
+**Outward dashboard — discussed, deliberately NOT built.** Before deciding "now or after Picking,"
+flagged a real distinction from how Inward got built: no new schema is needed (`PICK`/`DISPATCH`
+already exist as `MovementType` values, unlike a genuine schema-now/logic-later placeholder such as
+`DockLocationDistance`) — the actual blocker is that Picking/Dispatch haven't been *designed* yet,
+so it isn't known which movement(s) genuinely represent the warehouse-exit event (`PICK` could be an
+internal storage→staging move, like `PUTAWAY_OUT`, with `DISPATCH` the real boundary crossing — or
+it could work differently). Inward was safe to build because Inbound+Putaway's own movement
+semantics were already real and settled by the time that chart got built; Outward has neither.
+Client's call, given that trade-off: wait until Picking/Dispatch's own design conversation rather
+than wire a guess now that would likely need rework once that module is actually designed.
+
+**Excel export — built.** `GET /inventory/line-items/export`/`sku-summary/export`
+(`InventoryController`/`InventoryService`) — same `json_to_sheet` → streamed-buffer convention every
+other export in this app already uses (`exportLedgerRows` was the closest precedent, right in this
+same file), reusing the exact already-tested `lineItems()`/`skuSummary()` methods the JSON reads
+already call (mapped into flat, human-labeled row objects for the file — `SKU Code`/`Material Desc`/
+`Quantity`/`Aging (days)`/etc., mirroring the on-screen column names). `InventoryPage.tsx`'s three
+separate export concerns (Line Items, SKU Summary, the pre-existing Ledger) now share one
+`handleExport()` keyed off the active `view`, replacing what was a Ledger-only `handleExportLedger`
+— an "Export to Excel" button appears next to the view-toggle buttons whenever Line Items or SKU
+Summary is active.
+
+Verified via a throwaway company (registered fresh through the real `/auth/register` flow, not a
+synthetic token): `POST /warehouses` → `POST /skus`, one real `Location` + one positive
+`StockMovement` seeded directly via Prisma (no public endpoint writes a bare movement), both new
+export endpoints hit with the real JWT — confirmed `200` + the correct `.xlsx` content-type, the
+returned file parsed back via the `xlsx` library and checked row-for-row against the seeded data
+(SKU code, quantity, the Rack-Name-derived Bin No, ABC class), and a no-auth-header request
+correctly 401ed. Cleanup needed extending past the company's own `Sku`/`Warehouse`/`User` rows to
+the auto-generated `DockDoor`/`YardSlot`/`WarehouseEquipmentSuitability` scaffolding a real
+`noOfDocks`-bearing warehouse creates (the identical relation graph `WarehousesService.removeAll()`
+already knows about) plus `LoginEvent` (written by `/auth/register`'s own auto-login) — a few
+throwaway companies from earlier iterations of the same script were left behind mid-session by this
+exact gap and cleaned up directly afterward, confirmed zero stray rows remained. `tsc --noEmit`
+(backend)/`tsc -b`(frontend) both clean.
+
+**With this, Inventory's own scope — on-hand Line Items/SKU Summary, the transaction-level ledger,
+and now export on all three views — is fully built.** Nothing remains open that belongs to this
+module specifically. The daily-volume dashboard's outward half is a real, still-open item, but it
+lives under **Analytics** (`AnalyticsService.dailyInward()`'s eventual `dailyOutward()` twin), not
+Inventory — see ROADMAP.md's "Immediate candidates" for its current status.
 
 ## Status: what's built vs. what's next
 

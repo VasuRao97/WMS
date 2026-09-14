@@ -238,6 +238,27 @@ export class InventoryService {
     return rows;
   }
 
+  // Excel export of the exact same Line Items rows — same "bake in
+  // human-readable labels server-side, since the file leaves the app"
+  // convention as exportLedgerRows below. No warehouseId branching needed
+  // here (unlike the ledger) since lineItems() itself already requires one.
+  async exportLineItemRows(user: AuthUser, warehouseId: string) {
+    const rows = await this.lineItems(user, warehouseId);
+    return rows.map((r) => ({
+      'SKU Code': r.skuCode,
+      'Material Desc': r.description,
+      Quantity: r.quantity,
+      'Aging (days)': r.agingDays ?? '',
+      'Storage System': r.storageType,
+      'Pallet No': r.palletCode || '',
+      'Bin No': r.binCode,
+      Category: r.category || '',
+      'Last Touched On': r.lastTouchedAt.toISOString(),
+      ABC: r.abcClass,
+      FMS: r.fmsClass || '',
+    }));
+  }
+
   // SKU-level summary — one row per SKU, rolled up across every bin/pallet
   // in this warehouse. "aging" here is the OLDEST receivedDate found across
   // all of this SKU's current stock — the more operationally meaningful
@@ -307,6 +328,23 @@ export class InventoryService {
 
     rows.sort((a, b) => a.skuCode.localeCompare(b.skuCode));
     return rows;
+  }
+
+  // Excel export of the exact same SKU Summary rows — same convention as
+  // exportLineItemRows above.
+  async exportSkuSummaryRows(user: AuthUser, warehouseId: string) {
+    const rows = await this.skuSummary(user, warehouseId);
+    return rows.map((r) => ({
+      'SKU Code': r.skuCode,
+      'Material Desc': r.description,
+      'Total Quantity': r.quantity,
+      'Oldest Lot Aging (days)': r.agingDays ?? '',
+      Category: r.category || '',
+      'Bins/Pallets': r.binCount,
+      'Last Touched On': r.lastTouchedAt.toISOString(),
+      ABC: r.abcClass,
+      FMS: r.fmsClass || '',
+    }));
   }
 
   // Transaction-level ledger — every individual inward/outward StockMovement

@@ -7,14 +7,22 @@ holds a short current-state pointer — don't grow it into a run-on paragraph ag
 ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
 full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
 
-**Last updated 2026-09-13 (Inventory module — Daily Inward Volume dashboard shipped, inward-only).**
-Most recent work: the Inventory module's on-hand screen (Line Items + SKU Summary) shipped, then —
-same day — the transaction-level ledger export (with its own From/To Location columns), and then the
-daily-inward half of the Analytics dashboard (the app's first real charting page, via `recharts`) all
-designed and built: see the "Inventory"/"Analytics" session notes right below for the full detail.
-The outward half of the dashboard is still not built — genuinely blocked on Picking/Dispatch writing
-real movements, see "Immediate candidates" below. Before Inventory: a real gap found live-testing
-Bin Rank against TNR8's
+**Last updated 2026-09-14 (Inventory module: marked complete).** Closed the module's one remaining
+open item — `GET /inventory/line-items/export`/`sku-summary/export` (same `json_to_sheet`/streamed-
+buffer convention as every other export in this app), verified via a throwaway company end-to-end
+(real register→warehouse→SKU→seeded `StockMovement`, both endpoints hit with a real JWT, the
+returned `.xlsx` parsed back and checked row-for-row, plus a 401 role-gate spot check). With that,
+**Inventory (on-hand Line Items/SKU Summary, the transaction-level ledger + export, both with From/To
+Location) is now fully built** — see "Inventory — transaction-level ledger export" and the matching
+CLAUDE.md sections for the rest. The daily-volume dashboard's OUTWARD half (units/pallets
+dispatched) was explicitly discussed and NOT built this session — confirmed with the client to hold
+it until Picking/Dispatch get their own design conversation, since neither module exists yet to say
+which movement(s) actually represent a genuine warehouse-exit event (`PICK` could be an internal
+storage→staging move like `PUTAWAY_OUT`, with `DISPATCH` the real boundary crossing — or it could
+work differently; this is unlike Inward, which was safe to build because Inbound+Putaway's own
+movement semantics were already real and settled by the time it got built). That item now lives
+under **Analytics**, not Inventory — see "Immediate candidates" below. Before Inventory: a real gap
+found live-testing Bin Rank against TNR8's
 own data — `WarehouseDockZone` never captured which end of the Aisle/Row numbering actually sits
 nearest the dock, only which wall it touches. Fixed with a new `numberOneNearDock` field, backfilled
 to zero-change every existing zone (see CLAUDE.md's "Dock zone: numberOneNearDock" section). A
@@ -63,6 +71,45 @@ See the 2026-09-06 session notes further down for that whole day's earlier work 
 Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
 placement Topic 2, the "Rows 1-N" summary), and 2026-09-07 for the 3D Plan View/camera/depth-model
 work and the ProductCategory cleanup.
+
+## Session note (2026-09-14 — Inventory marked complete; outward dashboard explicitly deferred)
+
+A short session, closing out the two items flagged open at the end of the previous Inventory work:
+Excel export on Line Items/SKU Summary, and the outward half of the daily volume dashboard.
+
+**Outward dashboard — discussed, deliberately NOT built.** Before answering "now or after Picking,"
+flagged a real distinction from how Inward got built: there's no new schema needed here (`PICK`/
+`DISPATCH` already exist as `MovementType` values), so this isn't a schema-now/logic-later situation
+like `DockLocationDistance`. The actual blocker is that Picking/Dispatch haven't been *designed*
+yet, so it isn't known which movement(s) genuinely represent the warehouse-exit event — Inward could
+be built safely because Inbound+Putaway were already real, tested modules with settled movement
+semantics by the time that chart got built; Outward has neither. Client's call, given that: **wait
+until Picking/Dispatch's own design conversation** rather than wire a guess now that might need
+correcting once that module actually gets designed.
+
+**Excel export — built.** `GET /inventory/line-items/export`/`sku-summary/export`
+(`InventoryController`/`Service`) — same `json_to_sheet` → streamed-buffer convention every other
+export in this app already uses, reusing the exact same `lineItems()`/`skuSummary()` methods the
+JSON reads already call (mapped into flat, human-labeled rows for the file). `InventoryPage.tsx`
+gained an "Export to Excel" button next to the view toggles, shown for Line Items/SKU Summary (the
+Ledger tab already had its own, now sharing one generalized `handleExport()` keyed off the active
+view instead of three separate handlers).
+
+Verified via a throwaway company: real `/auth/register` → `POST /warehouses` → `POST /skus`, one
+`Location` + one positive `StockMovement` seeded directly via Prisma (no public endpoint writes a
+bare movement), both new export endpoints hit with the real JWT — confirmed `200` + the correct
+`.xlsx` content-type, the returned file parsed back via the `xlsx` library and checked row-for-row
+against the seeded data (SKU code, quantity, Rack Name-derived Bin No, ABC class), and a no-auth-
+header request correctly 401ed. Cleaned up afterward (had to extend the cleanup past the company's
+own `Sku`/`Warehouse`/`User` rows to the auto-generated `DockDoor`/`YardSlot`/
+`WarehouseEquipmentSuitability` scaffolding a real `noOfDocks`-bearing warehouse creates — the same
+relation graph `WarehousesService.removeAll()` already knows about — plus `LoginEvent`, written by
+`/auth/register`'s own auto-login). `tsc --noEmit`(backend)/`tsc -b`(frontend) both clean.
+
+**With this, Inventory's own scope (on-hand Line Items/SKU Summary, the transaction-level ledger,
+and now export on all three views) is fully built** — nothing left open that belongs to this module
+specifically. The outward daily-volume chart is a real, still-open item, but it lives under
+Analytics (`AnalyticsService.dailyInward()`'s eventual `dailyOutward()` twin), not here.
 
 ## Session note (2026-09-13, fresh session — Inventory's transaction-level ledger export)
 

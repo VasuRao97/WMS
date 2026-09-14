@@ -202,22 +202,38 @@ function InventoryPage() {
       });
   }, [view, warehouseId, companyWide, fromDate, toDate]);
 
-  const handleExportLedger = () => {
+  // One handler for all three views — Line Items/SKU Summary each just
+  // need the current warehouseId; Ledger reuses its own existing
+  // companyWide/fromDate/toDate params. Same fetch→blob→synthetic-<a>
+  // pattern every other export button in this codebase already uses.
+  const handleExport = () => {
     setExporting(true);
-    const params = new URLSearchParams();
-    if (!companyWide && warehouseId) params.set('warehouseId', warehouseId);
-    if (fromDate) params.set('from', fromDate);
-    if (toDate) params.set('to', toDate);
-    fetch(`http://localhost:3000/inventory/ledger/export?${params.toString()}`, { headers: authHeaders() })
+    let url: string;
+    let filename: string;
+    if (view === 'lineItems') {
+      url = `http://localhost:3000/inventory/line-items/export?warehouseId=${warehouseId}`;
+      filename = 'Inventory_Line_Items_Export.xlsx';
+    } else if (view === 'skuSummary') {
+      url = `http://localhost:3000/inventory/sku-summary/export?warehouseId=${warehouseId}`;
+      filename = 'Inventory_SKU_Summary_Export.xlsx';
+    } else {
+      const params = new URLSearchParams();
+      if (!companyWide && warehouseId) params.set('warehouseId', warehouseId);
+      if (fromDate) params.set('from', fromDate);
+      if (toDate) params.set('to', toDate);
+      url = `http://localhost:3000/inventory/ledger/export?${params.toString()}`;
+      filename = 'Inventory_Ledger_Export.xlsx';
+    }
+    fetch(url, { headers: authHeaders() })
       .then((res) => res.blob())
       .then((blob) => {
         setExporting(false);
-        const url = window.URL.createObjectURL(blob);
+        const objUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url;
-        a.download = 'Inventory_Ledger_Export.xlsx';
+        a.href = objUrl;
+        a.download = filename;
         a.click();
-        window.URL.revokeObjectURL(url);
+        window.URL.revokeObjectURL(objUrl);
       });
   };
 
@@ -263,6 +279,11 @@ function InventoryPage() {
         <button type="button" onClick={() => setView('lineItems')} disabled={view === 'lineItems'}>Line Items</button>
         <button type="button" onClick={() => setView('skuSummary')} disabled={view === 'skuSummary'}>SKU Summary</button>
         <button type="button" onClick={() => setView('ledger')} disabled={view === 'ledger'}>Ledger</button>
+        {(view === 'lineItems' || view === 'skuSummary') && (
+          <button type="button" onClick={handleExport} disabled={exporting || !warehouseId}>
+            {exporting ? 'Exporting...' : 'Export to Excel'}
+          </button>
+        )}
         <input
           placeholder={view === 'ledger'
             ? 'Search SKU / description / bin / pallet / warehouse / operator...'
@@ -289,7 +310,7 @@ function InventoryPage() {
           <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={{ padding: 6 }} />
           <label style={{ fontSize: 13 }}>To</label>
           <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={{ padding: 6 }} />
-          <button type="button" onClick={handleExportLedger} disabled={exporting}>
+          <button type="button" onClick={handleExport} disabled={exporting}>
             {exporting ? 'Exporting...' : 'Export to Excel'}
           </button>
         </div>
