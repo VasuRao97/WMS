@@ -7,7 +7,10 @@ holds a short current-state pointer — don't grow it into a run-on paragraph ag
 ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
 full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
 
-**Last updated 2026-09-14 (Inventory module: marked complete).** Closed the module's one remaining
+**Last updated 2026-09-14 (Outbound + Picking: backend and frontend built and live-verified; a
+Picking gap-analysis pass followed the same day — see the session note immediately below).**
+
+Previous update, 2026-09-14 earlier the same day (Inventory module: marked complete). Closed the module's one remaining
 open item — `GET /inventory/line-items/export`/`sku-summary/export` (same `json_to_sheet`/streamed-
 buffer convention as every other export in this app), verified via a throwaway company end-to-end
 (real register→warehouse→SKU→seeded `StockMovement`, both endpoints hit with a real JWT, the
@@ -71,6 +74,90 @@ See the 2026-09-06 session notes further down for that whole day's earlier work 
 Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
 placement Topic 2, the "Rows 1-N" summary), and 2026-09-07 for the 3D Plan View/camera/depth-model
 work and the ProductCategory cleanup.
+
+## Session note (2026-09-14, later the same day — Outbound + Picking built; then a competitor gap-analysis pass)
+
+The actual next module in the build order, picked up per the stated "ok outbound now?" — a long
+align-before-coding conversation (scoping the whole Outbound/Picking/Dispatch trio's shape before
+drilling into any one piece — see CLAUDE.md's "Outbound orders, Picking, Dispatch" design section
+for the full round-by-round trail) settled the design, then backend and frontend both got built and
+verified the same session.
+
+**Backend** — `OutboundOrder`/`OutboundOrderLine`/`PickTask`/`PickTrip` schema, a new `PICK_IN`
+movement type. Orders are uploaded vehicle-wise but the vehicle is resolved *after* creation
+(opposite of Inbound's own pattern) — matched against an already-gated-in vehicle by destination
+city, a Supervisor+ explicitly allots one (real pick tasks reserved against actual on-hand, in the
+same transaction). `PickTasksService`: position-scoped dynamic source resolution (never a fixed
+depth — the original "3-deep ground lane, front-most auto-reassignment" worked example the whole
+design was built from), aging-bucket FIFO across lanes, FIFO trip claiming with no barcode (nothing
+physical in hand yet), and a two-tier scan completion (a pallet scan for a whole-unit pick, per-unit
+barcode scans for a partial one). **A real bug found and fixed via diagnostic verification**: task
+reservation was briefly scoped to a whole LANE's combined quantity while only ever pointing at one
+position — driving that position's on-hand negative while untouched sibling positions still held
+real stock. Fixed by scoping `PickTask` to exactly one physical position, looping across positions
+when a line's demand spans more than one. 32/32 diagnostic checks passed.
+
+**Frontend** — new `OutboundOrdersPage.tsx` (order maker + candidate-vehicle Allot modal, always an
+explicit click even with one candidate) and `PickTasksPage.tsx` (Claim Next Task, the two-tier
+completion form, the task queue with Rack-Name display) — both wired into `App.tsx` as top-level
+tabs next to Inbound Orders/Putaway. Verified live through the real rendered UI: created a real
+order, allotted a real gated-in vehicle (candidate correctly matched by destination city), claimed
+and completed a real pick trip via a barcode scan, confirmed via direct API check that the order
+flipped to `PICKED` with `pickedQty: 1/1`.
+
+**Not built this pass, flagged rather than silently dropped**: Excel import/ERP push for Outbound
+orders, Dispatch itself (the `isPriority` "can't be missed" gate, the real `DISPATCH` ledger write,
+dock/vehicle/pallet release), wave/batch/zone/location-wise picking modes, task interleaving,
+vehicle capacity checks at allotment.
+
+**Then, at your direct request — "lets deep dive in other WMS websites and see what else has to be
+built for this picking, what have we missed"** — a competitor-research pass against Manhattan
+Active WM, SAP EWM, and Blue Yonder (WebSearch, sources listed below), with every finding then
+cross-checked directly against our own code, not just the design doc, to separate a real gap from
+something already covered. See `docs/Build-Roadmap.pdf` page 5 for the full table; summarized here:
+
+**Two real bug-class gaps, not scope decisions** — confirmed by re-reading `pick-tasks.service.ts`
+and the `outbound/` module directly:
+- **No claim-expiry for an abandoned `PickTrip`.** Putaway already solved this exact problem
+  (`PutawayClaimExpiryScheduler`, 30-min auto-expiry) — Picking has no scheduler at all. A claimed-
+  then-abandoned trip stays `IN_PROGRESS` forever, permanently blocking that task (`claimTrip()`'s
+  own candidate filter excludes any task with an open trip).
+- **A `NEEDS_SOURCE` task has zero resolution path anywhere.** Putaway's equivalent (`NEEDS_BIN`)
+  has a real "Request Different Bin" action that re-runs the suggestion; Picking's `NEEDS_SOURCE`
+  has no retry action in the backend or the UI — a genuine stockout at allotment time creates a
+  permanently dead task with no visibility to anyone.
+
+**Three integration/capability gaps**:
+- **Picking never consults Pick Face** — `suggestPickPosition()` is scoped to `ACTUAL_STORAGE`
+  only; its own code comment already flagged this as a follow-on back when Pick Face was built
+  (2026-09-05), before Picking existed to consume it. The whole reason Pick Face exists (fast,
+  easy access to prioritized A/B stock) goes unused by real picking today.
+- **No operator-fairness layer for Picking** — Putaway has a full one (2026-09-02: idle-time
+  ranking, priority-task surfacing, Supervisor→Manager escalation); Picking has plain FIFO claiming
+  and nothing else.
+- **No Picking metric in Analytics** — `AnalyticsService` reports Marrying/Putaway/Pick Face
+  operator productivity; nothing for `PickTrip` (confirmed by re-reading `analytics.service.ts`
+  directly — no `pickTrip`/`pickTask` reference anywhere in it).
+
+**One capability gap needing its own design pass, not yet started**: mid-pick exception handling —
+every WMS surveyed lets an operator flag "correct location, genuinely not there" or "damaged,"
+routing to a Supervisor (the same shape as Inbound's own blocked-scan/approve workflow, which we
+already have a working pattern for). Picking only ever hard-blocks a wrong-*location* scan; there's
+no path for "I'm at the right place and it's missing," and no reason-code capture at all.
+
+**Confirmed still deferred, not re-raised as new asks**: wave/batch/zone/cluster picking ("basics
+first," already agreed) and cartonization/pack-station/sortation (flagged as possibly not
+applicable to a pallet/case B2B model, not assumed either way — worth a quick confirm sometime, not
+urgent). **Task Interleaving gets a real status change**: it was already flagged HIGH PRIORITY in
+this roadmap back on 2026-09-07 for "the moment Picking exists" — that moment is now, so it moves
+from a someday item to an active candidate. Voice picking/pick-to-light are hardware investment
+decisions, not software gaps — flagged for awareness only, no action implied.
+
+The Build Roadmap PDF was regenerated with a new page 5 carrying the full gap table (Gap / Type /
+What other WMS do / Status in our system / Priority) and updated status badges (Outbound/Picking
+now "Started," Analytics badge reflects the missing Picking metric) — see `docs/Build-Roadmap.pdf`.
+
+Sources: [Manhattan Active WM](https://www.manh.com/solutions/supply-chain-management-software/warehouse-management), [SAP EWM Picking Strategies](https://help.sap.com/docs/SUPPORT_CONTENT/sewm/3354621266.html), [SAP EWM License Plate Management](https://mygoconsulting.com/blog/sap-garage/license-plate-management-sap-ewm-automotive), [Blue Yonder WMS](https://info.blueyonder.com/warehouse-management), [RFgen — Warehouse Picking Guide](https://www.rfgen.com/blog/warehouse-picking-guide-methods-tech-trends/), [Lucas Systems — Order Picking Productivity](https://www.lucasware.com/order-picking-productivity-strategies/), [Cleverence — Warehouse Replenishment](https://www.cleverence.com/articles/3pl-business/optimize-replenishment-processes-warehouse-4821/), [Extensiv — Picking Error Handling](https://www.extensiv.com/blog/warehouse-management-software-for-3pls-cut-picking-errors).
 
 ## Session note (2026-09-14 — Inventory marked complete; outward dashboard explicitly deferred)
 
@@ -1266,6 +1353,26 @@ for everything that's actually shipped since).
 
 Pick one — these are the live options on the table, not a forced order:
 
+0. ~~**Outbound / Picking**~~ — **BUILT 2026-09-14**, see the session note above. Order maker +
+   allotment + pick-task execution, backend and frontend both live-verified. What's live on the
+   table now, from the same-day gap-analysis pass (`docs/Build-Roadmap.pdf` page 5):
+   - **Two real bug-class gaps** — no claim-expiry for an abandoned `PickTrip` (Putaway already
+     solved this exact problem), and a `NEEDS_SOURCE` task has no retry path anywhere (Putaway's
+     "Request Different Bin" has no Picking equivalent). Both flagged HIGH — same class of gap as
+     a bug, not a scope decision.
+   - **Wire Picking into Pick Face** — `suggestPickPosition()` is scoped to `ACTUAL_STORAGE` only;
+     the whole reason Pick Face exists (fast access to prioritized A/B stock) goes unused today.
+   - Operator-assignment fairness for Picking (Putaway has one, Picking has plain FIFO only), and a
+     Picking metric in Analytics (Marrying/Putaway/Pick Face are reported, `PickTrip` isn't) — both
+     Medium priority.
+   - Mid-pick exception handling ("genuinely not there"/damaged, routing to a Supervisor) needs its
+     own design pass, not yet started.
+   - **Dispatch** is the real next module — needs its own align-before-coding pass: can an order
+     dispatch with non-priority lines still short as long as priority lines are complete; is the
+     Dispatch action a new explicit step or does it piggyback on the existing Gate Out; does load
+     need its own re-scan or can it trust the picking ledger.
+   - **Task Interleaving moves from "someday" to an active candidate** — it was flagged HIGH
+     PRIORITY back on 2026-09-07 for "the moment Picking exists"; that moment is now.
 1. **The reslotting/consolidation suggestion engine** (2026-09-06) — now genuinely unblocked: both
    Topic 1 (real per-warehouse ABC classification) and Topic 2 (dock-relative placement rules) it
    was waiting on are built. `ReslottingSuggestion`/`ReslottingSuggestionSource` schema has sat ready
