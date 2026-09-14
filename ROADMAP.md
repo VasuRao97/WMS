@@ -1334,11 +1334,14 @@ session's own conversation for the full research and sourcing) — six real gaps
   client-configurable ("let it be a client decision, not ours") but `WarehouseStorageType` rows have
   no edit path at all today (only ever created, never updated) — needs a real scope decision
   (create-time-only fix vs. a first-ever edit capability for these rows) before building.
-- **Stillage still has no Putaway bin-suggestion logic of its own** — untouched by the Ground/Floor
-  work below; `suggestBin()` still has no real placement logic for `STILLAGE`, always returns
-  `NEEDS_BIN`. Not yet even design-discussed.
-  isn't a small extension of the existing algorithm, it's closer to a second, genuinely different
-  placement strategy — same shape as the Drive-in split, likely bigger.
+- ~~Stillage still has no Putaway bin-suggestion logic of its own~~ — **BUILT 2026-09-13**, see
+  CLAUDE.md's "Stillage gets its own real Putaway logic" section. `suggestStillageBin()` now has
+  real placement logic (class-tiered whole-bin/per-column sharing, reusing existing
+  `maxSkusClassA/B/C` config). Its own row-axis (second dock-wall) placement refinement was then
+  also **built 2026-09-13/14** — see "Stillage: row-axis placement + Insights coverage" in
+  CLAUDE.md — mirroring Ground's exact mechanism, its own separate row-groups. **"Closed column"
+  lifecycle tracking stays genuinely open** — no trigger exists for it until a Picking module
+  writes real depletions (nothing in this codebase writes `MovementType.PICK` yet).
 - **Self-service driver check-in** (`SelfCheckInRequest`, schema-only) — flagged as a top Yard/Gate
   gap in competitor research, still "later we do it."
 - **Yard Plan View** — needs a small spatial-layout design pass first (Yard Slots have no
