@@ -82,11 +82,20 @@ export function displayCode(loc: {
 // (`stack` + `rack`, `rack` reused as the column number within the bin,
 // same convention Ground's own redesign already established), single-file
 // LIFO, `depth` positions deep — mechanically identical to a Rack lane,
-// just naming a stack instead of a rack row. Ground/Floor is deliberately
-// NOT included here even though its own redesign gave it the same
-// column/depth shape — nothing has asked to extend this grouping (or its
-// only consumer, InsightsService's storage-utilization report) to Ground,
-// so it stays out rather than silently bundled in.
+// just naming a stack instead of a rack row.
+//
+// GROUND_FLOOR (2026-09-14, added for Outbound/Picking — see CLAUDE.md's
+// Picking design section for the worked example this closes: a 4-deep
+// Ground block where an operator shouldn't be sent to dig through shallower
+// positions to reach one nominally "assigned" to their task). Was
+// deliberately excluded until now — Ground's own redesign gave it the
+// identical column/depth shape as Stillage (`block`+`rack`, `rack` reused
+// as the column number) but nothing had asked to extend this grouping (or
+// its other consumer, InsightsService's storage-utilization report) to it.
+// Picking's source-lane resolution is the first real caller — grouped
+// exactly like Stillage, one lane per (aisle, flank, block, column).
+// Insights' own report inherits this for free (it already reuses this same
+// function) — not a decision point, just a side effect worth knowing about.
 export function laneKeyOf(loc: {
   id: string;
   storageType: string;
@@ -95,10 +104,16 @@ export function laneKeyOf(loc: {
   level: string | null;
   flankNumber: number | null;
   stack?: string | null;
+  block?: string | null;
 }): string {
   if (loc.storageType === 'STILLAGE') {
     return loc.aisle && loc.stack && loc.rack
       ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.stack}|${loc.rack}`
+      : `single|${loc.id}`;
+  }
+  if (loc.storageType === 'GROUND_FLOOR') {
+    return loc.aisle && loc.block && loc.rack
+      ? `${loc.aisle}|${loc.flankNumber ?? 'x'}|${loc.block}|${loc.rack}`
       : `single|${loc.id}`;
   }
   if (!RACK_STORAGE_TYPES.includes(loc.storageType) || !loc.aisle || !loc.rack)

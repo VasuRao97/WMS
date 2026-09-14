@@ -358,8 +358,8 @@ model User {
   multiSkuLaneRequestsRevoked     MultiSkuLaneException[]  @relation("MultiSkuLaneRevokedBy")
   historicalDispatchSeedsImported HistoricalDispatchSeed[] @relation("HistoricalDispatchSeedImportedBy")
   reslottingSuggestionsActioned   ReslottingSuggestion[]   @relation("ReslottingSuggestionActionedBy")
-  ordersCreated                   OutboundOrder[]          @relation("OrderCreatedBy")
-  picksCompleted                  PickTask[]               @relation("PickedBy")
+  outboundOrdersCreated           OutboundOrder[]          @relation("OutboundOrderCreatedBy")
+  pickTripsClaimed                PickTrip[]               @relation("PickTripClaimedBy")
   dispatches                      Dispatch[]               @relation("DispatchedBy")
   movements                       StockMovement[]          @relation("MovementCreatedBy")
   gateEntriesIn                   VehicleGateEntry[]       @relation("GateInBy")
@@ -811,13 +811,15 @@ model Location {
   pickFaceFrom                PickFaceTask[]               @relation("PickFaceFromLocation")
   pickFaceTo                  PickFaceTask[]               @relation("PickFaceToLocation")
   pickFaceTripsScanned        PickFaceTrip[]               @relation("PickFaceTripScannedLocation")
+  pickFrom                    PickTask[]                   @relation("PickFromLocation")
+  pickTo                      PickTask[]                   @relation("PickToLocation")
+  pickTripsScanned            PickTrip[]                   @relation("PickTripScannedLocation")
   receiptLinesStaged          InboundReceiptLine[]
   // A receipt-level default staging spot, chosen once the vehicle is
   // actually at the dock (2026-08-27 — see InboundReceipt.stagingLocationId's
   // comment for why this replaced requiring a location per-line at
   // order-creation time).
   receiptsStaged              InboundReceipt[]
-  allocations                 Allocation[]
   returns                     Return[]
   dockDistances               DockLocationDistance[]
   defaultStagingForDocks      DockDoor[]                   @relation("DockDoorInboundStaging")
@@ -891,7 +893,7 @@ model Sku {
   pickFaceTasks           PickFaceTask[]
   palletLoads             PalletLoad[]
   outboundOrderLine       OutboundOrderLine[]
-  allocations             Allocation[]
+  pickTasks               PickTask[]
   returns                 Return[]
   warehouseClasses        SkuWarehouseClass[]
   historicalDispatchSeeds HistoricalDispatchSeed[]
@@ -946,7 +948,17 @@ enum MovementType {
   RECEIPT // + stock at a receiving/staging location
   PUTAWAY_OUT // - stock at staging location
   PUTAWAY_IN // + stock at storage location
-  PICK // - stock at storage/picking location
+  // Picking (2026-09-14, Outbound/Picking/Dispatch design) — a real OUT+IN
+  // pair, same discipline every other physical move in this ledger already
+  // follows (PUTAWAY_OUT/IN, PICK_FACE_REPLENISH_OUT/IN): PICK removes stock
+  // from its storage/pick-face location, PICK_IN lands it at a
+  // LOADING_STAGING location (the zone type has existed since 2026-08-24,
+  // unused until now). Without PICK_IN, stock that's been picked but not
+  // yet dispatched would be invisible to every on-hand report between the
+  // two events — confirmed wanted, not assumed. DISPATCH is what finally
+  // removes it from staging for good.
+  PICK // - stock at storage/pick-face location
+  PICK_IN // + stock at loading/staging location
   DISPATCH // - stock at dispatch/staging (order left the building)
   RETURN_IN // + stock at returns location
   ADJUSTMENT // +/- manual correction, always requires a reason
@@ -1377,6 +1389,7 @@ model Vehicle {
 
   gateEntries     VehicleGateEntry[]
   inboundReceipts InboundReceipt[]
+  outboundOrders  OutboundOrder[]
 
   @@unique([companyId, vehicleNumber])
 }
@@ -1782,6 +1795,18 @@ model VehicleGateEntry {
   inboundReceipt   InboundReceipt?      @relation(fields: [inboundReceiptId], references: [id])
   inboundScans     InboundReceiptScan[]
 
+  // The Outbound mirror of inboundReceiptId above (2026-09-14, Outbound/
+  // Picking/Dispatch design) — set by the "allot" action once a Supervisor
+  // picks this specific gated-in vehicle for an uploaded order (or the
+  // system auto-picks it when only one candidate exists). @unique so one
+  // gate visit carries at most one order, same "one order at a time" scope
+  // this project settled on for v1 — a vehicle carrying several orders in
+  // one trip is explicitly deferred, not this field's concern. Nullable
+  // because most of a gate entry's life happens before allotment (and
+  // Inbound entries never set it at all).
+  outboundOrderId String?        @unique
+  outboundOrder   OutboundOrder? @relation(fields: [outboundOrderId], references: [id])
+
   // A deliberate human close-out, distinct from the receipt simply reaching
   // RECEIVED status (2026-08-27, a real gap the client caught testing the
   // flow themselves: reaching RECEIVED was auto-unlocking Gate Out with no
@@ -1796,8 +1821,6 @@ model VehicleGateEntry {
   inwardCompletionRemarks String?
 
   createdAt DateTime @default(now())
-
-  @@index([warehouseId, gateInAt])
   // 2026-09-06 hardening-pass fix — a PARTIAL index (WHERE "gateOutAt" IS
   // NULL), hand-added in the migration SQL since Prisma's schema DSL can't
   // express a conditional index directly (documented here so it isn't a
@@ -1811,6 +1834,8 @@ model VehicleGateEntry {
   // partial index over a plain composite one, since it stays small and
   // fast regardless of how much closed history accumulates.
   // See migration 20260906050000_vehicle_gate_entry_open_index.
+
+  @@index([warehouseId, gateInAt])
 }
 
 enum DockNotificationStage {
@@ -2622,6 +2647,7 @@ model PalletLoad {
 
   movements    StockMovement[]
   putawayTasks PutawayTask[]
+  pickTrips    PickTrip[]
 
   @@index([palletId])
 }
@@ -2710,8 +2736,8 @@ model SkuWarehouseClass {
   // "D, you can treat to be the futherest, or want to merge with C?" →
   // merge). orderCount is kept for the same audit/display reason
   // dispatchedQty is.
-  fmsClass   String? // 'F' | 'M' | 'S', or null (SKU is ABC-class D, or not yet computed)
-  orderCount Decimal?
+  fmsClass      String? // 'F' | 'M' | 'S', or null (SKU is ABC-class D, or not yet computed)
+  orderCount    Decimal?
   computedAt    DateTime  @default(now())
 
   @@unique([skuId, warehouseId])
@@ -2816,8 +2842,26 @@ model ReslottingSuggestionSource {
 // OUTBOUND / ALLOCATION / PICKING / DISPATCH
 // ------------------------------------------------------------
 
+// 2026-09-14 — this whole section was rewritten from a bare MVP stub once
+// Outbound/Picking/Dispatch's real design conversation happened (see
+// CLAUDE.md's matching section and the wms-outbound-picking-design memory
+// for the full round-by-round trail). The old shape (OutboundOrder ->
+// OutboundOrderLine -> Allocation -> PickTask, one Allocation pinning an
+// exact Location per order line up front) predates almost every pattern
+// this codebase later built — no scan-driven execution, no LIFO-lane
+// awareness, no ABC/FMS-driven placement equivalent. Allocation is dropped
+// entirely; PickTask now points straight at its OutboundOrderLine, same
+// "no intermediate layer" shape PutawayTask already has for
+// InboundReceiptLine.
+//
+// ALLOTTED is new — a real, named status for the window between "order
+// uploaded" and "a specific gated-in vehicle is confirmed for it," distinct
+// from ALLOCATED (stock actually reserved) even though the two happen back
+// to back once allotment resolves — see OutboundOrder.vehicleId below for
+// why they're not the same moment structurally.
 enum OrderStatus {
   CREATED
+  ALLOTTED
   ALLOCATED
   PICKING
   PICKED
@@ -2826,70 +2870,178 @@ enum OrderStatus {
   CANCELLED
 }
 
+// Orders are uploaded vehicle-wise, confirmed directly in the design
+// conversation: destination (a plain city/location string, same shape as
+// VehicleGateEntry.destinationCity — NOT a warehouse-internal Location),
+// SKU + quantity per line, and which lines are "priority" (must be loaded
+// before dispatch — a hard completion gate, not a pick-sequencing signal,
+// see OutboundOrderLine.isPriority). Mirrors InboundReceipt's own shape
+// closely (warehouse-scoped, no direct companyId, referenceNo-equivalent
+// uniqueness checked in the service layer not a DB constraint,
+// createdById/createdViaErpPush pair for the same three intake paths —
+// manual, Excel import, ERP push, all confirmed wanted from day one here)
+// but with one deliberate difference: vehicleId is NEVER known at creation
+// for ANY intake path (unlike Inbound, where it's required for manual/
+// import and only optional for ERP push) — the whole point of "vehicle-wise
+// upload" is that the system finds a matching ALREADY-gated-in vehicle
+// afterward, and a Supervisor allots one when several match. Set only by
+// the allot action, alongside VehicleGateEntry.outboundOrderId.
 model OutboundOrder {
-  id           String      @id @default(uuid())
-  warehouseId  String
-  warehouse    Warehouse   @relation(fields: [warehouseId], references: [id])
-  orderNo      String      @unique
-  customerName String?
-  status       OrderStatus @default(CREATED)
-  createdById  String
-  createdBy    User        @relation("OrderCreatedBy", fields: [createdById], references: [id])
-  createdAt    DateTime    @default(now())
+  id              String      @id @default(uuid())
+  warehouseId     String
+  warehouse       Warehouse   @relation(fields: [warehouseId], references: [id])
+  orderNo         String
+  destinationCity String
+  customerName    String?
+  status          OrderStatus @default(CREATED)
 
-  lines    OutboundOrderLine[]
-  dispatch Dispatch?
+  vehicleId String?
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+
+  createdById       String?
+  createdBy         User?    @relation("OutboundOrderCreatedBy", fields: [createdById], references: [id])
+  createdViaErpPush Boolean  @default(false)
+  createdAt         DateTime @default(now())
+
+  lines     OutboundOrderLine[]
+  gateEntry VehicleGateEntry?
+  dispatch  Dispatch?
 }
 
+// isPriority (2026-09-14, confirmed directly): "SKUs cannot be missed for
+// dispatch" — a hard block on marking the order complete/ready while any
+// priority line is short, not a pick-order preference. pickedQty is a real,
+// incrementing stored field (mirroring InboundReceiptLine.receivedQty, not
+// the pure-derive-from-ledger convention on-hand stock itself uses) —
+// bumped by each completed PickTrip against this line's own PickTask(s).
 model OutboundOrderLine {
-  id           String        @id @default(uuid())
-  orderId      String
-  order        OutboundOrder @relation(fields: [orderId], references: [id])
-  skuId        String
-  sku          Sku           @relation(fields: [skuId], references: [id])
-  orderedQty   Decimal
-  allocatedQty Decimal       @default(0)
-  pickedQty    Decimal       @default(0)
+  id         String        @id @default(uuid())
+  orderId    String
+  order      OutboundOrder @relation(fields: [orderId], references: [id])
+  skuId      String
+  sku        Sku           @relation(fields: [skuId], references: [id])
+  orderedQty Decimal
+  pickedQty  Decimal       @default(0)
+  isPriority Boolean       @default(false)
 
-  allocations Allocation[]
+  pickTasks PickTask[]
 }
 
-enum AllocationStatus {
-  ALLOCATED
-  PICKED
-  CANCELLED
+// NEEDS_SOURCE mirrors PutawayStatus.NEEDS_BIN — the structural "nothing
+// eligible was found" outcome (a real stockout), not deeply designed yet.
+enum PickStatus {
+  NEEDS_SOURCE
+  PENDING
+  COMPLETED
 }
 
-model Allocation {
+// The scan-driven execution unit for Picking, mirroring PutawayTask almost
+// exactly, but reversed: Putaway's source (staging) is fixed and its
+// destination (a storage bin) varies; Picking's destination (staging) is
+// fixed and its SOURCE varies. Created only once an order's vehicle is
+// actually gated in AND allotted (2026-09-14, confirmed directly — "reserve
+// bin/pallet when gate in + allotement is done," not at order upload) —
+// this is the moment `quantity` gets committed against real on-hand,
+// reducing what's available to promise to other orders.
+//
+// fromLocationId's meaning depends on the storage type, same "lane vs.
+// exact position" distinction suggestBin() already draws for Putaway
+// placement, just applied to the picking SOURCE instead of the
+// destination: for a non-LIFO position (SPR/ASRS levels, a Stillage bin
+// already committed to one SKU) this pins the exact Location the moment
+// the task is created. For a LIFO-constrained lane (Ground multi-deep,
+// Drive-in — see the worked example in CLAUDE.md's Picking design section:
+// "if he has to remove the first 2 pallets then take this 3rd pallet then
+// put back the 1st two, its waste of time/energy") this only identifies the
+// LANE (one representative row sharing the same laneKeyOf() key) — the
+// actual depth position is resolved live, always the currently front-most
+// occupied one, at trip claim/completion time, never pre-pinned to a
+// specific task.
+model PickTask {
   id          String            @id @default(uuid())
   orderLineId String
   orderLine   OutboundOrderLine @relation(fields: [orderLineId], references: [id])
   skuId       String
   sku         Sku               @relation(fields: [skuId], references: [id])
-  locationId  String
-  location    Location          @relation(fields: [locationId], references: [id])
-  quantity    Decimal
-  status      AllocationStatus  @default(ALLOCATED)
-  createdAt   DateTime          @default(now())
 
-  pickTask PickTask?
+  fromLocationId String?
+  fromLocation   Location? @relation("PickFromLocation", fields: [fromLocationId], references: [id])
+
+  // Always a LOADING_STAGING location — resolved the same fallback chain
+  // Inbound receiving already uses for its own staging default (a per-dock
+  // DockDoor.outboundStagingLocationId once the order's allotted vehicle
+  // has an assigned dock).
+  toLocationId String?
+  toLocation   Location? @relation("PickToLocation", fields: [toLocationId], references: [id])
+
+  // Total quantity this task needs moved — how much has actually moved is
+  // deliberately NOT a stored counter here, derived by summing this task's
+  // own COMPLETED PickTrip rows, same "always derive rather than risk drift"
+  // philosophy PutawayTask.quantity already follows.
+  quantity Decimal
+  status   PickStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+
+  trips PickTrip[]
+
+  @@index([orderLineId])
+  @@index([fromLocationId, status])
+  @@index([status])
 }
 
-enum PickStatus {
-  PENDING
-  PICKED
+// One row per physical trip, mirroring PutawayTrip's own scan-driven
+// claim/complete shape exactly. Two real differences from Putaway,
+// both confirmed directly (2026-09-14):
+//
+// 1. The location scan is ALWAYS a hard match, no override toggle — "we
+//    recommend the location (4 deep location), he has to pick from that
+//    only," unlike Putaway's optional Company.allowPutawayLocationOverride.
+//    scannedLocationId still exists (not just a boolean) because for a
+//    LIFO lane the exact depth is only known once he actually scans it —
+//    the system doesn't predict which position he'll find front-most.
+//
+// 2. Verification depends on whether this trip is a clean whole-unit match
+//    or a partial/broken pick, confirmed with a worked example: "if
+//    possible we try to pick full pallet of same aging... location + pallet
+//    scan should be enough... if its partial pallet picking, then better we
+//    scan each unit after we scan the location." palletLoadId covers the
+//    whole-unit case (cross-checked against the ledger, same resolution
+//    PalletsService.resolveLoadForScan() already does for Inbound);
+//    unitBarcodeScanned is a simple free-text audit field for the partial
+//    case in this first pass — a real per-unit child table (one row per
+//    individual scan) is a flagged, not-yet-built refinement once the base
+//    mechanic proves out, same "basics first" scoping as everything else
+//    in this pass.
+enum PickTripStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
 }
 
-model PickTask {
-  id           String     @id @default(uuid())
-  allocationId String     @unique
-  allocation   Allocation @relation(fields: [allocationId], references: [id])
-  pickerId     String?
-  picker       User?      @relation("PickedBy", fields: [pickerId], references: [id])
-  quantity     Decimal
-  status       PickStatus @default(PENDING)
-  pickedAt     DateTime?
-  createdAt    DateTime   @default(now())
+model PickTrip {
+  id     String   @id @default(uuid())
+  taskId String
+  task   PickTask @relation(fields: [taskId], references: [id])
+
+  quantity Decimal
+  status   PickTripStatus @default(IN_PROGRESS)
+
+  claimedById String
+  claimedBy   User     @relation("PickTripClaimedBy", fields: [claimedById], references: [id])
+  claimedAt   DateTime @default(now())
+
+  scannedLocationId String?
+  scannedLocation   Location? @relation("PickTripScannedLocation", fields: [scannedLocationId], references: [id])
+
+  palletLoadId       String?
+  palletLoad         PalletLoad? @relation(fields: [palletLoadId], references: [id])
+  unitBarcodeScanned String?
+
+  completedAt DateTime?
+
+  @@index([taskId])
+  @@index([claimedById, status])
 }
 
 model Dispatch {

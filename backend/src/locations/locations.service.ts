@@ -1750,7 +1750,8 @@ export class LocationsService {
             putawayFrom: true,
             putawayTo: true,
             receiptLinesStaged: true,
-            allocations: true,
+            pickFrom: true,
+            pickTo: true,
             returns: true,
           },
         },
@@ -1765,7 +1766,8 @@ export class LocationsService {
         c.putawayFrom +
         c.putawayTo +
         c.receiptLinesStaged +
-        c.allocations +
+        c.pickFrom +
+        c.pickTo +
         c.returns;
       if (totalLinked > 0) blocked.push(loc.code);
       else deletable.push(loc.id);
@@ -1798,7 +1800,8 @@ export class LocationsService {
             putawayFrom: true,
             putawayTo: true,
             receiptLinesStaged: true,
-            allocations: true,
+            pickFrom: true,
+            pickTo: true,
             returns: true,
           },
         },
@@ -1811,7 +1814,8 @@ export class LocationsService {
       c.putawayFrom +
       c.putawayTo +
       c.receiptLinesStaged +
-      c.allocations +
+      c.pickFrom +
+      c.pickTo +
       c.returns;
     if (totalLinked > 0) {
       throw new BadRequestException(

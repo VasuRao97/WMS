@@ -434,7 +434,7 @@ export class SkusService {
             receiptLines: true,
             putawayTasks: true,
             outboundOrderLine: true,
-            allocations: true,
+            pickTasks: true,
             returns: true,
             asParent: true,
             asChild: true,
@@ -454,7 +454,7 @@ export class SkusService {
       c.receiptLines +
       c.putawayTasks +
       c.outboundOrderLine +
-      c.allocations +
+      c.pickTasks +
       c.returns +
       c.asParent +
       c.asChild;
@@ -483,7 +483,7 @@ export class SkusService {
             receiptLines: true,
             putawayTasks: true,
             outboundOrderLine: true,
-            allocations: true,
+            pickTasks: true,
             returns: true,
             asParent: true,
             asChild: true,
@@ -500,7 +500,7 @@ export class SkusService {
         c.receiptLines +
         c.putawayTasks +
         c.outboundOrderLine +
-        c.allocations +
+        c.pickTasks +
         c.returns +
         c.asParent +
         c.asChild;

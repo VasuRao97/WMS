@@ -199,6 +199,47 @@ export const PUTAWAY_DISCREPANCY_REVIEW_ROLES = [
   'WAREHOUSE_SUPERVISOR',
 ];
 
+// Outbound/Picking (2026-09-14) — same tier shape as Inbound/Putaway above,
+// mirrored deliberately rather than reusing INBOUND_*/PUTAWAY_* directly
+// (same "distinct destinations that could diverge later" reasoning as
+// CAN_VIEW_INSIGHTS/CAN_VIEW_ANALYTICS, even though the role lists are
+// identical today).
+//   OUTBOUND_READ_ROLES / OUTBOUND_ORDER_WRITE_ROLES: order visibility and
+//     the "order maker" (create/import/ERP push) — same tier as Inbound's
+//     own INBOUND_READ_ROLES/INBOUND_ORDER_WRITE_ROLES.
+//   OUTBOUND_ALLOT_ROLES: who can allot a gated-in vehicle to an order —
+//     Supervisor and up, confirmed directly ("supervisor has to then select
+//     the vehicle and allot") — deliberately excludes OPERATOR, same tier
+//     as INBOUND_APPROVE_ROLES.
+//   PICK_EXECUTE_ROLES: who can claim/complete a picking trip — broad,
+//     matches PUTAWAY_EXECUTE_ROLES's own floor-role tier.
+export const OUTBOUND_READ_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
+export const OUTBOUND_ORDER_WRITE_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+];
+export const OUTBOUND_ALLOT_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+];
+export const PICK_EXECUTE_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
+export const OUTBOUND_SCOPED_ROLES = [
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+  'OPERATOR',
+];
+
 export async function assertGateAccessAllowed(
   prisma: { company: { findUnique: Function } },
   user: AuthUser,
