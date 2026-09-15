@@ -34,6 +34,7 @@ type Settings = {
   defaultMaxCasesPerPallet?: number | string | null;
   putawayAssignmentGraceMinutes?: number | string;
   allowPutawayLocationOverride?: boolean;
+  pickingAssignmentGraceMinutes?: number | string;
   abcReassessmentEnabled?: boolean;
   abcClassAPercent?: number | string;
   abcClassBPercent?: number | string;
@@ -119,6 +120,7 @@ function CompanySettingsPage() {
   const [defaultMaxCasesPerPallet, setDefaultMaxCasesPerPallet] = useState('');
   const [putawayAssignmentGraceMinutes, setPutawayAssignmentGraceMinutes] = useState('2');
   const [allowPutawayLocationOverride, setAllowPutawayLocationOverride] = useState(false);
+  const [pickingAssignmentGraceMinutes, setPickingAssignmentGraceMinutes] = useState('2');
   const [abcReassessmentEnabled, setAbcReassessmentEnabled] = useState(false);
   const [abcClassAPercent, setAbcClassAPercent] = useState('75');
   const [abcClassBPercent, setAbcClassBPercent] = useState('15');
@@ -198,6 +200,7 @@ function CompanySettingsPage() {
         setDefaultMaxCasesPerPallet(data.defaultMaxCasesPerPallet != null ? String(data.defaultMaxCasesPerPallet) : '');
         setPutawayAssignmentGraceMinutes(data.putawayAssignmentGraceMinutes != null ? String(data.putawayAssignmentGraceMinutes) : '2');
         setAllowPutawayLocationOverride(!!data.allowPutawayLocationOverride);
+        setPickingAssignmentGraceMinutes(data.pickingAssignmentGraceMinutes != null ? String(data.pickingAssignmentGraceMinutes) : '2');
         setAbcReassessmentEnabled(!!data.abcReassessmentEnabled);
         setAbcClassAPercent(data.abcClassAPercent != null ? String(data.abcClassAPercent) : '75');
         setAbcClassBPercent(data.abcClassBPercent != null ? String(data.abcClassBPercent) : '15');
@@ -429,6 +432,7 @@ function CompanySettingsPage() {
         defaultMaxCasesPerPallet: defaultMaxCasesPerPallet === '' ? null : defaultMaxCasesPerPallet,
         putawayAssignmentGraceMinutes: putawayAssignmentGraceMinutes === '' ? undefined : putawayAssignmentGraceMinutes,
         allowPutawayLocationOverride,
+        pickingAssignmentGraceMinutes: pickingAssignmentGraceMinutes === '' ? undefined : pickingAssignmentGraceMinutes,
         abcReassessmentEnabled,
         abcClassAPercent,
         abcClassBPercent,
@@ -562,6 +566,15 @@ function CompanySettingsPage() {
               escalates to the Warehouse Manager. One dial, reused for both steps.
             </p>
             <input value={putawayAssignmentGraceMinutes} onChange={(e) => setPutawayAssignmentGraceMinutes(e.target.value)} placeholder="2" style={{ width: 100, padding: 6 }} />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Picking Assignment Grace Minutes</label>
+            <p style={{ margin: '0 0 4px', fontSize: 12, color: '#888' }}>
+              Same idea, Picking's own dial — how long the recommended (longest-free, MHE-capable) operator has to
+              claim the next picking task before the Warehouse Supervisor is notified, then the Warehouse Manager if
+              their next turn also lapses. Never shared with Putaway's own grace period above.
+            </p>
+            <input value={pickingAssignmentGraceMinutes} onChange={(e) => setPickingAssignmentGraceMinutes(e.target.value)} placeholder="2" style={{ width: 100, padding: 6 }} />
           </div>
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13 }}>

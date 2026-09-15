@@ -240,6 +240,23 @@ export const OUTBOUND_SCOPED_ROLES = [
   'OPERATOR',
 ];
 
+// Picking gap-analysis pass (2026-09-14, see NEXT_SESSION_PROMPT.md /
+// ROADMAP.md's matching session notes) — who can review a PickException
+// (mark it reviewed). Supervisor-and-up, same tier as
+// PUTAWAY_DISCREPANCY_REVIEW_ROLES/INBOUND_APPROVE_ROLES — an Operator can
+// report their own mid-pick problem (PICK_EXECUTE_ROLES already covers
+// that) but reviewing/closing one out is a step above, same "the reporting
+// operator can never resolve their own report" principle Inbound and
+// Putaway already established. A separate named constant on purpose even
+// though the values are identical to those two today — same "distinct
+// destinations that could diverge later" reasoning as CAN_VIEW_INSIGHTS/
+// CAN_VIEW_ANALYTICS.
+export const PICK_EXCEPTION_REVIEW_ROLES = [
+  'COMPANY_ADMIN',
+  'WAREHOUSE_MANAGER',
+  'WAREHOUSE_SUPERVISOR',
+];
+
 export async function assertGateAccessAllowed(
   prisma: { company: { findUnique: Function } },
   user: AuthUser,

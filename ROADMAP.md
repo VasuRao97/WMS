@@ -7,8 +7,12 @@ holds a short current-state pointer — don't grow it into a run-on paragraph ag
 ballooned to 150+ lines of duplicated prose before a 2026-09-07 cleanup trimmed it back down; the
 full detail it used to carry inline already lives in the Session notes below and in CLAUDE.md).
 
-**Last updated 2026-09-14 (Outbound + Picking: backend and frontend built and live-verified; a
-Picking gap-analysis pass followed the same day — see the session note immediately below).**
+**Last updated 2026-09-15 (Picking gap-fix pass: short-stock retry, Pick Face wiring, operator
+fairness, and mid-pick exception handling all built and verified — see the session note
+immediately below).**
+
+Previous update, 2026-09-14 (Outbound + Picking: backend and frontend built and live-verified; a
+Picking gap-analysis pass followed the same day — see the session note further below).
 
 Previous update, 2026-09-14 earlier the same day (Inventory module: marked complete). Closed the module's one remaining
 open item — `GET /inventory/line-items/export`/`sku-summary/export` (same `json_to_sheet`/streamed-
@@ -74,6 +78,77 @@ See the 2026-09-06 session notes further down for that whole day's earlier work 
 Putaway logic + settings UI, the hardening/performance pass, ABC velocity Topic 1, dock-relative
 placement Topic 2, the "Rows 1-N" summary), and 2026-09-07 for the 3D Plan View/camera/depth-model
 work and the ProductCategory cleanup.
+
+## Session note (2026-09-15 — Picking gap-fix pass: items 1-4 of 6 from the 2026-09-14 gap table)
+
+Picked up exactly where the previous session's own `NEXT_SESSION_PROMPT.md` left off — schema for
+this pass (`PickException`/`PickExceptionReason`, `Company.pickingAssignmentGraceMinutes`,
+`NotificationEventType.PICKING_OPERATOR_MISSED_TURN`) was already built/migrated/committed
+(`4169c951`); this session was the actual service/controller/frontend logic on top of it. See
+CLAUDE.md's matching session note for the full design detail — this is the plan-level summary.
+
+**1) Short-stock retry.** `attemptSourceRecovery()` — a new shared recovery path used by three
+different callers (an explicit retry, the auto-detected short-quantity branch below, and an explicit
+exception report) — never deletes a `PickTask`/`PickTrip`: a dead-end task's own quantity gets
+trimmed to whatever it actually achieved, and a fresh sibling `PickTask` (`NEEDS_SOURCE`) is spun off
+for whatever's still unmet, so every `PickException.taskId` keeps pointing at a real row and
+`SUM(quantity)` across the original + siblings always equals the original commitment. New
+`retryTaskSource()`/`POST /pick-tasks/:id/retry-source` + a "Retry Source" button on any
+`NEEDS_SOURCE` row. `createTaskForLine()`'s own original `NEEDS_SOURCE` branch (at allotment time)
+now also auto-logs a `SHORT_STOCK` exception, closing the loop the schema comment already described.
+
+**2) Wire Picking into Pick Face.** `suggestPickPosition()` split into a two-phase wrapper — Pick
+Face (SPR only, defensive filter matching `PickFaceReplenishmentScheduler`'s own) is always tried
+first, falling back to `ACTUAL_STORAGE` only when Pick Face has nothing for the SKU. No aging-bucket
+comparison needed between the two zones (mirrors `suggestBin()`'s own Pick Face wiring on the Putaway
+side). `PickFaceReplenishmentScheduler` already derives occupancy from real `StockMovement` balances,
+so it correctly detects depletion the moment real `PICK` movements land against a `PICK_FACE`
+location — no changes needed there.
+
+**3) Operator-assignment fairness for Picking.** `computeRecommendedOperator()`/`getRecommendation()`
+mirror Putaway's own almost verbatim (same `User.canOperateMhe` reuse, same NULL-comparison Postgres
+footgun avoided the same way, same "never worked -> ranked from account creation" rule). New
+`PickAssignmentScheduler` (`@Cron(EVERY_MINUTE)`, `Company.pickingAssignmentGraceMinutes`, event type
+`PICKING_OPERATOR_MISSED_TURN`) mirrors `PutawayAssignmentScheduler`'s alert-then-escalate shape
+exactly. `GET /pick-tasks/recommendation` + a recommendation banner on `PickTasksPage.tsx` + a
+"Picking Assignment Grace Minutes" field on Company Settings (its own separate dial, never shared
+with Putaway's).
+
+**4) Mid-pick exception handling.** Short-quantity is auto-detected in `completeTrip()` (compared
+against the TRIP's own claimed quantity, not the task's overall remaining, so a normal multi-trip
+task capped by equipment capacity never false-triggers it) — logs a `SHORT_QUANTITY` exception and
+calls `attemptSourceRecovery()` excluding the location that just came up short. A new
+`reportException()`/`POST /pick-tasks/trips/:tripId/exception` lets an operator abandon an
+in-progress trip for a genuine physical problem (Empty Bin/Wrong SKU/Damaged/Other) — no stock
+movement, same recovery call. New `PICK_EXCEPTION_REVIEW_ROLES` (Supervisor+, mirrors
+`PUTAWAY_DISCREPANCY_REVIEW_ROLES`) gates `getExceptions()`/`reviewException()`. Frontend: a
+"Report a Problem" toggle on the active-trip form, and a new "Exceptions" section (Supervisor+)
+showing "System" for the two auto-logged reasons.
+
+**Verified via a throwaway-company diagnostic script invoking the real, unmodified
+`PickTasksService`/`PickAssignmentScheduler` methods directly (23/23)** — including catching and
+fixing two real test-design issues along the way, not implementation bugs: the fairness rank-bump
+correctly demoting an alerted operator behind a still-more-overdue one (had to isolate the escalation
+check to a single free candidate to actually exercise it), and Pick Face's "always wins when it has
+ANY stock" rule correctly fragmenting a line across two tasks when earlier test steps had left a
+sliver of residual pick-face stock (fixed by isolating item 4's SKUs/locations, not a real bug).
+`tsc --noEmit`(backend)/`tsc -b`(frontend)/`nest build` all clean; a targeted `eslint`
+(prettier + no-unused-vars only, not the codebase-wide `no-unsafe-*` noise every file trips) came back
+clean after one formatting fix. **Not independently re-verified via a live browser pass this
+session** — another chat's dev servers were already occupying ports 3000/5173 (and this frontend
+hardcodes `http://localhost:3000` everywhere, so a different port wasn't a viable workaround);
+confirmed with the client to skip it rather than disturb the other session, so a live UI click-through
+of the new banner/buttons/Exceptions section is still worth doing before fully trusting this pass.
+The `docs/Build-Roadmap.pdf` was NOT regenerated this pass — its page 5 gap table now undercounts
+what's built; flag this if it's presented to the client before the PDF catches up.
+
+**Deferred, per the previous session's own plan — pick up next**: claim-expiry for an abandoned
+`PickTrip` (Putaway already solved this exact problem, `PutawayClaimExpiryScheduler`), a Picking
+metric in Analytics (Marrying/Putaway/Pick Face are reported, `PickTrip` isn't), then Dispatch itself.
+Also flagged, not solved (see NEXT_SESSION_PROMPT.md's own "known v1 simplification" note, still
+true): retry/recovery only ever excludes the single most-recently-failed location, not a running
+history of every location ever tried for a task — unlike Putaway's `PutawayReassignment` table. Not
+building a `PickSourceReassignment` history table for this yet.
 
 ## Session note (2026-09-14, later the same day — Outbound + Picking built; then a competitor gap-analysis pass)
 
@@ -1354,19 +1429,17 @@ for everything that's actually shipped since).
 Pick one — these are the live options on the table, not a forced order:
 
 0. ~~**Outbound / Picking**~~ — **BUILT 2026-09-14**, see the session note above. Order maker +
-   allotment + pick-task execution, backend and frontend both live-verified. What's live on the
-   table now, from the same-day gap-analysis pass (`docs/Build-Roadmap.pdf` page 5):
-   - **Two real bug-class gaps** — no claim-expiry for an abandoned `PickTrip` (Putaway already
-     solved this exact problem), and a `NEEDS_SOURCE` task has no retry path anywhere (Putaway's
-     "Request Different Bin" has no Picking equivalent). Both flagged HIGH — same class of gap as
-     a bug, not a scope decision.
-   - **Wire Picking into Pick Face** — `suggestPickPosition()` is scoped to `ACTUAL_STORAGE` only;
-     the whole reason Pick Face exists (fast access to prioritized A/B stock) goes unused today.
-   - Operator-assignment fairness for Picking (Putaway has one, Picking has plain FIFO only), and a
-     Picking metric in Analytics (Marrying/Putaway/Pick Face are reported, `PickTrip` isn't) — both
-     Medium priority.
-   - Mid-pick exception handling ("genuinely not there"/damaged, routing to a Supervisor) needs its
-     own design pass, not yet started.
+   allotment + pick-task execution, backend and frontend both live-verified. From the same-day
+   gap-analysis pass (`docs/Build-Roadmap.pdf` page 5, not yet regenerated to reflect the below):
+   - ~~Short-stock retry (`NEEDS_SOURCE`)~~ — **BUILT 2026-09-15**, see the session note above.
+   - ~~Wire Picking into Pick Face~~ — **BUILT 2026-09-15**, see the session note above.
+   - ~~Operator-assignment fairness for Picking~~ — **BUILT 2026-09-15**, see the session note above.
+   - ~~Mid-pick exception handling~~ — **BUILT 2026-09-15**, see the session note above (needed its
+     own design pass per the 2026-09-14 note; that pass happened and shipped the same session).
+   - **Still open, deferred per the 2026-09-15 session's own plan** — no claim-expiry for an
+     abandoned `PickTrip` (Putaway already solved this exact problem,
+     `PutawayClaimExpiryScheduler`), and a Picking metric in Analytics (Marrying/Putaway/Pick Face
+     are reported, `PickTrip` isn't). Pick these up next, then Dispatch.
    - **Dispatch** is the real next module — needs its own align-before-coding pass: can an order
      dispatch with non-priority lines still short as long as priority lines are complete; is the
      Dispatch action a new explicit step or does it piggyback on the existing Gate Out; does load

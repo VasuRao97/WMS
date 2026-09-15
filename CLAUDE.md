@@ -5617,6 +5617,154 @@ module specifically. The daily-volume dashboard's outward half is a real, still-
 lives under **Analytics** (`AnalyticsService.dailyInward()`'s eventual `dailyOutward()` twin), not
 Inventory — see ROADMAP.md's "Immediate candidates" for its current status.
 
+### Picking gap-fix pass: short-stock retry, Pick Face wiring, operator fairness, mid-pick exceptions (2026-09-15)
+
+Four items off the 2026-09-14 gap-analysis pass's own table (see ROADMAP.md's matching session note
+for the plan-level summary; this is the technical detail), picked up exactly where that session's
+`NEXT_SESSION_PROMPT.md` left off — its schema (`PickException`/`PickExceptionReason`,
+`Company.pickingAssignmentGraceMinutes`, `NotificationEventType.PICKING_OPERATOR_MISSED_TURN`) was
+already built/migrated/committed (`4169c951`); this session built the actual service/controller/
+frontend logic on top of it, in `backend/src/outbound/pick-tasks.service.ts`/`.controller.ts`.
+**Core rule for all four, confirmed by the schema's own comment**: `PickTask`/`PickTrip` rows are
+never deleted — a dead-end task gets its own `quantity` trimmed to whatever it actually achieved, and
+a fresh sibling `PickTask` (`NEEDS_SOURCE`) is spun off for whatever demand is still unmet, keeping
+every `PickException.taskId` pointing at a real, permanent row and `SUM(quantity)` across the
+original + siblings always equal to the original commitment.
+
+**1) Short-stock retry.** New private `attemptSourceRecovery(tx, task, completedSoFar, warehouseId,
+excludeLocationIds)` is the one shared recovery path all three of this pass's recovery-needing flows
+call: an explicit retry (completedSoFar 0, no exclusions), the auto-detected short-quantity branch
+(#4 below), and an explicit exception report (#4 below) — matches Putaway's own "Request Different
+Bin" shape (single attempt, no internal cascade). Not found → the task itself flips to
+`fromLocationId: null, status: 'NEEDS_SOURCE'` and a `SHORT_STOCK` `PickException` gets logged
+(`reportedById: null`). Found → the task updates in place (`fromLocationId`/`quantity`/`PENDING`); if
+a leftover remains after taking what's available, exactly one sibling `PickTask` (`NEEDS_SOURCE`)
+gets created for it, with its own `SHORT_STOCK` exception. New public `retryTaskSource(taskId, user)`
+(tenant-checked via a new `assertTaskAccess()`, mirroring `PutawayTasksService`'s own) requires
+`status === 'NEEDS_SOURCE'`, wraps the recovery attempt in a `$transaction`. New endpoint
+`POST /pick-tasks/:id/retry-source`, same `PICK_EXECUTE_ROLES` tier as claim/complete. **A natural
+extension not explicitly spelled out in the prior session's plan but implied by the schema's own
+comment** ("either at allotment time or after a retry"): `createTaskForLine()`'s original
+`NEEDS_SOURCE` branch (fired at allotment time, before this session, with no exception logging at
+all) now also auto-logs a `SHORT_STOCK` exception the moment it happens, closing that loop for real.
+Frontend: a "Retry Source" button on any `NEEDS_SOURCE` row in `PickTasksPage.tsx`'s task table.
+
+**2) Wire Picking into Pick Face.** `suggestPickPosition()` (private, was previously
+`ACTUAL_STORAGE`-only with its own comment flagging this as a real follow-on) split into a two-phase
+wrapper: the renamed `suggestPickPositionInZone(tx, params, zoneType)` takes an explicit
+`'PICK_FACE' | 'ACTUAL_STORAGE'` zone (plus the new `excludeLocationIds` param #1 needed), and
+`suggestPickPosition()` itself tries `PICK_FACE` first, falling through to `ACTUAL_STORAGE` only if
+nothing's found — Pick Face always wins over reserve when it has stock for the SKU, no aging-bucket
+comparison needed between the two zones (mirrors `suggestBin()`'s own Pick Face wiring on the Putaway
+side, confirmed 2026-09-05). The `PICK_FACE` phase adds a defensive `storageType: 'SPR'` filter,
+matching `PickFaceReplenishmentScheduler`'s own explicit filter (Pick Face is SPR-only by design).
+`PickFaceReplenishmentScheduler` needed zero changes — it already derives occupancy from real
+`StockMovement` balances, so it correctly detects depletion the moment Picking starts writing real
+`PICK` movements against a `PICK_FACE` location.
+
+**3) Operator-assignment fairness for Picking.** `computeRecommendedOperator(warehouseIdOrIds)` and
+`getRecommendation(user, warehouseId?)` mirror `PutawayTasksService`'s own almost verbatim — same
+`User.canOperateMhe` reuse (true-or-unset, not a new Picking-specific field), the same `canOperateMhe:
+{ not: false }` Postgres NULL-comparison footgun avoided the identical way (`OR: [{ true }, { null
+}]`), the same "never worked a trip → ranked from account creation, not exiled to the back" rule, and
+the same `PickTrip.completedAt ?? claimedAt` "how long free" signal. `getRecommendation()`'s
+`priorityTask` shows the oldest `PENDING` task's SKU + `fromLocation` (the source the operator needs
+to go to, matching Putaway's own choice of showing the start point). New `PickAssignmentScheduler`
+(`@Cron(EVERY_MINUTE)`) is `PutawayAssignmentScheduler`'s structure copied verbatim, swapping in
+`pickTask`/`pickTrip`, `Company.pickingAssignmentGraceMinutes`, and event type
+`PICKING_OPERATOR_MISSED_TURN` — same alert-then-escalate shape (Supervisor first, Warehouse Manager
+if the SAME missed turn also lapses), same no-op when there's no real `PENDING` `PickTask` waiting.
+`OutboundModule` now imports `NotificationsModule` (same cross-module reuse pattern
+`PutawayModule`/`YardGateModule` already established) and provides the new scheduler. New endpoint
+`GET /pick-tasks/recommendation?warehouseId=` (warehouseId optional, auto-scoping to the caller's own
+accessible warehouse(s) when omitted — an Operator has zero master-data visibility and could never
+pick one from a dropdown, same convention `PutawayTasksService.getRecommendation()` already uses).
+New `pickingAssignmentGraceMinutes` field wired through `CompaniesService.getSettings()`/
+`updateSettings()` (same "no unconfigured state, always a non-negative whole number" validation as
+`putawayAssignmentGraceMinutes` — its own separate dial, never shared). Frontend: a recommendation
+banner on `PickTasksPage.tsx` (same shape as `PutawayPage.tsx`'s "It's your turn"/"Next up: X" +
+priority SKU/location line, refreshed after every claim/complete/retry/exception-report), and a
+"Picking Assignment Grace Minutes" field on `CompanySettingsPage.tsx` right next to Putaway's own.
+
+**4) Mid-pick exception handling.** Short-quantity is auto-detected inside `completeTrip()`'s own
+transaction, right after the existing movement-writing block: if the task still has real remaining
+(`moved < Number(task.quantity)`, where `moved` is the post-this-trip total) **and** this specific
+trip under-delivered relative to what IT was claimed for (`actualQuantity < Number(trip.quantity)` —
+the trip's own claimed quantity captured before the transaction touched it, not the task's overall
+remaining, so a normal multi-trip task capped by equipment capacity never false-triggers this) — logs
+a `SHORT_QUANTITY` `PickException` (`reportedById: null`, notes naming the expected/found quantities
+and the location) and calls `attemptSourceRecovery()` excluding the location that just came up short.
+New public `reportException(tripId, body, user)` — validates the trip is `IN_PROGRESS` and claimed by
+the caller, then inside a `$transaction`: marks the trip `ABANDONED` with `completedAt` stamped (same
+"mark ABANDONED anywhere → stamp completedAt too" convention Putaway already established —
+`computeRecommendedOperator()` above reads it the identical way), logs the `PickException`
+(`reportedById: user.userId`, real reason + optional notes), computes `completedSoFar` from the
+task's other `COMPLETED` trips, and calls `attemptSourceRecovery()` excluding the task's own
+`fromLocationId`. New endpoint `POST /pick-tasks/trips/:tripId/exception`. New `getExceptions(user,
+warehouseId?)`/`reviewException(id, user)` mirror `PutawayTasksService`'s discrepancy pair
+(`getDiscrepancies`/`reviewDiscrepancy`) but keyed by `PickException.id` (not `tripId`, since
+`SHORT_STOCK` rows have no trip at all). New `PICK_EXCEPTION_REVIEW_ROLES` in `tenant.util.ts`
+(Supervisor+, mirrors `PUTAWAY_DISCREPANCY_REVIEW_ROLES` — a separate named constant on purpose even
+though the values are identical today, same "distinct destinations that could diverge later"
+reasoning as `CAN_VIEW_INSIGHTS`/`CAN_VIEW_ANALYTICS`). Frontend: a "▸ Report a Problem instead"
+toggle on `PickTasksPage.tsx`'s active-trip form, revealing a reason dropdown (Empty Bin/Wrong SKU/
+Damaged/Other) + optional notes + its own submit button, and a new "Exceptions" section
+(Supervisor+, client-gated to match the backend) showing reason/SKU/order/reported by/reported at/
+reviewed state + a Mark Reviewed button — `SHORT_STOCK`/`SHORT_QUANTITY` rows show "System" where
+`reportedByName` is null.
+
+Verified via a throwaway-company diagnostic script (`ts-node`, invoking the real, unmodified
+`PickTasksService`/`PickAssignmentScheduler` methods directly — no HTTP layer), 23/23 checks passing,
+including catching and fixing two real test-DESIGN issues along the way (not implementation bugs,
+confirmed by tracing each through the actual unmodified code before "fixing" anything):
+- The fairness rank-bump (an alerted operator's effective rank time jumps forward, by design — see
+  `computeRecommendedOperator()`'s own comment) correctly meant a plain second `checkWarehouse()` call
+  recommended a DIFFERENT, still-more-overdue operator instead of escalating the first one — exactly
+  the intended behavior, not a bug. Fixed the TEST by making the first operator busy (an `IN_PROGRESS`
+  trip) before the second call, isolating the escalation check to the one operator whose missed turn
+  was actually being exercised — mirrors how this would only ever fire for real when no better-ranked
+  operator has freed up in the meantime.
+- Pick Face's "always wins over reserve when it has ANY stock" rule (item 2, working exactly as
+  designed) correctly fragmented a later test line across two tasks when an earlier test step had left
+  one leftover unit of stock at the shared Pick Face location — fixed by isolating item 4's own
+  SKUs/locations from items 1/2's, not a change to the algorithm.
+- Also confirmed via the same script: `attemptSourceRecovery()`'s exclusion of "the location that just
+  came up short" is itself, by design, why a SKU with only ONE real stock location correctly falls
+  all the way to `NEEDS_SOURCE` (with a follow-up `SHORT_STOCK` exception) after a short pick or an
+  exception report there, rather than silently re-suggesting the same spot.
+
+`tsc --noEmit`(backend)/`tsc -b`(frontend)/`nest build` all clean throughout. A targeted
+`npx eslint` pass on just the changed files (never the bare `npm run lint`, which always runs
+`--fix` on this backend — see the Windows-gotchas-adjacent lint note elsewhere in this file) found
+zero `no-unused-vars` issues and 4 pre-existing-style `prettier/prettier` formatting nits (fixed via
+`npx prettier --write` on the one file that had them, not `eslint --fix`) — every other finding was
+the same codebase-wide `@typescript-eslint/no-unsafe-*` noise this project's own 2026-09-06 hardening
+pass already established fires on virtually every `any`-typed Prisma call in every service file here
+(confirmed by running the identical lint against an untouched file, `putaway-tasks.service.ts`, which
+alone produced 697 findings of the same kind) — not a regression from this session's own edits.
+
+**Not independently re-verified via a live browser pass this session** — another chat's dev servers
+were already occupying ports 3000/5173 at verification time, and this frontend hardcodes
+`http://localhost:3000` everywhere (not env-driven), so running this session's own backend on a
+different port wasn't a viable workaround without touching every fetch call in the app. Confirmed
+directly rather than assumed: skip the live pass this time. Worth a real click-through (the
+recommendation banner, Retry Source, Report a Problem, the Exceptions section) before fully trusting
+this pass the way every other feature in this codebase gets a second, live-UI verification pass.
+
+**Deferred, per the prior session's own plan** — pick these up next, then Dispatch itself: claim-
+expiry for an abandoned `PickTrip` (Putaway already solved this exact problem,
+`PutawayClaimExpiryScheduler`, 30-minute auto-expiry — Picking has no equivalent scheduler at all, so
+a claimed-then-abandoned trip today stays `IN_PROGRESS` forever, permanently blocking that task since
+`claimTrip()`'s own candidate filter excludes any task with an open trip); a Picking metric in
+Analytics (`AnalyticsService` reports Marrying/Putaway/Pick Face operator productivity, nothing for
+`PickTrip` yet). **Known, accepted v1 simplification, flagged not silently assumed acceptable
+forever** (carried over unchanged from the prior session's own plan): retry/recovery only ever
+excludes the single location that most recently failed, never a running history of every location
+ever tried for a given task, unlike Putaway's `PutawayReassignment` table for "Request Different
+Bin" — a later retry could in principle re-suggest an earlier failed position if several different
+ones fail for the same task over multiple retries. Not building a `PickSourceReassignment` history
+table for this now.
+
 ## Status: what's built vs. what's next
 
 Fully built, tested, and committed: Auth + multi-tenancy (JWT, `JwtAuthGuard`, tenant isolation
@@ -5684,6 +5832,17 @@ integration, and — per the module build order above — Putaway, Inventory, Ou
 Dispatch, Analytics (**Inbound now has real first-pass logic** — see "Inbound receiving" below,
 not just schema anymore). Cloud/production deployment hasn't happened; this is local Docker
 Compose (Postgres) only.
+
+**Stale as of 2026-09-15 — Putaway, Inventory, Outbound, and Picking are now all real and built**
+(this paragraph predates all four). Their own detailed build sections got appended further down in
+this file as each shipped (search for "Putaway —", "Inventory —", the Picking gap-fix section
+right before this file's own "## Status" heading) — **except Outbound/Picking's original
+2026-09-14 build itself, which was never actually written up in CLAUDE.md at all** (a real gap:
+several later sections and even code comments reference "CLAUDE.md's Outbound orders, Picking,
+Dispatch design section," which doesn't exist here — the design/build detail for that base pass
+only lives in `ROADMAP.md`'s 2026-09-14 session notes and git history, `ac8789f8`/`cd0405f0`).
+Worth backfilling properly in its own pass rather than reconstructed hastily here. Dispatch/Returns/
+Analytics-beyond-what's-listed-below remain genuinely unbuilt.
 
 **Inbound receiving** (2026-08-27, see "Inbound receiving — order maker, order match, and
 scan-based receiving" above for the full design and what's verified) — the manual order maker,

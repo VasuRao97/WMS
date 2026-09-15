@@ -7,10 +7,15 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import {
   type AuthUser,
+  companyFilter,
   ownWarehouseIds,
   OUTBOUND_SCOPED_ROLES,
 } from '../common/tenant.util';
-import { buildRackName, laneKeyOf } from '../common/rack-name.util';
+import {
+  buildRackName,
+  displayCode,
+  laneKeyOf,
+} from '../common/rack-name.util';
 
 const TASK_INCLUDE = {
   orderLine: {
@@ -152,18 +157,56 @@ export class PickTasksService {
   //    is enforced for real at trip completion against whatever's actually
   //    scanned, not predicted precisely here.
   //
-  // Scoped to ACTUAL_STORAGE for v1 — Pick Face priority (picking from the
-  // fast-access slot before reserve) is a real, flagged follow-on, not
-  // built this pass; nothing currently writes PICK from a PICK_FACE
-  // location either.
+  // Two-phase wrapper (2026-09-14 gap-fix pass, item 2) — Pick Face always
+  // wins over reserve when it has stock for the SKU, no aging-bucket
+  // comparison needed between the two zones (mirrors suggestBin()'s own
+  // Pick Face wiring on the Putaway side). PickFaceReplenishmentScheduler
+  // already derives occupancy from real StockMovement balances, so it'll
+  // correctly detect depletion the moment this starts writing real PICK
+  // movements against a PICK_FACE location — no changes needed there.
   private async suggestPickPosition(
     tx: any,
-    params: { warehouseId: string; skuId: string; quantity: number },
+    params: {
+      warehouseId: string;
+      skuId: string;
+      quantity: number;
+      excludeLocationIds?: string[];
+    },
   ): Promise<{ locationId: string; available: number } | null> {
-    const { warehouseId, skuId, quantity } = params;
+    const pickFace = await this.suggestPickPositionInZone(
+      tx,
+      params,
+      'PICK_FACE',
+    );
+    if (pickFace) return pickFace;
+    return this.suggestPickPositionInZone(tx, params, 'ACTUAL_STORAGE');
+  }
+
+  private async suggestPickPositionInZone(
+    tx: any,
+    params: {
+      warehouseId: string;
+      skuId: string;
+      quantity: number;
+      excludeLocationIds?: string[];
+    },
+    zoneType: 'PICK_FACE' | 'ACTUAL_STORAGE',
+  ): Promise<{ locationId: string; available: number } | null> {
+    const { warehouseId, skuId, quantity, excludeLocationIds = [] } = params;
 
     const locations = await tx.location.findMany({
-      where: { warehouseId, isActive: true, zoneType: 'ACTUAL_STORAGE' },
+      where: {
+        warehouseId,
+        isActive: true,
+        zoneType,
+        // Defensive — matches PickFaceReplenishmentScheduler's own explicit
+        // filter (Pick Face is SPR-only by design, see its comment on
+        // "no location tagged PICK_FACE that isn't storageType SPR").
+        ...(zoneType === 'PICK_FACE' ? { storageType: 'SPR' } : {}),
+        ...(excludeLocationIds.length
+          ? { id: { notIn: excludeLocationIds } }
+          : {}),
+      },
       select: {
         id: true,
         storageType: true,
@@ -341,18 +384,29 @@ export class PickTasksService {
         quantity: remaining,
       });
       if (!position) {
-        tasks.push(
-          await tx.pickTask.create({
-            data: {
-              orderLineId: line.id,
-              skuId: line.skuId,
-              fromLocationId: null,
-              toLocationId,
-              quantity: remaining,
-              status: 'NEEDS_SOURCE',
-            },
-          }),
-        );
+        // SHORT_STOCK — auto-logged the moment a task can find no source at
+        // all, either here (at allotment time) or later via
+        // attemptSourceRecovery()'s own identical branch after a retry —
+        // one shared PickException shape, reportedById null either way (see
+        // schema.prisma's own comment on PickException).
+        const created = await tx.pickTask.create({
+          data: {
+            orderLineId: line.id,
+            skuId: line.skuId,
+            fromLocationId: null,
+            toLocationId,
+            quantity: remaining,
+            status: 'NEEDS_SOURCE',
+          },
+        });
+        await tx.pickException.create({
+          data: {
+            taskId: created.id,
+            reason: 'SHORT_STOCK',
+            reportedById: null,
+          },
+        });
+        tasks.push(created);
         remaining = 0;
         break;
       }
@@ -372,6 +426,135 @@ export class PickTasksService {
       remaining -= takeQty;
     }
     return tasks;
+  }
+
+  // Short-stock retry (2026-09-14 gap-fix pass, item 1) — the shared
+  // recovery path for a task that has run out of source, called both from
+  // an explicit operator-triggered retryTaskSource() (completedSoFar = 0,
+  // no exclusions) and from mid-pick exception handling (item 4 below,
+  // completedSoFar = whatever's already moved, excluding the one location
+  // that just failed). Single attempt, no internal loop — matches
+  // Putaway's own "Request Different Bin" (one suggestion at a time, not an
+  // automated cascade). Core rule: PickTask/PickTrip rows are never
+  // deleted — a dead-end task's own quantity gets trimmed to whatever it
+  // actually achieves, and a fresh sibling PickTask (NEEDS_SOURCE) is spun
+  // off for whatever demand is still unmet, so every PickException.taskId
+  // keeps pointing at a real, permanent row and SUM(quantity) across the
+  // original + any siblings always equals the original commitment.
+  private async attemptSourceRecovery(
+    tx: any,
+    task: {
+      id: string;
+      orderLineId: string;
+      skuId: string;
+      toLocationId: string | null;
+      quantity: any;
+    },
+    completedSoFar: number,
+    warehouseId: string,
+    excludeLocationIds: string[],
+  ) {
+    const remaining = Number(task.quantity) - completedSoFar;
+    if (remaining <= 0) return; // caller already marks the task COMPLETED
+
+    const position = await this.suggestPickPosition(tx, {
+      warehouseId,
+      skuId: task.skuId,
+      quantity: remaining,
+      excludeLocationIds,
+    });
+
+    if (!position) {
+      await tx.pickTask.update({
+        where: { id: task.id },
+        data: { fromLocationId: null, status: 'NEEDS_SOURCE' },
+      });
+      await tx.pickException.create({
+        data: { taskId: task.id, reason: 'SHORT_STOCK', reportedById: null },
+      });
+      return;
+    }
+
+    const takeQty = Math.min(remaining, position.available);
+    const newTaskQuantity = completedSoFar + takeQty;
+    await tx.pickTask.update({
+      where: { id: task.id },
+      data: {
+        fromLocationId: position.locationId,
+        quantity: newTaskQuantity,
+        status: 'PENDING',
+      },
+    });
+
+    const leftover = remaining - takeQty;
+    if (leftover > 0) {
+      const sibling = await tx.pickTask.create({
+        data: {
+          orderLineId: task.orderLineId,
+          skuId: task.skuId,
+          toLocationId: task.toLocationId,
+          quantity: leftover,
+          status: 'NEEDS_SOURCE',
+        },
+      });
+      await tx.pickException.create({
+        data: {
+          taskId: sibling.id,
+          reason: 'SHORT_STOCK',
+          reportedById: null,
+        },
+      });
+    }
+  }
+
+  // Tenant/access check for a single task by id — mirrors
+  // PutawayTasksService.assertTaskAccess() exactly, just via
+  // orderLine.order.warehouse instead of receiptLine.receipt.warehouse.
+  private async assertTaskAccess(id: string, user: AuthUser) {
+    const task = await this.prisma.pickTask.findUnique({
+      where: { id },
+      include: {
+        orderLine: { include: { order: { include: { warehouse: true } } } },
+        trips: true,
+      },
+    });
+    if (!task) throw new NotFoundException('Pick task not found.');
+    const warehouse = (task as any).orderLine.order.warehouse;
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)
+      throw new ForbiddenException('You do not have access to this task.');
+    if (OUTBOUND_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouse.id))
+        throw new ForbiddenException('You do not have access to this task.');
+    }
+    return task;
+  }
+
+  // Public entry — an operator/supervisor retrying a NEEDS_SOURCE task once
+  // stock might genuinely have arrived. Known v1 simplification, flagged
+  // not silently assumed acceptable forever: this only ever excludes the
+  // single location that most recently failed (none, for a fresh
+  // NEEDS_SOURCE task with no prior attempt at all) — no running history of
+  // every location ever tried for this task, unlike Putaway's own
+  // PutawayReassignment table for "Request Different Bin."
+  async retryTaskSource(taskId: string, user: AuthUser) {
+    const task = await this.assertTaskAccess(taskId, user);
+    if (task.status !== 'NEEDS_SOURCE')
+      throw new BadRequestException('Only a Needs Source task can be retried.');
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.attemptSourceRecovery(
+        tx,
+        task,
+        0,
+        (task as any).orderLine.order.warehouseId,
+        [],
+      );
+      return tx.pickTask.findUnique({
+        where: { id: taskId },
+        include: { ...TASK_INCLUDE, trips: true },
+      });
+    });
   }
 
   async findAll(user: AuthUser, warehouseId?: string) {
@@ -400,6 +583,155 @@ export class PickTasksService {
           : false,
       };
     });
+  }
+
+  // ------------------------------------------------------------
+  // Operator assignment fairness (2026-09-14 gap-fix pass, item 3) —
+  // mirrors PutawayTasksService.computeRecommendedOperator()/
+  // getRecommendation() almost exactly; see that file for the fuller
+  // design reasoning. Reuses User.canOperateMhe (the same field Putaway
+  // uses — not Putaway-specific, confirmed reuse rather than a new field)
+  // and PickTrip.completedAt ?? claimedAt for "how long free."
+  // ------------------------------------------------------------
+
+  async computeRecommendedOperator(
+    warehouseIdOrIds: string | string[],
+  ): Promise<{ id: string; name: string; effectiveRankTime: Date } | null> {
+    const warehouseIds = Array.isArray(warehouseIdOrIds)
+      ? warehouseIdOrIds
+      : [warehouseIdOrIds];
+    if (warehouseIds.length === 0) return null;
+    const operators = await this.prisma.user.findMany({
+      // NOT `canOperateMhe: { not: false }` — see PutawayTasksService's own
+      // comment on this exact NULL-comparison Postgres footgun.
+      where: {
+        role: 'OPERATOR',
+        isActive: true,
+        OR: [{ canOperateMhe: true }, { canOperateMhe: null }],
+        assignedWarehouses: { some: { id: { in: warehouseIds } } },
+      },
+      select: { id: true, name: true, createdAt: true },
+    });
+    if (operators.length === 0) return null;
+    const operatorIds = operators.map((o) => o.id);
+
+    const inProgress = await this.prisma.pickTrip.findMany({
+      where: { claimedById: { in: operatorIds }, status: 'IN_PROGRESS' },
+      select: { claimedById: true },
+    });
+    const busyIds = new Set(inProgress.map((t: any) => t.claimedById));
+    const freeOperators = operators.filter((o) => !busyIds.has(o.id));
+    if (freeOperators.length === 0) return null;
+    const freeIds = freeOperators.map((o) => o.id);
+
+    const trips = await this.prisma.pickTrip.findMany({
+      where: {
+        claimedById: { in: freeIds },
+        status: { in: ['COMPLETED', 'ABANDONED'] },
+      },
+      select: { claimedById: true, claimedAt: true, completedAt: true },
+    });
+    const lastActivity = new Map<string, Date>();
+    for (const t of trips) {
+      const ts: Date = t.completedAt ?? t.claimedAt;
+      const prev = lastActivity.get(t.claimedById);
+      if (!prev || ts > prev) lastActivity.set(t.claimedById, ts);
+    }
+
+    const missedAlerts = await this.prisma.notificationLog.findMany({
+      where: {
+        eventType: 'PICKING_OPERATOR_MISSED_TURN',
+        referenceType: 'User',
+        referenceId: { in: freeIds },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { referenceId: true, createdAt: true },
+    });
+    const latestAlertByOperator = new Map<string, Date>();
+    for (const a of missedAlerts) {
+      if (!latestAlertByOperator.has(a.referenceId!))
+        latestAlertByOperator.set(a.referenceId!, a.createdAt);
+    }
+
+    const ranked = freeOperators.map((o) => {
+      const freeSince = lastActivity.get(o.id) ?? o.createdAt;
+      const alertAt = latestAlertByOperator.get(o.id);
+      const effectiveRankTime =
+        alertAt && alertAt > freeSince ? alertAt : freeSince;
+      return { id: o.id, name: o.name, effectiveRankTime };
+    });
+    ranked.sort(
+      (a, b) => a.effectiveRankTime.getTime() - b.effectiveRankTime.getTime(),
+    );
+    return ranked[0];
+  }
+
+  // The Picking page's own live view — "who should go next" plus "where's
+  // the real priority" (oldest staged stock still waiting — shows the
+  // fromLocation, the source the operator needs to go to, matching
+  // Putaway's own choice of showing the start point of the priority work).
+  // warehouseId optional, same auto-scoping convention as findAll()/
+  // getRecommendation() on the Putaway side — an Operator has zero
+  // master-data visibility and could never pick a warehouse from a
+  // dropdown at all.
+  async getRecommendation(user: AuthUser, warehouseId?: string) {
+    let warehouseIds: string[];
+    if (warehouseId) {
+      const warehouse = await this.prisma.warehouse.findUnique({
+        where: { id: warehouseId },
+      });
+      if (!warehouse) throw new NotFoundException('Warehouse not found.');
+      if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)
+        throw new ForbiddenException(
+          'You do not have access to this warehouse.',
+        );
+      if (OUTBOUND_SCOPED_ROLES.includes(user.role)) {
+        const ids = await ownWarehouseIds(this.prisma, user.userId);
+        if (!ids.includes(warehouseId))
+          throw new ForbiddenException(
+            'You do not have access to this warehouse.',
+          );
+      }
+      warehouseIds = [warehouseId];
+    } else if (OUTBOUND_SCOPED_ROLES.includes(user.role)) {
+      warehouseIds = await ownWarehouseIds(this.prisma, user.userId);
+    } else {
+      const warehouses = await this.prisma.warehouse.findMany({
+        where: companyFilter(user),
+        select: { id: true },
+      });
+      warehouseIds = warehouses.map((w) => w.id);
+    }
+    if (warehouseIds.length === 0)
+      return { priorityTask: null, recommendedOperator: null };
+
+    const priorityTask = await this.prisma.pickTask.findFirst({
+      where: {
+        status: 'PENDING',
+        orderLine: { order: { warehouseId: { in: warehouseIds } } },
+      },
+      include: TASK_INCLUDE,
+      orderBy: { createdAt: 'asc' },
+    });
+    const recommendedOperator =
+      await this.computeRecommendedOperator(warehouseIds);
+
+    return {
+      priorityTask: priorityTask
+        ? {
+            skuCode: (priorityTask as any).sku.code,
+            locationCode: displayCode((priorityTask as any).fromLocation),
+            waitingSince: priorityTask.createdAt,
+          }
+        : null,
+      recommendedOperator: recommendedOperator
+        ? {
+            id: recommendedOperator.id,
+            name: recommendedOperator.name,
+            freeSince: recommendedOperator.effectiveRankTime,
+          }
+        : null,
+    };
   }
 
   // Claiming — no barcode scan, unlike Putaway (there's nothing physical in
@@ -692,6 +1024,32 @@ export class PickTasksService {
           where: { id: task.id },
           data: { status: 'COMPLETED' },
         });
+      } else if (actualQuantity < Number(trip.quantity)) {
+        // SHORT_QUANTITY — auto-detected, not manually reported (item 4,
+        // 2026-09-14 gap-fix pass): fewer units physically found/scanned
+        // than THIS trip was claimed for, while the task overall still has
+        // real remaining demand. Compared against the trip's own claimed
+        // quantity (captured before this transaction touched it), not the
+        // task's overall remaining, so a normal multi-trip task capped by
+        // equipment capacity never false-triggers this — a trip claimed for
+        // exactly its own capacity and fully delivered is not short just
+        // because the task itself still has more trips to go.
+        await tx.pickException.create({
+          data: {
+            taskId: task.id,
+            tripId,
+            reason: 'SHORT_QUANTITY',
+            notes: `Expected ~${Number(trip.quantity)}, found ${actualQuantity} at ${targetLocation.code}.`,
+            reportedById: null,
+          },
+        });
+        await this.attemptSourceRecovery(
+          tx,
+          task,
+          moved,
+          fromLocation.warehouseId,
+          [targetLocation.id],
+        );
       }
 
       const orderLine = await tx.outboundOrderLine.update({
@@ -726,5 +1084,159 @@ export class PickTasksService {
         data: { status: 'PICKED' },
       });
     }
+  }
+
+  // ------------------------------------------------------------
+  // Mid-pick exception handling (2026-09-14 gap-fix pass, item 4) —
+  // explicit operator report of a genuine physical problem at the assigned
+  // location (EMPTY_BIN/WRONG_SKU/DAMAGED/OTHER). Abandons the in-progress
+  // trip (no stock movement — nothing was ever actually picked) and
+  // recovers a new source for whatever's still unmet, same
+  // attemptSourceRecovery() the auto-detected SHORT_QUANTITY branch above
+  // and retryTaskSource() both use.
+  // ------------------------------------------------------------
+
+  async reportException(
+    tripId: string,
+    body: { reason?: string; notes?: string },
+    user: AuthUser,
+  ) {
+    const trip = await this.prisma.pickTrip.findUnique({
+      where: { id: tripId },
+      include: { task: { include: { fromLocation: true, trips: true } } },
+    });
+    if (!trip) throw new NotFoundException('Trip not found.');
+    if (trip.status !== 'IN_PROGRESS')
+      throw new BadRequestException('This trip is not in progress.');
+    if (trip.claimedById !== user.userId)
+      throw new ForbiddenException(
+        'Only the operator who claimed this trip can report a problem on it.',
+      );
+
+    const reasonInput = String(body?.reason || '').trim();
+    const validReasons = [
+      'EMPTY_BIN',
+      'WRONG_SKU',
+      'DAMAGED',
+      'OTHER',
+    ] as const;
+    if (!(validReasons as readonly string[]).includes(reasonInput))
+      throw new BadRequestException(
+        `Reason must be one of: ${validReasons.join(', ')}.`,
+      );
+    const reason = reasonInput as (typeof validReasons)[number];
+
+    const task = trip.task as any;
+    const fromLocation = task.fromLocation;
+
+    return this.prisma.$transaction(async (tx) => {
+      // Same "mark ABANDONED anywhere -> stamp completedAt too" convention
+      // Putaway already established (PutawayTrip reuses completedAt
+      // generically as "when this trip stopped being IN_PROGRESS," not just
+      // for real completions) — computeRecommendedOperator() above reads it
+      // the exact same way for Picking.
+      await tx.pickTrip.update({
+        where: { id: tripId },
+        data: { status: 'ABANDONED', completedAt: new Date() },
+      });
+      await tx.pickException.create({
+        data: {
+          taskId: task.id,
+          tripId,
+          reason,
+          notes: body?.notes ? String(body.notes).trim() : undefined,
+          reportedById: user.userId,
+        },
+      });
+      const completedSoFar = (task.trips as any[])
+        .filter((t) => t.status === 'COMPLETED')
+        .reduce((s, t) => s + Number(t.quantity), 0);
+      await this.attemptSourceRecovery(
+        tx,
+        task,
+        completedSoFar,
+        fromLocation.warehouseId,
+        [task.fromLocationId].filter(Boolean) as string[],
+      );
+      return tx.pickTask.findUnique({
+        where: { id: task.id },
+        include: { ...TASK_INCLUDE, trips: true },
+      });
+    });
+  }
+
+  // Mirrors PutawayTasksService's discrepancy pair (getDiscrepancies/
+  // reviewDiscrepancy) but keyed by PickException.id, not tripId — a
+  // SHORT_STOCK row has no trip to key off at all. Supervisor+ only
+  // (PICK_EXCEPTION_REVIEW_ROLES) — an operator reports their own problem
+  // via reportException() above, but reviewing/closing one out (their own
+  // or anyone else's, including the system-logged SHORT_STOCK/
+  // SHORT_QUANTITY rows) sits a tier above that.
+  async getExceptions(user: AuthUser, warehouseId?: string) {
+    const where: any = {
+      task: { orderLine: { order: { warehouse: { ...companyFilter(user) } } } },
+    };
+    if (OUTBOUND_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      where.task.orderLine.order.warehouse.id = { in: ids };
+    }
+    if (warehouseId) where.task.orderLine.order.warehouseId = warehouseId;
+
+    const exceptions = await this.prisma.pickException.findMany({
+      where,
+      include: {
+        task: {
+          select: {
+            sku: { select: { code: true } },
+            orderLine: { select: { order: { select: { orderNo: true } } } },
+          },
+        },
+        reportedBy: { select: { name: true } },
+        reviewedBy: { select: { name: true } },
+      },
+      orderBy: { reportedAt: 'desc' },
+    });
+
+    return exceptions.map((e: any) => ({
+      id: e.id,
+      reason: e.reason,
+      notes: e.notes,
+      skuCode: e.task.sku.code,
+      orderNo: e.task.orderLine.order.orderNo,
+      // null => "System" on the frontend — the two auto-logged reasons
+      // (SHORT_STOCK/SHORT_QUANTITY) never have a reporting operator.
+      reportedByName: e.reportedBy?.name ?? null,
+      reportedAt: e.reportedAt,
+      reviewedAt: e.reviewedAt,
+      reviewedByName: e.reviewedBy?.name ?? null,
+    }));
+  }
+
+  async reviewException(id: string, user: AuthUser) {
+    const exception = await this.prisma.pickException.findUnique({
+      where: { id },
+      include: {
+        task: {
+          include: {
+            orderLine: { include: { order: { include: { warehouse: true } } } },
+          },
+        },
+      },
+    });
+    if (!exception) throw new NotFoundException('Exception not found.');
+    const warehouse = (exception.task as any).orderLine.order.warehouse;
+    if (user.role !== 'SUPER_ADMIN' && warehouse.companyId !== user.companyId)
+      throw new ForbiddenException('You do not have access to this exception.');
+    if (OUTBOUND_SCOPED_ROLES.includes(user.role)) {
+      const ids = await ownWarehouseIds(this.prisma, user.userId);
+      if (!ids.includes(warehouse.id))
+        throw new ForbiddenException(
+          'You do not have access to this exception.',
+        );
+    }
+    return this.prisma.pickException.update({
+      where: { id },
+      data: { reviewedAt: new Date(), reviewedById: user.userId },
+    });
   }
 }

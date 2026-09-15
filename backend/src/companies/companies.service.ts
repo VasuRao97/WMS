@@ -46,6 +46,10 @@ export class CompaniesService {
         defaultMaxCasesPerPallet: true,
         putawayAssignmentGraceMinutes: true,
         allowPutawayLocationOverride: true,
+        // Picking gap-analysis pass (2026-09-14, item 3) — the same dial,
+        // reused for both alert and escalation steps, just Picking's own,
+        // never shared with Putaway's.
+        pickingAssignmentGraceMinutes: true,
         abcReassessmentEnabled: true,
         abcClassAPercent: true,
         abcClassBPercent: true,
@@ -145,6 +149,20 @@ export class CompaniesService {
       if (!Number.isInteger(n) || n < 0)
         errors.push(
           'Putaway Assignment Grace Minutes must be a whole number, 0 or more.',
+        );
+    }
+    // Picking's own operator-assignment fairness dial (2026-09-14, item 3)
+    // — same "always a concrete non-negative whole number" shape as
+    // Putaway's, its own separate dial (never shared with putawayAssignmentGraceMinutes).
+    if (
+      data.pickingAssignmentGraceMinutes !== undefined &&
+      data.pickingAssignmentGraceMinutes !== null &&
+      data.pickingAssignmentGraceMinutes !== ''
+    ) {
+      const n = Number(data.pickingAssignmentGraceMinutes);
+      if (!Number.isInteger(n) || n < 0)
+        errors.push(
+          'Picking Assignment Grace Minutes must be a whole number, 0 or more.',
         );
     }
     // ABC velocity reassessment (2026-09-06 — see [[wms-abc-velocity-design]])
@@ -316,6 +334,14 @@ export class CompaniesService {
           data.putawayAssignmentGraceMinutes !== ''
             ? Number(data.putawayAssignmentGraceMinutes)
             : undefined,
+        // Picking's own dial (2026-09-14, item 3) — same "no unconfigured
+        // state, omitted leaves unchanged" shape as putawayAssignmentGraceMinutes.
+        pickingAssignmentGraceMinutes:
+          data.pickingAssignmentGraceMinutes !== undefined &&
+          data.pickingAssignmentGraceMinutes !== null &&
+          data.pickingAssignmentGraceMinutes !== ''
+            ? Number(data.pickingAssignmentGraceMinutes)
+            : undefined,
         // Putaway location override (2026-09-06) — a plain boolean toggle,
         // same "omitted means unchanged" convention as allowErpInboundPush.
         allowPutawayLocationOverride:
@@ -406,6 +432,7 @@ export class CompaniesService {
         defaultMaxCasesPerPallet: true,
         putawayAssignmentGraceMinutes: true,
         allowPutawayLocationOverride: true,
+        pickingAssignmentGraceMinutes: true,
         abcReassessmentEnabled: true,
         abcClassAPercent: true,
         abcClassBPercent: true,
